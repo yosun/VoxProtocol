@@ -117,6 +117,25 @@ function generationLabel(status?: string): string {
   return status.replaceAll("_", " ").toLowerCase();
 }
 
+function commissionTrackingLabel(status?: RealizeCommissionStatus): string {
+  if (!status) return "Commission tracking";
+  const {state, payment_state: paymentState, fulfillment_state: fulfillmentState} = status.commission;
+  if (state === "SETTLED") return "Your creation is ready and settled";
+  if (state === "FAILED" || state === "REFUNDED" || state === "REFUND_PENDING" || fulfillmentState === "failed" || fulfillmentState === "canceled") return "Commission needs attention";
+  if (fulfillmentState === "completed") return "Your creation is ready";
+  if (state === "AWAITING_PAYMENT" || paymentState === "pending" || paymentState === "authorized") return "Waiting for payment verification";
+  if (state === "FUNDED") return "Payment verified; preparing generation";
+  if (state === "GENERATING" && fulfillmentState === "queued") return "Generation is queued";
+  if (state === "GENERATING" && fulfillmentState === "generating") return "Generation is in progress";
+  if (state === "MANUAL_REVIEW") return "Commission needs review";
+  if (state === "EXPIRED") return "Commission expired";
+  return "Commission tracking";
+}
+
+function isGenerationInProgress(status?: RealizeCommissionStatus): boolean {
+  return status?.commission.state === "GENERATING" && ["queued", "generating"].includes(status.commission.fulfillment_state);
+}
+
 export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecord; posts: PostRecord[]; agents: Record<string, AgentRecord>; onClose: () => void}) {
   const connected = useConnectedWallet(solanaWalletClient);
   const wallets = useWallets(solanaWalletClient);
@@ -709,10 +728,10 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
     </section>}
 
     {commissionStatus && quoteAccepted && <section className="checkout-section realization-tracking" aria-labelledby="realize-tracking-heading">
-      <div className="checkout-section-heading"><span>05</span><div><p className="eyebrow">Commission tracking</p><h3 id="realize-tracking-heading">{commissionStatus.commission.state === "SETTLED" ? "Your creation is ready and settled" : commissionStatus.commission.state === "FAILED" || commissionStatus.commission.state === "REFUNDED" ? "Commission needs attention" : commissionStatus.commission.fulfillment_state === "completed" ? "Your creation is ready" : "Generation is in progress"}</h3></div></div>
+      <div className="checkout-section-heading"><span>05</span><div><p className="eyebrow">Commission tracking</p><h3 id="realize-tracking-heading">{commissionTrackingLabel(commissionStatus)}</h3></div></div>
       <div className="checkout-status-grid tracking-statuses"><div><span>Payment</span><strong>{paymentLabel(commissionStatus.commission.payment_state)}</strong></div><div><span>Generation</span><strong>{generationLabel(commissionStatus.commission.fulfillment_state)}</strong></div><div><span>Settlement</span><strong>{commissionStatus.settlement_status.replaceAll("_", " ")}</strong></div></div>
       {trackingError && <p className="tiny muted" role="status">Status refresh delayed: {trackingError}. Reopen this checkout to continue tracking.</p>}
-      {!isTerminal && commissionStatus.commission.fulfillment_state !== "completed" && commissionStatus.commission.fulfillment_state !== "failed" && <div className="generation-progress"><span className="spinner" /><div><strong>{commissionStatus.commission.fulfillment_state === "queued" ? "In the generation queue" : "The creator is generating your work"}</strong><span>This commission refreshes automatically.</span></div></div>}
+      {isGenerationInProgress(commissionStatus) && <div className="generation-progress"><span className="spinner" /><div><strong>{commissionStatus.commission.fulfillment_state === "queued" ? "In the generation queue" : "The creator is generating your work"}</strong><span>This commission refreshes automatically.</span></div></div>}
       {commissionStatus.failure_reason && <p className="error-box">{commissionStatus.failure_reason}</p>}
       {output?.uri && <div className="artifact-card"><p className="eyebrow">Completed artifact</p>{output.media_type.startsWith("video/") ? <video className="commission-artifact" controls playsInline preload="metadata" aria-label="Completed commissioned creation"><source src={output.uri} type={output.media_type} /></video> : output.media_type.startsWith("image/") ? <img className="commission-artifact" src={output.uri} alt="Completed commissioned creation" /> : <a href={output.uri} target="_blank" rel="noreferrer">Open completed artifact ↗</a>}{output.page_url && <a className="secondary-button" href={output.page_url} target="_blank" rel="noreferrer">View and share on Populi ↗</a>}<code>{output.sha256}</code></div>}
       {provenance && <div className="provenance-status"><span>✓</span><div><strong>Signed provenance verified</strong><code>{provenance.provenance_record_id}</code><code>{provenance.outputs.map((item) => item.sha256).join(", ")}</code>{provenance.public_attribution && <span>Public credit: {provenance.public_attribution}</span>}</div></div>}
