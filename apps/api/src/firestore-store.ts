@@ -248,6 +248,17 @@ export class FirestoreStore implements VoxStore {
     return snapshot.exists ? snapshot.data() as AgentRecord : undefined;
   }
 
+  async listPopuliLivestreamAgents(limit: number): Promise<AgentRecord[]> {
+    const boundedLimit = Math.min(Math.max(Math.trunc(limit) || 10, 1), 10);
+    const snapshot = await this.agents
+      .where("profile.livestream.provider", "==", "populi")
+      .get();
+    return snapshot.docs
+      .map((document) => document.data() as AgentRecord)
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at))
+      .slice(0, boundedLimit);
+  }
+
   async updateAgentProfile(agentId: string, update: AgentProfileUpdateV1, profileHash: string, profile: AgentProfileRecord): Promise<AgentRecord> {
     const ref = this.agents.doc(agentId);
     return this.db.runTransaction(async (transaction) => {

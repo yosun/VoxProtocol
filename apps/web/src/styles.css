@@ -268,6 +268,8 @@ a { color: var(--blue-bright); text-decoration: none; }
 .live-now-heading .eyebrow { margin-bottom: 5px; }
 .live-now-heading h2 { display: flex; align-items: center; gap: 9px; margin: 0; color: #f0f2f8; font: 600 1.22rem 'Space Grotesk', sans-serif; letter-spacing: -.04em; text-transform: uppercase; }
 .live-now-count { padding-bottom: 2px; color: #7f899b; font: .62rem 'DM Mono', monospace; letter-spacing: .04em; text-align: right; }
+.live-now-tools { display: flex; align-items: center; gap: 13px; }
+.live-now-scroll-hint { color: #c6a55e; font: .6rem 'DM Mono', monospace; white-space: nowrap; }
 .live-now-pulse,.live-now-empty-dot { display: inline-block; width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #e36d76; box-shadow: 0 0 0 4px rgba(227,109,118,.12); }
 .live-now-track { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(260px, calc(50% - 7px)); gap: 14px; overflow-x: auto; overscroll-behavior-x: contain; padding: 1px 3px 7px; scroll-snap-type: x mandatory; scrollbar-color: #343b49 transparent; scrollbar-width: thin; }
 .live-stream-card { min-width: 0; overflow: hidden; scroll-snap-align: start; border: 1px solid #2c3340; border-radius: 14px; background: linear-gradient(150deg, rgba(25,30,41,.96), rgba(16,20,28,.98)); }
@@ -518,8 +520,9 @@ button { color: inherit; }
 .live-now-heading h2 { color: #fff2dc; font-size: 1.3rem; letter-spacing: -.05em; text-transform: none; }
 .live-now-description { max-width: 510px; margin: 7px 0 0; color: #8d8374; font-size: .71rem; line-height: 1.45; }
 .live-now-count { color: #9e917e; }
+.live-now-scroll-hint { color: #c6a55e; }
 .live-now-pulse { background: var(--coral); box-shadow: 0 0 0 4px rgba(223,128,103,.13); }
-.live-now-track { grid-auto-columns: minmax(300px, calc(52% - 7px)); gap: 17px; padding: 17px 0 9px; scrollbar-color: #5b4c36 transparent; }
+.live-now-track { grid-auto-columns: minmax(280px, calc(38% - 9px)); gap: 17px; padding: 17px 0 9px; scrollbar-color: #5b4c36 transparent; }
 .live-stream-card { border: 1px solid #453a2c; border-radius: 20px; background: #191713; box-shadow: 0 10px 25px rgba(0,0,0,.12); transition: border-color .18s, transform .18s; }
 .live-stream-card:hover { border-color: #91713b; transform: translateY(-2px); }
 .live-stream-media { aspect-ratio: 1.44 / 1; background: #090908; }
