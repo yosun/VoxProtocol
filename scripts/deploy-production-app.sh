@@ -90,7 +90,7 @@ deploy_service_candidate() {
     VOX_SMOKE_API_URL="$url" node scripts/smoke-production.mjs --api-only
   elif [[ "$candidate_url" == "settlement" ]]; then
     VOX_SMOKE_API_URL="$url" node --input-type=module -e '
-      const response = await fetch(`${process.env.VOX_SMOKE_API_URL}/healthz`, {signal: AbortSignal.timeout(15000)});
+      const response = await fetch(`${process.env.VOX_SMOKE_API_URL}/health`, {signal: AbortSignal.timeout(15000)});
       if (!response.ok) throw new Error(`Settlement candidate health returned HTTP ${response.status}`);
       const health = await response.json();
       if (health.status !== "ok" || health.service !== "vox-realize-settlement" || health.network !== "solana:mainnet-beta") throw new Error("Settlement candidate is not reporting production Mainnet health");

@@ -215,7 +215,9 @@ export function createSettlementApp(options: {token: string; processor: RealizeS
     if (error instanceof SettlementError) return reply.code(error.statusCode).send({error: error.message, code: error.code});
     return reply.code(500).send({error: "settlement request failed", code: "internal_error"});
   });
-  app.get("/healthz", async () => ({status: "ok", service: "vox-realize-settlement", network: "solana:mainnet-beta"}));
+  const health = async () => ({status: "ok", service: "vox-realize-settlement", network: "solana:mainnet-beta"});
+  app.get("/health", health);
+  app.get("/healthz", health);
   app.post("/v1/settlements", async (request, reply) => {
     const key = request.headers["idempotency-key"];
     if (typeof key !== "string") throw new SettlementError(400, "idempotency_key_required", "Idempotency-Key is required");
