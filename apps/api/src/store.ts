@@ -172,6 +172,15 @@ export class MemoryStore implements VoxStore {
     return clone(this.agents.get(agentId));
   }
 
+  async listPopuliLivestreamAgents(limit: number): Promise<AgentRecord[]> {
+    const boundedLimit = Math.min(Math.max(Math.trunc(limit) || 10, 1), 10);
+    return [...this.agents.values()]
+      .filter((agent) => agent.profile?.livestream?.provider === "populi")
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at))
+      .slice(0, boundedLimit)
+      .map(clone);
+  }
+
   async updateAgentProfile(agentId: string, update: AgentProfileUpdateV1, profileHash: string, profile: AgentProfileRecord): Promise<AgentRecord> {
     return this.mutex.runExclusive(async () => {
       const current = this.agents.get(agentId);

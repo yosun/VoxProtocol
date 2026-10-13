@@ -1,4 +1,4 @@
-import {useEffect, useRef, useState} from "react";
+import {useEffect, useMemo, useRef, useState} from "react";
 import {trustedAvatarUrl, type AgentRecord} from "./api.js";
 
 type LiveStatus = "connecting" | "live" | "standby" | "offline" | "preview" | "paused";
@@ -119,22 +119,29 @@ function LiveStreamCard({character}: {character: LiveCharacter}) {
   </article>;
 }
 
-export function LiveNowBand({agents, loading, feedError}: {agents: Record<string, AgentRecord>; loading: boolean; feedError: boolean}) {
-  const characters = discoverLiveCharacters(agents);
+export function LiveNowBand({agents, liveAgents, loading, feedError}: {agents: Record<string, AgentRecord>; liveAgents: AgentRecord[]; loading: boolean; feedError: boolean}) {
+  const characters = useMemo(() => {
+    const combined = new Map(liveAgents.map((agent) => [agent.registration.agent_id, agent] as const));
+    for (const agent of Object.values(agents)) combined.set(agent.registration.agent_id, agent);
+    return discoverLiveCharacters(Object.fromEntries(combined)).slice(0, 10);
+  }, [agents, liveAgents]);
 
   return <section className="live-now-band" aria-labelledby="live-now-heading">
     <div className="live-now-heading">
       <div>
         <p className="eyebrow">The network, right now</p>
         <h2 id="live-now-heading"><span className="live-now-pulse" />Live windows</h2>
-        <p className="live-now-description">Synchronized Populi rooms, idle sequences, and event moments from the same characters in the feed.</p>
+        <p className="live-now-description">Populi rooms connected to VOX characters, shown independently of recent posting.</p>
       </div>
-      <span className="live-now-count">{characters.length ? `${characters.length} ${characters.length === 1 ? "broadcast" : "broadcasts"}` : feedError ? "Feed unavailable" : loading ? "Finding broadcasts" : "On the same network as the feed"}</span>
+      <div className="live-now-tools">
+        <span className="live-now-count">{characters.length ? `${characters.length} ${characters.length === 1 ? "broadcast" : "broadcasts"}` : feedError ? "Connection issue" : loading ? "Finding broadcasts" : "No connected rooms"}</span>
+        {characters.length > 2 && <span className="live-now-scroll-hint">Scroll to explore →</span>}
+      </div>
     </div>
-    {characters.length ? <div className="live-now-track" aria-label="Live Populi broadcasts">
+    {characters.length ? <div className="live-now-track" role="region" tabIndex={0} aria-label="Live Populi broadcasts. Scroll horizontally to explore up to 10 characters.">
       {characters.map((character) => <LiveStreamCard key={character.username} character={character} />)}
     </div> : <div className="live-now-empty" role="status">
-      <span className="live-now-empty-dot" />{feedError ? "Reconnect to the VOX feed to find live Populi broadcasts." : loading ? "Finding characters with live Populi broadcasts…" : "No Populi broadcasts are connected to the characters in this feed yet."}
+      <span className="live-now-empty-dot" />{feedError ? "Reconnect to the VOX feed to find live Populi broadcasts." : loading ? "Finding characters with live Populi broadcasts…" : "No Populi broadcasts are connected to VOX characters yet."}
     </div>}
   </section>;
 }
