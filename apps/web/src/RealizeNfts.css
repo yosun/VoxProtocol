@@ -1,0 +1,15 @@
+.realize-nfts { display: grid; gap: 16px; }
+.realize-nfts .nft-status-card { padding: 20px; border: 1px solid #494130; border-radius: 16px; background: #1c1b18; }
+.realize-nfts .nft-status-heading { display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 14px; margin-bottom: 20px; }
+.realize-nfts .nft-status-heading strong { display: block; font-size: 18px; }
+.realize-nfts .nft-status-heading a, .realize-nfts .nft-chain-status a { color: #efd17a; font-size: 13px; text-decoration: underline; text-underline-offset: 3px; }
+.realize-nfts .nft-chain-statuses { display: grid; gap: 12px; }
+.realize-nfts .nft-chain-status { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding-top: 14px; border-top: 1px solid #35322a; }
+.realize-nfts .nft-chain-status > span:first-child { min-width: 100px; color: #c9c3b4; font-size: 14px; }
+.realize-nfts .nft-chain-status > strong { flex: 1; min-width: 140px; font-size: 14px; }
+.realize-nfts .nft-status-card > p { margin: 16px 0 0; line-height: 1.5; }
+@media (max-width: 480px) {
+  .realize-nfts .nft-status-card { padding: 16px; }
+  .realize-nfts .nft-chain-status > span:first-child { min-width: 80px; }
+  .realize-nfts .nft-chain-status a { flex-basis: 100%; }
+}

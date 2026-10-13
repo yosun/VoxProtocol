@@ -128,6 +128,7 @@ export class MemoryStore implements VoxStore {
   protected readonly realizePaymentSignatures = new Map<string, string>();
   protected readonly realizeProvenance = new Map<string, ProvenanceRecordV1>();
   protected readonly nftMedia = new Map<string, NftMediaRecord>();
+  private readonly nftChainLeases = new Map<string, {owner: string; expires: number}>();
   protected readonly nftMints = new Map<string, NftMintRecord>();
   protected readonly realizeWebhookDeliveries = new Map<string, RealizeWebhookDeliveryRecord>();
   protected readonly rightsAgreements = new Map<string, RightsAgreementRecord>();
@@ -1024,6 +1025,21 @@ export class MemoryStore implements VoxStore {
     });
   }
 
+  async claimNftChain(chain: import("./types.js").NftChain, ownerId: string, leaseSeconds: number): Promise<boolean> {
+    return this.mutex.runExclusive(async () => {
+      const current = this.nftChainLeases.get(chain);
+      if (current && current.expires > Date.now()) return false;
+      this.nftChainLeases.set(chain, {owner: ownerId, expires: Date.now() + leaseSeconds * 1000});
+      return true;
+    });
+  }
+
+  async releaseNftChain(chain: import("./types.js").NftChain, ownerId: string): Promise<void> {
+    await this.mutex.runExclusive(async () => {
+      if (this.nftChainLeases.get(chain)?.owner === ownerId) this.nftChainLeases.delete(chain);
+    });
+  }
+
   async getNftMedia(mediaId: string): Promise<NftMediaRecord | undefined> {
     return clone(this.nftMedia.get(mediaId));
   }
@@ -1074,6 +1090,8 @@ export class MemoryStore implements VoxStore {
       if (!current) throw new Error("NFT mint not found");
       if (current.updated_at !== expectedUpdatedAt) throw new Error("NFT mint changed concurrently");
       if (current.media_id !== record.media_id || current.chain !== record.chain || current.owner_id !== record.owner_id || current.metadata_uri !== record.metadata_uri || current.metadata_hash !== record.metadata_hash) throw new Error("immutable NFT mint terms changed");
+      if (current.owner_wallet && current.owner_wallet.toLowerCase() !== record.owner_wallet?.toLowerCase()) throw new Error("NFT owner wallet binding is immutable");
+      if (current.state === "finalized" && record.state !== "finalized") throw new Error("finalized NFT state is immutable");
       this.nftMints.set(record.mint_id, clone(record));
       await this.afterMutation();
       return clone(record);

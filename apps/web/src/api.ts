@@ -333,6 +333,7 @@ export interface RealizeProvenance {
 
 export interface NftMintStatus {
   mint_id: string;
+  created_at: string;
   chain: string;
   state: "queued" | "claimable" | "signing" | "signed" | "submitted" | "finalized" | "retryable_failure" | "manual_review";
   owner_wallet?: string;
@@ -359,6 +360,7 @@ export interface NftMediaStatus {
   provenance_record_id?: string;
   metadata_uri: string;
   metadata_hash: string;
+  created_at: string;
   mints: NftMintStatus[];
 }
 
@@ -457,7 +459,9 @@ export const api = {
   realizeCommission: (commissionId: string, headers: Record<string, string>) => request<RealizeCommissionStatus>(`/v1/realize/commissions/${encodeURIComponent(commissionId)}`, {headers}),
   realizeAccountCommissions: (limit: number, headers: Record<string, string>) => request<{items: RealizeAccountCommission[]}>(`/v1/realize/commissions?limit=${encodeURIComponent(String(limit))}`, {headers}),
   realizeProvenance: (provenanceId: string) => request<RealizeProvenance>(`/v1/realize/provenance/${encodeURIComponent(provenanceId)}`),
-  nftMedia: (mediaId: string) => request<NftMediaStatus>(`/v1/nft/media/${encodeURIComponent(mediaId)}`),
+  nftMedia: (mediaId: string) => request<NftMediaStatus>(`/v1/nft/media/${encodeURIComponent(mediaId)}`, {cache: "no-store"}),
+  syncNftMint: (mintId: string, headers: Record<string, string>) => request<NftMediaStatus>(`/v1/nft/mints/${encodeURIComponent(mintId)}/sync`, {method: "POST", headers, body: "{}"}),
+  claimNftMint: (mintId: string, body: unknown, headers: Record<string, string>) => request<{mint_id: string; chain: string; state: string; owner_wallet?: string}>(`/v1/nft/mints/${encodeURIComponent(mintId)}/claim`, {method: "POST", headers, body: JSON.stringify(body)}),
   quote: (id: string, input: {requesterId: string; generationDescription: string; style: string; durationSeconds: number}) => request<QuoteResponse>(`/v1/posts/${encodeURIComponent(id)}/realize/quote`, {method: "POST", body: JSON.stringify({requester_id: input.requesterId, generation_description: input.generationDescription, style: input.style, duration_seconds: input.durationSeconds})}),
   restoreQuote: (postId: string, quoteId: string, requesterId: string) => request<QuoteResponse>(`/v1/posts/${encodeURIComponent(postId)}/realize/quotes/${encodeURIComponent(quoteId)}?requester_id=${encodeURIComponent(requesterId)}`),
   realize: (input: {quoteId: string; postId: string; requesterId: string; paymentReference: string; paymentSignature?: string; publicAttribution?: string}) => request<RealizationResponse>("/v1/realizations", {method: "POST", body: JSON.stringify({quote_id: input.quoteId, post_id: input.postId, requester_id: input.requesterId, payment_reference: input.paymentReference, ...(input.paymentSignature ? {payment_signature: input.paymentSignature} : {}), ...(input.publicAttribution ? {public_attribution: input.publicAttribution} : {})})}),
