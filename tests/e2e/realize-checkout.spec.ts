@@ -580,6 +580,7 @@ test("mints a chosen completed output on Monad and keeps refreshing after settle
   await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
   await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
   await dialog.getByRole("button", {name: "Continue to payment"}).click();
+  await expect(dialog.getByRole("button", {name: "Mint on Monad"})).toHaveCount(0);
   await dialog.getByRole("button", {name: "Pay 1.00 USDC"}).click();
   await expect(dialog.getByRole("button", {name: "Mint on Monad"})).toHaveCount(2);
   await dialog.getByRole("button", {name: "Mint on Monad"}).nth(1).click();

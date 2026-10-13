@@ -156,6 +156,7 @@ describe("cross-chain NFT entitlements", () => {
     app = await buildApp({store, publicBaseUrl: "https://vox.example.test", nftService: service});
     const status = await app.inject(`/v1/nft/media/${encodeURIComponent(media.media_id)}`);
     expect(status.statusCode).toBe(200);
+    expect(status.headers["cache-control"]).toBe("no-store");
     expect(status.json().media_id).toBe(media.media_id);
     expect(status.json().mints).toHaveLength(3);
     const metadata = await app.inject(`/v1/nft/metadata/${encodeURIComponent(media.media_id)}`);
