@@ -593,11 +593,11 @@ submitted.
   one collaborator, so the ruleset requires no separate pull request approval;
   the production deployment has its own required reviewer gate.
 - GitHub environment `production-sensitive` now requires reviewer `yosun` and
-  only permits protected branches. The selective workflow profile
+  only permits protected branches; administrator bypass is disabled. The
+  selective workflow profile
   `realize-refund-settlement` runs tests and mocked checkout E2E, then targets
   only `vox-realize-settlement` and the `vox-realize-reconcile` job. The
   environment approval occurs before GCP authentication, image build, or service
-  promotion. GitHub administrators retain the platform's ability to bypass
-  environment rules.
+  promotion.
 - The selective production workflow has not been dispatched yet. No production
   deployment, Mainnet payment, payout, or refund was made during this setup.
