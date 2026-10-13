@@ -76,6 +76,7 @@ export function RealizeNfts({mediaIds, identity}: {mediaIds: string[]; identity:
     {media.length === 0 && !error && <p role="status">Loading your NFT records…</p>}
     {media.map((record) => <div className="nft-status-card" key={record.media_id}>
       <div className="nft-status-heading"><div><p className="eyebrow">Your creation · Output {record.output_index + 1}</p><strong>Mint your creation</strong></div><a href={record.media_page_url ?? `/media/${encodeURIComponent(record.media_id)}`} target="_blank" rel="noreferrer">Open VOX media page ↗</a></div>
+      <p><a className="nft-output-link" href={record.media_uri} target="_blank" rel="noreferrer">Preview this output ↗</a></p>
       <div className="nft-chain-statuses">{record.mints.map((mint) => {
         const monad = mint.chain.startsWith("monad:");
         const tokenUrl = monad && mint.state === "finalized" && mint.asset_address && mint.token_id ? `https://${mint.chain === "monad:testnet" ? "testnet." : ""}monadscan.com/token/${mint.asset_address}?a=${mint.token_id}` : undefined;

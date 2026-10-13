@@ -69,6 +69,30 @@ firestoreDescribe("Firestore emulator transactional integration", () => {
     await database.terminate();
   });
 
+  it("serializes NFT signer leases across independent processors", async () => {
+    const first = newStore();
+    const second = newStore();
+    const claims = await Promise.all([first.claimNftChain("monad:testnet", "nft-worker-a", 300), second.claimNftChain("monad:testnet", "nft-worker-b", 300)]);
+    expect(claims.filter(Boolean)).toHaveLength(1);
+    const winner = claims[0] ? "nft-worker-a" : "nft-worker-b";
+    await second.releaseNftChain("monad:testnet", "not-the-owner");
+    expect(await first.claimNftChain("monad:testnet", "nft-worker-c", 300)).toBe(false);
+    await first.releaseNftChain("monad:testnet", winner);
+    expect(await second.claimNftChain("monad:testnet", "nft-worker-c", 300)).toBe(true);
+    await second.releaseNftChain("monad:testnet", "nft-worker-c");
+  });
+
+  it("keeps NFT wallet bindings and finalized states immutable even within the same millisecond", async () => {
+    const first = newStore();
+    const second = newStore();
+    const timestamp = now();
+    const mint = {mint_id: `emulator:nft:${timestamp}`, media_id: "emulator:media", owner_id: "emulator:human", owner_wallet: "0x" + "1".repeat(40), chain: "monad:testnet" as const, state: "queued" as const, metadata_uri: "https://example.test/metadata", metadata_hash: "a".repeat(64), attempts: 0, created_at: timestamp, updated_at: timestamp};
+    await first.createNftMint(mint);
+    await expect(second.updateNftMint({...mint, owner_wallet: "0x" + "2".repeat(40)}, timestamp)).rejects.toThrow("wallet binding is immutable");
+    await first.updateNftMint({...mint, state: "finalized"}, timestamp);
+    await expect(second.updateNftMint(mint, timestamp)).rejects.toThrow("finalized NFT state is immutable");
+  });
+
   it("serializes concurrent publication and anchor claims across store instances", async () => {
     const firstStore = newStore();
     const secondStore = newStore();
