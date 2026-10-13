@@ -584,8 +584,20 @@ submitted.
   `20261012081652`. The production release classifier now selects this job
   whenever API or shared package code changes, so the protected release can
   update it with the API and settlement targets.
-- The GitHub repository `yosun/VoxProtocol` currently has no commits, branches,
-  or configured environments. Its production-sensitive reviewer gate is not
-  available yet, so the normal protected release cannot run from this
-  checkout. No production deployment or Mainnet transaction was made during
-  this check.
+- The public source snapshot was published to `yosun/VoxProtocol` at commit
+  `eda5dae`. Local Solana validator keypairs, the host-specific GCP project file,
+  and `.vox-local/` journals were excluded.
+- The `main` branch is protected by repository ruleset `protect-main-production-releases`:
+  pull requests are required, force-push/deletion are blocked, and the production
+  scope and test checks must pass against the latest commit. This repository has
+  one collaborator, so the ruleset requires no separate pull request approval;
+  the production deployment has its own required reviewer gate.
+- GitHub environment `production-sensitive` now requires reviewer `yosun` and
+  only permits protected branches; administrator bypass is disabled. The
+  selective workflow profile
+  `realize-refund-settlement` runs tests and mocked checkout E2E, then targets
+  only `vox-realize-settlement` and the `vox-realize-reconcile` job. The
+  environment approval occurs before GCP authentication, image build, or service
+  promotion.
+- The selective production workflow has not been dispatched yet. No production
+  deployment, Mainnet payment, payout, or refund was made during this setup.
