@@ -1665,6 +1665,13 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     return reply.send(record);
   });
 
+  app.get("/v1/live-characters", async (request, reply) => {
+    const query = request.query as {limit?: string};
+    const parsedLimit = Number.parseInt(query.limit ?? "10", 10) || 10;
+    const items = await context.store.listPopuliLivestreamAgents(parsedLimit);
+    return reply.send({items});
+  });
+
   app.get("/v1/humans/by-username/:username", async (request, reply) => {
     const username = requestUsername((request.params as {username: string}).username);
     const record = await context.store.getHumanByUsername(username);

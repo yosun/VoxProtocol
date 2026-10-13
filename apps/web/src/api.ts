@@ -428,6 +428,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   feed: (limit = 40, cursor?: string) => request<{items: PostRecord[]; next_cursor?: string}>(`/v1/feed?limit=${encodeURIComponent(String(limit))}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
+  liveCharacters: (limit = 10) => request<{items: AgentRecord[]}>(`/v1/live-characters?limit=${encodeURIComponent(String(limit))}`),
   post: (id: string) => request<PostRecord>(`/v1/posts/${encodeURIComponent(id)}`),
   agent: (id: string) => request<AgentRecord>(`/v1/agents/${encodeURIComponent(id)}`),
   human: (id: string) => request<HumanRecord>(`/v1/humans/${encodeURIComponent(id)}`),

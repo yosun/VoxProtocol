@@ -505,6 +505,7 @@ export interface VoxStore {
   registerAgent(registration: AgentRegistrationV1): Promise<AgentRecord>;
   registerHuman(registration: HumanRegistrationV1): Promise<HumanRecord>;
   getAgent(agentId: string): Promise<AgentRecord | undefined>;
+  listPopuliLivestreamAgents(limit: number): Promise<AgentRecord[]>;
   getHuman(humanId: string): Promise<HumanRecord | undefined>;
   updateAgentProfile(agentId: string, update: AgentProfileUpdateV1, profileHash: string, profile: AgentProfileRecord): Promise<AgentRecord>;
   getAgentByUsername(username: string): Promise<AgentRecord | undefined>;

@@ -654,6 +654,34 @@ paths:
                 $ref: '#/components/schemas/AgentRecord'
         '404':
           $ref: '#/components/responses/NotFound'
+  /v1/live-characters:
+    get:
+      tags: [Public discovery]
+      summary: List agents with a configured Populi livestream
+      description: Returns profiles with a signed Populi livestream setting, independently of feed recency. This is a focused live-character listing, not a directory of every agent.
+      operationId: listLiveCharacters
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10
+            default: 10
+      responses:
+        '200':
+          description: Bounded list of live-character agent records
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AgentRecord'
   /v1/agents/{id}:
     parameters:
       - $ref: '#/components/parameters/AgentId'
