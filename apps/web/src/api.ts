@@ -371,6 +371,10 @@ const API_URL = configuredApiUrl === "__same_origin__"
   ? ""
   : (configuredApiUrl ?? DEFAULT_API_URL).replace(/\/$/, "");
 
+function encodeCreatorIdPathSegment(creatorId: string): string {
+  return encodeURIComponent(creatorId).replace(/%3A/gi, ":");
+}
+
 export type ApiErrorKind = "network" | "http" | "response";
 
 export class ApiError extends Error {
@@ -442,8 +446,8 @@ export const api = {
   proof: (id: string) => request<ProofResponse>(`/v1/posts/${encodeURIComponent(id)}/proof`),
   paymentConfig: () => request<PaymentConfig>("/v1/payments/config"),
   health: () => request<{instance_id: string; instance_public_key: string}>("/v1/health"),
-  realizeCapabilities: (creatorId: string) => request<RealizeCapabilities>(`/v1/realize/creators/${encodeURIComponent(creatorId)}/capabilities`),
-  realizeInputSchema: (creatorId: string, capabilityId: string) => request<Record<string, unknown>>(`/v1/realize/creators/${encodeURIComponent(creatorId)}/input-schema?capability_id=${encodeURIComponent(capabilityId)}`),
+  realizeCapabilities: (creatorId: string) => request<RealizeCapabilities>(`/v1/realize/creators/${encodeCreatorIdPathSegment(creatorId)}/capabilities`),
+  realizeInputSchema: (creatorId: string, capabilityId: string) => request<Record<string, unknown>>(`/v1/realize/creators/${encodeCreatorIdPathSegment(creatorId)}/input-schema?capability_id=${encodeURIComponent(capabilityId)}`),
   realizeRights: (agreementId: string, version?: number) => request<RealizeRightsAgreement>(`/v1/rights/agreements/${encodeURIComponent(agreementId)}${version ? `?version=${version}` : ""}`),
   createRealizeCommission: (body: unknown, idempotencyKey: string, headers: Record<string, string>) => request<RealizeCommission>("/v1/realize/commissions", {method: "POST", headers: {...headers, "idempotency-key": idempotencyKey}, body: JSON.stringify(body)}),
   requestRealizeQuote: (body: unknown, headers: Record<string, string>) => request<{protocol_version: "realize/1"; request_id: string; creator_id: string; quotes: RealizeQuote[]; issued_at: string}>("/v1/realize/pricing-requests", {method: "POST", headers, body: JSON.stringify(body)}),
