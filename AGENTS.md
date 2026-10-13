@@ -74,8 +74,12 @@ browser test proves the live payment → generation → settlement flow has pass
   100% traffic to revision `vox-realize-settlement-00001-25s`; candidate
   `00002-hax` had no traffic. The reconciliation job still used image tag
   `20261012081652`. The current API image includes the refund-resolution routes,
-  but the updated settlement service still needs a protected release. The
-  public GitHub repository is empty and has no production-sensitive environment.
+  but the updated settlement service still needs a protected release. The source
+  snapshot is published in public repository `yosun/VoxProtocol`. Its `main`
+  branch requires pull requests and passing production scope/test checks. The
+  `production-sensitive` environment requires the repository owner to approve
+  the settlement release before GCP authentication. Do not bypass that gate or
+  deploy the settlement change directly; no production release has been run.
 
 ## Realize frontend verification
 
