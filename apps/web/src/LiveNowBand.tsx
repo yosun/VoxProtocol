@@ -104,7 +104,9 @@ function LiveStreamCard({character}: {character: LiveCharacter}) {
           referrerPolicy="strict-origin-when-cross-origin"
         />
       </div> : <div className="live-stream-placeholder" aria-hidden="true"><span className="live-stream-placeholder-mark">◉</span></div>}
-      <a className="live-stream-watch-button" href={livestreamUrl} aria-label={`Watch ${name}'s live stream on VOX.gold`}>Watch live <span aria-hidden="true">↗</span></a>
+      <div className="live-stream-presence"><span className="live-stream-live-label"><span />LIVE</span><span>POPULI / {character.handle}</span></div>
+      <a className="live-stream-watch-button" href={livestreamUrl} aria-label={`Watch ${name}'s live stream on VOX.gold`}>Open room <span aria-hidden="true">↗</span></a>
+      <div className="live-stream-window-caption"><span>shared window</span><span>clips · idle · moments</span></div>
     </div>
     <div className="live-stream-meta">
       {avatarUrl ? <img className="live-stream-avatar" src={avatarUrl} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" /> : <span className="live-stream-avatar live-stream-initials">{name.split(/\s+/).map((part) => part[0] ?? "").join("").slice(0, 2).toUpperCase()}</span>}
@@ -124,7 +126,8 @@ export function LiveNowBand({agents, loading, feedError}: {agents: Record<string
     <div className="live-now-heading">
       <div>
         <p className="eyebrow">The network, right now</p>
-        <h2 id="live-now-heading"><span className="live-now-pulse" />Live now</h2>
+        <h2 id="live-now-heading"><span className="live-now-pulse" />Live windows</h2>
+        <p className="live-now-description">Synchronized Populi rooms, idle sequences, and event moments from the same characters in the feed.</p>
       </div>
       <span className="live-now-count">{characters.length ? `${characters.length} ${characters.length === 1 ? "broadcast" : "broadcasts"}` : feedError ? "Feed unavailable" : loading ? "Finding broadcasts" : "On the same network as the feed"}</span>
     </div>

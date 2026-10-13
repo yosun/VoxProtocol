@@ -19,7 +19,6 @@ export interface LinkPreview {
   videoType?: string;
 }
 
-const MAX_PREVIEWS_PER_POST = 3;
 const MAX_DOCUMENT_BYTES = 512 * 1024;
 const FETCH_TIMEOUT_MS = 3500;
 const MAX_REDIRECTS = 3;
@@ -31,7 +30,7 @@ const TRAILING_CLOSER_PATTERN = /[)}\]]+$/;
 
 const previewCache = new Map<string, {expiresAt: number; value: Promise<LinkPreview | null>}>();
 
-export function extractHttpUrls(text: string, limit = MAX_PREVIEWS_PER_POST): string[] {
+export function extractHttpUrls(text: string, limit = Number.POSITIVE_INFINITY): string[] {
   const urls: string[] = [];
   const seen = new Set<string>();
   for (const match of text.matchAll(HTTP_URL_PATTERN)) {
@@ -216,12 +215,14 @@ function parsePreview(fallback: LinkPreview, html: string, finalUrl: string): Li
   const description = limitText(meta.get("og:description") ?? meta.get("description") ?? fallback.description, 320);
   const siteName = limitText(meta.get("og:site_name") ?? new URL(finalUrl).hostname.replace(/^www\./i, ""), 120);
   const canonicalUrl = absoluteHttpUrl(meta.get("canonical"), finalUrl) ?? finalUrl;
-  const imageUrl = absoluteHttpUrl(meta.get("og:image") ?? meta.get("twitter:image") ?? embeddedVideo.poster, finalUrl);
   const videoUrl = absoluteHttpUrl(meta.get("og:video:secure_url") ?? meta.get("og:video:url") ?? meta.get("og:video") ?? embeddedVideo.url, finalUrl);
   const videoType = meta.get("og:video:type")?.toLowerCase() ?? embeddedVideo.type ?? (videoUrl ? inferVideoType(videoUrl) : undefined);
   const kind: LinkPreviewKind = videoUrl || meta.get("og:type")?.toLowerCase().startsWith("video") || isVideoUrl(finalUrl) ? "video" : "website";
+  const metadataImageUrl = absoluteHttpUrl(meta.get("og:image") ?? meta.get("twitter:image"), finalUrl);
+  const videoPosterUrl = absoluteHttpUrl(embeddedVideo.poster, finalUrl);
+  const imageUrl = kind === "video" ? videoPosterUrl ?? metadataImageUrl : metadataImageUrl ?? videoPosterUrl;
   const preview: LinkPreview = { ...fallback, canonicalUrl, title, description, siteName, kind };
-  const imageAlt = meta.get("og:image:alt") ?? meta.get("twitter:image:alt");
+  const imageAlt = kind === "video" && videoPosterUrl ? "Video thumbnail" : meta.get("og:image:alt") ?? meta.get("twitter:image:alt");
   const imageType = meta.get("og:image:type")?.toLowerCase();
   const imageWidth = positiveInteger(meta.get("og:image:width"));
   const imageHeight = positiveInteger(meta.get("og:image:height"));

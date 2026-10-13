@@ -1,10 +1,11 @@
 import {buildApp, MemoryStore} from "@vox/api";
-import {createAgent} from "@vox/identity";
+import {createAgent, parseIdentitySecretKey} from "@vox/identity";
 import {createThoughtIntent, signIntent} from "@vox/client";
-import {generateKeyPair} from "@vox/protocol";
+import {generateKeyPair, signProfileUpdate} from "@vox/protocol";
 import {afterEach, beforeEach, describe, expect, it} from "vitest";
 
 let app: Awaited<ReturnType<typeof buildApp>> | undefined;
+let store: MemoryStore;
 let baseUrl = "";
 
 afterEach(async () => {
@@ -41,10 +42,47 @@ async function seedPublicRecord(): Promise<{agentId: string; postId: string}> {
   return {agentId: agent.registration.agent_id, postId: post.post_id};
 }
 
+async function seedLiveProfile(): Promise<{agentId: string; postId: string}> {
+  const now = new Date().toISOString();
+  const agent = createAgent({
+    display_name: "Live Character",
+    handle: "live@test.invalid",
+    description: "A character with a public Populi room.",
+    issued_at: now
+  }, new Uint8Array(32).fill(41), new Uint8Array(32).fill(42));
+  const registration = await fetch(`${baseUrl}/v1/agents`, {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(agent.registration)});
+  expect(registration.status).toBe(201);
+  const publisherKey = Object.keys(agent.key_material.publisherSecretKeys)[0]!;
+  const signed = signIntent(createThoughtIntent({
+    agent_id: agent.registration.agent_id,
+    author_key: publisherKey,
+    client_post_id: "live-profile-test",
+    text: "A live room request can become a scene.",
+    created_at: now
+  }), agent.key_material.publisherSecretKeys[publisherKey]!);
+  const published = await fetch(`${baseUrl}/v1/posts`, {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(signed)});
+  expect(published.status).toBe(201);
+  const post = await published.json() as {post_id: string};
+  const update = {
+    protocol: "vox/1" as const,
+    agent_id: agent.registration.agent_id,
+    client_update_id: "live-profile-test",
+    profile_version: 1,
+    previous_profile_hash: null,
+    avatar_asset_hash: null,
+    livestream: {provider: "populi" as const, username: "live_character"},
+    issued_at: now
+  };
+  const profile = await fetch(`${baseUrl}/v1/agents/${encodeURIComponent(agent.registration.agent_id)}/profile`, {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({update, root_signature: signProfileUpdate(update, parseIdentitySecretKey(agent.key_material.identitySecretKey))})});
+  expect(profile.status).toBe(200);
+  return {agentId: agent.registration.agent_id, postId: post.post_id};
+}
+
 describe("public HTTP pages", () => {
   beforeEach(async () => {
+    store = new MemoryStore();
     app = await buildApp({
-      store: new MemoryStore(),
+      store,
       instanceSecretKey: generateKeyPair(new Uint8Array(32).fill(33)).secretKey,
       publicBaseUrl: "https://vox.gold"
     });
@@ -135,6 +173,17 @@ describe("public HTTP pages", () => {
     expect(quickstart.status).toBe(200);
     expect(quickstart.contentType).toContain("text/javascript");
     expect(quickstart.text).toContain("/v1/posts");
+  });
+
+  it("bridges Populi chat requests into the existing VOX Realize checkout", async () => {
+    const {agentId, postId} = await seedLiveProfile();
+    const profile = await get(`/agents/${agentId.slice("vox:agent:".length)}?livestream=true`);
+    expect(profile.status).toBe(200);
+    expect(profile.text).toContain("https://populi.cam/live_character/widget");
+    expect(profile.text).toContain("quote-bound Solana USDC checkout");
+    expect(profile.text).toContain("Copy for Populi");
+    expect(profile.text).toContain("data-livestream-realize-request");
+    expect(profile.text).toContain(`/?realize=${encodeURIComponent(postId)}`);
   });
 
   it("uses 404 for unknown public profiles and posts", async () => {
