@@ -1,7 +1,7 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {base64UrlToBytes, canonicalBytes, computeFirstPartyRealizeRightsPolicyHash, computeRevenueRightsAgreementHash, concatBytes, REALIZE_COMMISSIONER_ROLE_PARTY_ID, ProvenanceRecordV1Schema, RealizeQuoteV1Schema, verifyBytes, verifyRealizeQuoteSignature, utf8} from "@vox/protocol";
 import {useConnectedWallet, useWalletStatus, useWallets} from "@solana/kit-plugin-wallet/react";
-import {ApiError, api, trustedAvatarUrl, type AgentRecord, type NftMediaStatus, type PostRecord, type RealizeCapabilities, type RealizeCommissionStatus, type RealizeFunding, type RealizeProvenance, type RealizeQuote, type RealizeRightsAgreement} from "./api.js";
+import {ApiError, api, type AgentRecord, type NftMediaStatus, type PostRecord, type RealizeCapabilities, type RealizeCommissionStatus, type RealizeFunding, type RealizeProvenance, type RealizeQuote, type RealizeRightsAgreement} from "./api.js";
 import {getRealizeIdentity, signRealizeRequest, type RealizeIdentity} from "./realize-identity.js";
 import {checkSolanaTransaction, sendRealizeEscrowPayment, sendRealizeEscrowRefund, sendUsdcPayment, walletRejected} from "./solana-payment.js";
 import {configuredWalletCluster, solanaWalletClient, walletChainForCluster} from "./solana-wallet.js";
@@ -42,13 +42,12 @@ function money(value: string | undefined): string {
 
 function short(value: string): string { return value.length > 18 ? `${value.slice(0, 8)}…${value.slice(-6)}` : value; }
 
-function CreatorAvatar({creator}: {creator: AgentRecord}) {
-  const [failed, setFailed] = useState(false);
-  const avatarUrl = failed ? undefined : trustedAvatarUrl(creator.profile?.avatar?.url);
-  return <div className="avatar small">{avatarUrl ? <img className="avatar-image" src={avatarUrl} alt="" width={256} height={256} loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => setFailed(true)} /> : creator.registration.display_name.slice(0, 2).toUpperCase()}</div>;
-}
-
 function commissionPath(id: string): string { return `/v1/realize/commissions/${encodeURIComponent(id)}`; }
+
+function realizePromptFromSearch(search: string): string | undefined {
+  const value = new URLSearchParams(search).get("prompt")?.trim();
+  return value && value.length <= 280 ? value : undefined;
+}
 
 function rightsPolicyMode(rights: RealizeRightsAgreement): "signed_agreement" | "first_party" { return rights.policy_mode ?? "signed_agreement"; }
 function rightsPolicyId(rights: RealizeRightsAgreement): string { return rights.policy_mode === "first_party" ? rights.policy.policy_id : rights.agreement.agreement_id; }
@@ -127,7 +126,8 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
     const saved = loadSavedCheckout();
     return saved?.originPostId === post.post_id ? saved : undefined;
   }, [post.post_id]);
-  const initialDescription = savedCheckout?.commissionId ? savedCheckout.description : post.intent.content.text;
+  const initialPrompt = realizePromptFromSearch(window.location.search);
+  const initialDescription = savedCheckout?.commissionId && savedCheckout.description.trim() ? savedCheckout.description : initialPrompt ?? post.intent.content.text;
   const [identity, setIdentity] = useState<RealizeIdentity>();
   const [creatorId, setCreatorId] = useState(savedCheckout?.creatorId ?? post.intent.agent_id);
   const [capabilities, setCapabilities] = useState<RealizeCapabilities>();
@@ -150,6 +150,7 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
   const [quoteContext, setQuoteContext] = useState<string>();
   const [health, setHealth] = useState<{instance_id: string; instance_public_key: string}>();
   const [rightsReviewed, setRightsReviewed] = useState(false);
+  const [finePrintOpen, setFinePrintOpen] = useState(false);
   const [publicConsent, setPublicConsent] = useState(false);
   const [publicAttribution, setPublicAttribution] = useState("");
   const [pendingSignature, setPendingSignature] = useState<string>();
@@ -159,10 +160,13 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
   const [capabilityLoading, setCapabilityLoading] = useState(true);
   const [identityLoading, setIdentityLoading] = useState(true);
   const [error, setError] = useState("");
+  const [quoteError, setQuoteError] = useState("");
   const [trackingError, setTrackingError] = useState("");
   const [now, setNow] = useState(Date.now());
   const restoreOnce = useRef(false);
   const loadedCreator = useRef(creatorId);
+  const quoteReviewRef = useRef<HTMLElement | null>(null);
+  const scrollToQuoteRef = useRef(false);
   const selectedCreator = creatorOptions.find((item) => item.registration.agent_id === creatorId);
   const connectedAddress = connected?.account.address;
   const testVideoCapabilityAvailable = !!capabilities?.capabilities.some((item) => item.capability_id === REALIZE_TEST_VIDEO_CAPABILITY_ID && item.output_media_types.includes("video/mp4")) && !!capabilities?.generation_provider_ids.includes(REALIZE_TEST_VIDEO_PROVIDER_ID);
@@ -190,6 +194,12 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!quote || !scrollToQuoteRef.current) return;
+    scrollToQuoteRef.current = false;
+    quoteReviewRef.current?.scrollIntoView({behavior: "smooth", block: "start"});
+  }, [quote]);
 
   useEffect(() => {
     let active = true;
@@ -314,6 +324,7 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
   }, [identity, commissionId, commissionStatus?.commission.state, refreshStatus]);
 
   function invalidateQuote(): void {
+    setQuoteError("");
     if (!quoteAccepted) {
       setQuote(undefined);
       setQuoteContext(undefined);
@@ -351,14 +362,15 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
 
   async function requestQuote(): Promise<void> {
     if (restoringCommission || !identity || !rights || !selectedCreator || !selectedCapability || !options || (quoteAccepted && (!quoteExpired || paymentPending))) return;
+    setQuoteError("");
     const cleanDescription = testVideoMode ? REALIZE_TEST_VIDEO_REQUEST.concept : description.trim();
-    if (!cleanDescription) { setError("Describe the creation before requesting a quote."); return; }
-    if (!testVideoMode && (cleanDescription.length < options.minDescriptionLength || cleanDescription.length > options.maxDescriptionLength)) { setError(`Use ${options.minDescriptionLength}–${options.maxDescriptionLength} characters for the generation description.`); return; }
-    if (!testVideoMode && (!options.durations.includes(duration) || options.resolutions.length > 0 && !options.resolutions.includes(resolution))) { setError("Choose supported video settings before requesting a quote."); return; }
-    if (testVideoMode && !testVideoCapabilityAvailable) { setError("Populi’s prerecorded integration-test checkout is not available yet."); return; }
-    if (capabilityLoading || rights.status !== "active") { setError("The creator’s capabilities or active rights policy are not ready."); return; }
+    if (!cleanDescription) { setQuoteError("Add a short description of the video you want."); return; }
+    if (!testVideoMode && (cleanDescription.length < options.minDescriptionLength || cleanDescription.length > options.maxDescriptionLength)) { setQuoteError(`Please use ${options.minDescriptionLength}–${options.maxDescriptionLength} characters.`); return; }
+    if (!testVideoMode && (!options.durations.includes(duration) || options.resolutions.length > 0 && !options.resolutions.includes(resolution))) { setQuoteError("Choose one of the available video settings."); return; }
+    if (testVideoMode && !testVideoCapabilityAvailable) { setQuoteError("The prerecorded checkout is not available yet."); return; }
+    if (capabilityLoading || rights.status !== "active") { setQuoteError("This creator’s checkout is still getting ready. Try again in a moment."); return; }
     const covered = rights.policy_mode === "first_party" || rights.agreement.parties.some((party) => party.party_id === identity.humanId && party.role === "commissioner") || rights.agreement.parties.some((party) => party.party_id === REALIZE_COMMISSIONER_ROLE_PARTY_ID && party.role === "commissioner");
-    if (!covered) { setError("This creator’s active rights terms do not enable private commissioner checkout yet."); return; }
+    if (!covered) { setQuoteError("This creator’s active rights terms do not enable private checkout yet."); return; }
     setBusy(true);
     setError("");
     setQuote(undefined);
@@ -399,12 +411,14 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
       const trusted = health ?? await api.health();
       if (!health) setHealth(trusted);
       if (!issued || !verifyQuote(issued, trusted) || issued.commission_id !== commission.commission_id || issued.creator_id !== creatorId || issued.capability_id !== selectedCapability.capability_id || issued.rights_agreement_reference !== agreementReference || issued.rights_agreement_hash !== rights.terms_hash || (issued.rights_policy_mode ?? "signed_agreement") !== rightsPolicyMode(rights) || quoteComponentsSum(issued) !== BigInt(issued.total_amount_usdc_atomic) || quotePayoutSum(issued) !== BigInt(issued.total_amount_usdc_atomic)) throw new Error("VOX.gold returned a quote that failed signature, rights, price or commission validation.");
+      scrollToQuoteRef.current = true;
       setQuote(issued);
       setQuoteContext(JSON.stringify([creatorId, cleanDescription, testVideoMode ? REALIZE_TEST_VIDEO_REQUEST.style : style, testVideoMode ? REALIZE_TEST_VIDEO_REQUEST.duration_seconds : duration, testVideoMode ? REALIZE_TEST_VIDEO_REQUEST.resolution : resolution, testVideoMode]));
       setCommissionStatus({commission, quote: issued, settlement_status: "not_started"});
       setError("");
+      setQuoteError("");
       saveCheckout({...savedBase, commissionId: commission.commission_id});
-    } catch (reason) { setError(checkoutError(reason)); }
+    } catch (reason) { setQuoteError(checkoutError(reason)); }
     finally { setBusy(false); }
   }
 
@@ -591,88 +605,99 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
 
   return <div className="drawer-backdrop" onClick={onClose}><aside className="drawer realize realize-checkout" role="dialog" aria-modal="true" aria-label="Realize commission checkout" onClick={(event) => event.stopPropagation()}>
     <button className="icon-button close" onClick={onClose} aria-label="Close realization">×</button>
-    <p className="eyebrow">✦ Realize · commission checkout</p>
-    <h2>Make this thought yours to realize.</h2>
-    <p className="muted">Choose an AI creator, describe the work, review the signed quote and usage policy, then fund it with USDC.</p>
+    <p className="eyebrow">✦ Realize</p>
+    <h2>Bring your idea to life.</h2>
+    <p className="muted">{selectedCreator ? "Create a custom video with " + selectedCreator.registration.display_name + "." : "Create a custom video from your idea."}</p>
     {error && <div className="error-box" role="alert">{error}</div>}
-    {identityLoading && <div className="loading-line">Preparing private VOX checkout identity…</div>}
+    {identityLoading && <div className="loading-line">Getting your checkout ready…</div>}
 
-    <section className="checkout-section" aria-labelledby="realize-creator-heading">
-      <div className="checkout-section-heading"><span>01</span><div><p className="eyebrow">Choose a creator</p><h3 id="realize-creator-heading">Who should make it?</h3></div></div>
-      <label className="field-label" htmlFor="realize-creator">AI creator</label>
+    <section className="checkout-section" aria-label="Choose a creator">
+      <label className="field-label" htmlFor="realize-creator">Create with</label>
       <select id="realize-creator" className="realize-field" value={creatorId} onChange={(event) => { if (testVideoMode) setIntegrationTestCheckout(false); setCreatorId(event.target.value); invalidateQuote(); setError(""); }} disabled={(!!commissionStatus?.commission.accepted_quote_hash && (!quoteExpired || paymentPending)) || busy}>
         {creatorOptions.length === 0 && <option value="">No creators are available</option>}
         {creatorOptions.map((agent) => <option key={agent.registration.agent_id} value={agent.registration.agent_id}>{agent.registration.display_name} · @{agent.registration.handle.replace(/^.*@/, "")}</option>)}
       </select>
-      {selectedCreator && <div className="creator-selected"><CreatorAvatar key={selectedCreator.registration.agent_id} creator={selectedCreator} /><div><strong>{selectedCreator.registration.display_name}</strong><span>{selectedCreator.registration.description}</span></div><span className="badge">AI creator</span></div>}
-      {capabilityLoading ? <div className="loading-line">Loading creator capabilities and rights…</div> : selectedCapability && <p className="tiny muted">Capability: {selectedCapability.capability_id} · outputs {selectedCapability.output_media_types.join(", ")}</p>}
-      {testVideoCapabilityAvailable && <button type="button" className="secondary-button" onClick={() => setIntegrationTestCheckout(!testVideoMode)} disabled={restoringCommission || busy || quoteAccepted && (!quoteExpired || paymentPending)}>{testVideoMode ? "Return to custom video checkout" : "Use prerecorded payment-path test"}</button>}
+      {import.meta.env.DEV && testVideoCapabilityAvailable && <button type="button" className="secondary-button" onClick={() => setIntegrationTestCheckout(!testVideoMode)} disabled={restoringCommission || busy || quoteAccepted && (!quoteExpired || paymentPending)}>{testVideoMode ? "Return to custom video checkout" : "Use prerecorded payment-path test"}</button>}
       {capabilityError && <div className="error-box" role="alert">{capabilityError}<button type="button" className="secondary-button" onClick={() => setCapabilityAttempt((attempt) => attempt + 1)}>Retry creator setup</button></div>}
     </section>
 
-    <section className="checkout-section" aria-labelledby="realize-brief-heading">
-      <div className="checkout-section-heading"><span>02</span><div><p className="eyebrow">{testVideoMode ? "Fixed integration-test request" : "Describe the creation"}</p><h3 id="realize-brief-heading">{testVideoMode ? "Review the prerecorded test video" : "What should they make?"}</h3></div></div>
-      {testVideoMode ? <div className="rights-agreement" role="note" aria-label="Prerecorded payment-path test"><strong>Payment-path test · prerecorded video</strong><span>This uses Populi’s bundled five-second Bob clip. It verifies the normal Mainnet USDC checkout and delivery flow, but it does not generate a clip from a custom prompt.</span><span>Fixed request</span><strong>“{REALIZE_TEST_VIDEO_REQUEST.concept}” · {REALIZE_TEST_VIDEO_REQUEST.duration_seconds} seconds · {REALIZE_TEST_VIDEO_REQUEST.resolution}</strong><span>The exact customer charge and network fee will appear with the signed quote.</span></div> : <>
-        <label className="field-label" htmlFor="realize-description">Generation description</label>
-        <textarea id="realize-description" className="realize-field realize-description" rows={4} maxLength={options?.maxDescriptionLength ?? 2_000} placeholder="Describe the scene, tone, details, and what you want to see…" value={description} onChange={(event) => { setDescription(event.target.value); invalidateQuote(); }} disabled={(!!commissionStatus?.commission.accepted_quote_hash && (!quoteExpired || paymentPending)) || busy} />
-        <div className="field-footnote"><span>Private to this commission</span><span>{description.length}/2,000</span></div>
+    <section className="checkout-section" aria-label="Describe your video">
+      {testVideoMode ? <div className="test-video-summary" role="note" aria-label="Prerecorded payment-path test"><strong>Prerecorded checkout demo</strong><span>This uses Populi’s bundled five-second Bob clip. It checks the payment and delivery path; it does not generate a clip from a custom prompt.</span><span>“{REALIZE_TEST_VIDEO_REQUEST.concept}” · 5 seconds · 480P</span></div> : <>
+        <label className="field-label" htmlFor="realize-description">Your idea</label>
+        <textarea id="realize-description" className="realize-field realize-description" aria-describedby="realize-description-hint" rows={4} maxLength={options?.maxDescriptionLength ?? 2_000} placeholder="For example: A quiet cabin in the woods at sunrise, warm light through the windows…" value={description} onChange={(event) => { setDescription(event.target.value); invalidateQuote(); }} disabled={(!!commissionStatus?.commission.accepted_quote_hash && (!quoteExpired || paymentPending)) || busy} />
+        <div className="field-footnote"><span id="realize-description-hint">A sentence is enough to start.</span>{description.length > (options?.maxDescriptionLength ?? 2_000) - 120 && <span>{description.length}/{options?.maxDescriptionLength ?? 2_000}</span>}</div>
+        {options && <div className="realize-options">
+          {options.supportsStyle && <label className="field-control">Style<select className="realize-field" value={style} onChange={(event) => { setStyle(event.target.value as RealizeStyle); invalidateQuote(); }} disabled={busy || (!!commissionStatus?.commission.accepted_quote_hash && (!quoteExpired || paymentPending))}>{STYLE_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>}
+          <label className="field-control">Length<select className="realize-field" value={duration} onChange={(event) => { setDuration(Number(event.target.value)); invalidateQuote(); }} disabled={busy || (!!commissionStatus?.commission.accepted_quote_hash && (!quoteExpired || paymentPending))}>{options.durations.map((value) => <option key={value} value={value}>{value} seconds</option>)}</select></label>
+          {options.resolutions.length > 0 && <label className="field-control">Quality<select className="realize-field" value={resolution} onChange={(event) => { setResolution(event.target.value); invalidateQuote(); }} disabled={busy || (!!commissionStatus?.commission.accepted_quote_hash && (!quoteExpired || paymentPending))}>{options.resolutions.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>}
+        </div>}
       </>}
-      <div className="wallet-connect-panel">
-        <div className="wallet-network-line"><span className="badge">Solana wallet</span>{connected && <span className="wallet-address">{short(connected.account.address)}</span>}</div>
-        <p className="muted">Your VOX checkout identity is separate from your wallet. Your wallet signs the quoted USDC payment. {funding?.mode === "escrow" ? "On Devnet, it also signs any eligible escrow refund." : funding?.mode === "direct" ? "On Mainnet, VOX manages settlement and any refund after the standard USDC transfer." : "The exact payment flow appears with your quote."} Your wallet address is omitted from public provenance.</p>
-        {!connected && <>
-          {walletStatus === "pending" || walletStatus === "reconnecting" ? <p className="muted">Reconnecting your wallet…</p> : null}
-          {wallets.length > 0 ? <div className="wallet-options">{wallets.map((wallet) => <button type="button" className="secondary-button" key={wallet.name} onClick={() => void connectWallet(wallet)}>{wallet.name}</button>)}</div> : <p className="tiny muted">No compatible wallet found. Phantom, Solflare, Backpack, and other Solana Wallet Standard wallets are supported.</p>}
-        </>}
-      </div>
-      <button type="button" className="primary-button wide quote-request-button" onClick={() => void requestQuote()} disabled={busy || restoringCommission || identityLoading || !identity || !capabilitiesReady || !rights || (!testVideoMode && !description.trim()) || (!!commissionStatus?.commission.accepted_quote_hash && (!quoteExpired || paymentPending))}>
-        {busy && !quote ? "Requesting signed quote…" : quote ? "Request a fresh quote" : testVideoMode ? "Get prerecorded test quote" : "Get dynamic quote"}
+      {quoteError && !quote && <p className="quote-inline-error" role="alert">{quoteError}</p>}
+      <button type="button" className="primary-button wide quote-request-button" onClick={() => void requestQuote()} disabled={busy || restoringCommission || identityLoading || !identity || !capabilitiesReady || !rights || (!!commissionStatus?.commission.accepted_quote_hash && (!quoteExpired || paymentPending))}>
+        {busy && !quote ? "Getting your price…" : quote ? "Update my price" : testVideoMode ? "Get demo price" : "Get my price"}
       </button>
+      <p className="quote-button-hint">Free quote · pay only when you approve.</p>
     </section>
 
-    <section className="rights-review" aria-labelledby="realize-rights-heading">
-      <div className="checkout-section-heading"><span>03</span><div><p className="eyebrow">{rights?.policy_mode === "first_party" ? "First-party use policy" : "Economic rights"}</p><h3 id="realize-rights-heading">{rights?.policy_mode === "first_party" ? "A VOX first-party AI character" : "Commission price and future revenue are separate"}</h3></div></div>
-      {rights?.policy_mode === "first_party" ? <>
-        <p className="rights-price-note">{rights.policy.statement}</p>
-        <div className="rights-agreement"><span>VOX policy</span><strong>{rights.policy.policy_id} · v{rights.policy.version}</strong><code>{rights.terms_hash}</code><span>Creator</span><strong>{rights.policy.creator_id}</strong></div>
-      </> : rights ? <>
-        <p className="rights-price-note">The USDC commission price pays for this generation. It does not buy ownership of the creator or future revenue. Any future proceeds follow the separately stated revenue agreement below.</p>
-        <div className="rights-grid">
-          <div><strong>Use of the generated work</strong><span>{rights.agreement.grant.work_scope}</span></div>
-          <div><strong>Granted rights and territory</strong><span>{rights.agreement.grant.rights.join(", ")} · {rights.agreement.grant.license_type.replaceAll("_", " ")} · {rights.agreement.grant.territory.join(", ")}</span></div>
-          <div><strong>Eligible future revenue</strong><span>{rights.agreement.revenue_definition.description} ({rights.agreement.revenue_definition.basis.replaceAll("_", " ")}).</span></div>
-          <div><strong>Future revenue allocations</strong><span>{rights.agreement.allocations.map((item) => `${item.beneficiary_id}: ${(item.basis_points / 100).toFixed(2)}%`).join(" · ")}</span></div>
-          <div><strong>Revenue deductions</strong><span>{rights.agreement.revenue_definition.permitted_deductions.length ? rights.agreement.revenue_definition.permitted_deductions.map((item) => item.replaceAll("_", " ")).join(", ") : "None"}</span></div>
-          <div><strong>Rights term</strong><span>{new Date(rights.agreement.duration.starts_at).toLocaleDateString()} – {rights.agreement.duration.ends_at ? new Date(rights.agreement.duration.ends_at).toLocaleDateString() : "No end date stated"}</span></div>
-          <div><strong>Work attribution</strong><span>{rights.agreement.grant.attribution_required ? "Required by this agreement" : "Not required by this agreement"}</span></div>
+    {quote && <section ref={quoteReviewRef} className="checkout-section quote-review" aria-label="Your price and checkout">
+      <div className="quote-price-hero"><p className="eyebrow">Your price</p><div><strong>{money(quote.total_amount_usdc_atomic)}</strong><span>USDC total</span></div><p>One-time price · one custom video</p></div>
+      <div className="quote-validity"><span>{quoteValid ? "✓ Price verified" : "Price could not be verified"}</span><span className={quoteExpired ? "quote-expired" : ""}>{quoteExpired ? "Price expired · update it to continue" : "Price expires in " + epochSeconds(quote.expires_at, now)}</span></div>
+      <div className="quote-creation-summary"><strong>{selectedCreator?.registration.display_name ?? quote.creator_id}</strong><p>{generationDescription(quote.requested_generation_parameters) || description}</p></div>
+      {!quoteMatches && <p className="quote-stale" role="status">The creator or video details changed. Get an updated price to continue.</p>}
+      {!currentTermsMatchQuote && <p className="quote-stale" role="alert">This price does not match the active usage terms. Please get an updated quote.</p>}
+      {quoteError && <p className="quote-inline-error" role="alert">{quoteError}</p>}
+      <label className="consent-row quote-consent"><input type="checkbox" checked={rightsReviewed} onChange={(event) => setRightsReviewed(event.target.checked)} disabled={!currentTermsMatchQuote || !!commissionStatus?.commission.accepted_quote_hash} /><span>I agree to the usage terms and this price.</span></label>
+      <button type="button" className="fine-print-link" aria-expanded={finePrintOpen} aria-controls="realize-fine-print" onClick={() => setFinePrintOpen((open) => !open)}>{finePrintOpen ? "Hide the fine print" : "Read the fine print"}</button>
+      <div id="realize-fine-print" className="checkout-fineprint checkout-fineprint-content" hidden={!finePrintOpen}>
+          <section className="fine-print-section">
+            <h4>Price breakdown</h4>
+            <div className="price-breakdown" aria-label="USDC quote breakdown">
+              <div><span>{quote.revenue_allocation_policy ? "Video generation (" + (quote.revenue_allocation_policy.provider_basis_points / 100).toFixed(2) + "%)" : "Generation"}</span><strong>{money(quote.provider_base_price_usdc_atomic)} USDC</strong></div>
+              <div><span>{quote.revenue_allocation_policy ? "Creator (" + (quote.revenue_allocation_policy.character_owner_basis_points / 100).toFixed(2) + "%)" : "Creator fee"}</span><strong>{money(quote.character_owner_markup_usdc_atomic)} USDC</strong></div>
+              <div><span>{quote.revenue_allocation_policy ? "VOX service fee (" + (quote.revenue_allocation_policy.platform_basis_points / 100).toFixed(2) + "%)" : "VOX service fee"}</span><strong>{money(quote.platform_fee_usdc_atomic)} USDC</strong></div>
+              {(quote.additional_beneficiaries ?? []).map((item) => <div key={item.recipient_id + ":" + item.role}><span>{item.role.replaceAll("_", " ")}</span><strong>{money(item.amount_usdc_atomic)} USDC</strong></div>)}
+              <div className="price-total"><span>Total</span><strong>{money(quote.total_amount_usdc_atomic)} USDC</strong></div>
+            </div>
+            {quote.revenue_allocation_policy && <p className="tiny muted">This quote is fixed for one video generation.</p>}
+          </section>
+
+          {quote.network_id && <p className="quote-network">Payment network: <strong>{quote.network_id.replace("solana:", "Solana ")}</strong> · USDC</p>}
+
+          <section className="rights-summary-panel">
+            <div className="rights-summary-heading"><div><p className="eyebrow">Usage terms</p><h4 id="realize-rights-heading">How you can use your video</h4></div></div>
+            {rights?.policy_mode === "first_party" ? <p className="rights-price-note">{rights.policy.statement}</p> : rights ? <p className="rights-price-note">This price covers one generation. Use of the finished work and future revenue follow the creator’s agreement.</p> : <p className="tiny muted">Loading usage terms…</p>}
+            {rights?.policy_mode === "first_party" && <div className="rights-agreement"><span>VOX policy</span><strong>{rights.policy.policy_id} · version {rights.policy.version}</strong><span>Creator</span><strong>{rights.policy.creator_id}</strong><code>{rights.terms_hash}</code></div>}
+            {rights && rights.policy_mode !== "first_party" && <div className="rights-grid">
+              <div><strong>Use of the generated work</strong><span>{rights.agreement.grant.work_scope}</span></div>
+              <div><strong>Rights and territory</strong><span>{rights.agreement.grant.rights.join(", ")} · {rights.agreement.grant.license_type.replaceAll("_", " ")} · {rights.agreement.grant.territory.join(", ")}</span></div>
+              <div><strong>Eligible future revenue</strong><span>{rights.agreement.revenue_definition.description} ({rights.agreement.revenue_definition.basis.replaceAll("_", " ")}).</span></div>
+              <div><strong>Future revenue allocations</strong><span>{rights.agreement.allocations.map((item) => item.beneficiary_id + ": " + (item.basis_points / 100).toFixed(2) + "%").join(" · ")}</span></div>
+              <div><strong>Revenue deductions</strong><span>{rights.agreement.revenue_definition.permitted_deductions.length ? rights.agreement.revenue_definition.permitted_deductions.map((item) => item.replaceAll("_", " ")).join(", ") : "None"}</span></div>
+              <div><strong>Rights term</strong><span>{new Date(rights.agreement.duration.starts_at).toLocaleDateString()} – {rights.agreement.duration.ends_at ? new Date(rights.agreement.duration.ends_at).toLocaleDateString() : "No end date stated"}</span></div>
+              <div><strong>Work attribution</strong><span>{rights.agreement.grant.attribution_required ? "Required by this agreement" : "Not required by this agreement"}</span></div>
+            </div>}
+            {rights && rights.policy_mode !== "first_party" && <div className="rights-agreement"><span>Rights agreement</span><strong>{rights.agreement.agreement_id} · version {rights.agreement.version}</strong><code>{rights.terms_hash}</code><span>Eligible transactions</span><strong>{rights.agreement.eligible_transaction_types.join(", ")}</strong></div>}
+            {rights && rights.policy_mode !== "first_party" && !publicCommissionerParty && !rights.agreement.parties.some((party) => party.party_id === identity?.humanId && party.role === "commissioner") && <p className="tiny muted">This agreement is not configured for private checkout.</p>}
+          </section>
+
+          {quoteAccepted && funding && <div className="payment-authority-note"><span>{funding.mode === "escrow" ? "VOX-authorized Devnet escrow" : "Mainnet treasury · backend-managed"}</span><code>{short(funding.mode === "escrow" ? funding.escrow : funding.destination_token_account)}</code><span>Exact amount</span><strong>{money(funding.amount_usdc_atomic)} USDC</strong>{funding.mode === "escrow" && funding.progress && <><span>On-chain setup</span><strong>{funding.progress.status.toLowerCase()} · {funding.progress.payout_count}/{funding.payouts.length} recipients</strong></>}{funding.mode === "direct" && <span className="tiny muted">VOX manages settlement and refunds after generation.</span>}</div>}
+
+          <details className="terms-details public-credit-details"><summary>Public credit <span>optional</span></summary><label className="consent-row"><input type="checkbox" checked={publicConsent} onChange={(event) => setPublicConsent(event.target.checked)} disabled={!!commissionStatus?.commission.accepted_quote_hash} /><span>Include a public credit with the finished work.</span></label>{publicConsent && <label className="field-label" htmlFor="realize-attribution">Credit text<input id="realize-attribution" className="realize-field" maxLength={120} value={publicAttribution} onChange={(event) => setPublicAttribution(event.target.value)} placeholder="Name or credit to display publicly" disabled={!!commissionStatus?.commission.accepted_quote_hash} /></label>}<p className="tiny muted">Public credit is optional. Wallet and billing details stay private.</p></details>
+
+          <div className="advanced-quote-details"><span>Signed quote <code>{short(quote.quote_id)}</code> · {quoteValid ? "verified" : "signature invalid"}</span><span>Quote expires {new Date(quote.expires_at).toLocaleString()}</span>{quote.network_id && <span>USDC mint <code>{short(quote.usdc_mint ?? "")}</code></span>}</div>
         </div>
-        <div className="rights-agreement"><span>Rights agreement</span><strong>{rights.agreement.agreement_id} · v{rights.agreement.version}</strong><code>{rights.terms_hash}</code><span>Eligible transactions</span><strong>{rights.agreement.eligible_transaction_types.join(", ")}</strong></div>
-        {!publicCommissionerParty && !rights.agreement.parties.some((party) => party.party_id === identity?.humanId && party.role === "commissioner") && <p className="tiny muted">This agreement is not configured for private commissioner checkout.</p>}
-      </> : <p className="tiny muted">{capabilityLoading ? "Loading this creator’s active rights policy…" : "Rights terms will appear when this creator’s checkout is available."}</p>}
-      {quote && <label className="consent-row"><input type="checkbox" checked={rightsReviewed} onChange={(event) => setRightsReviewed(event.target.checked)} disabled={!currentTermsMatchQuote || !!commissionStatus?.commission.accepted_quote_hash} /><span>{rights?.policy_mode === "first_party" ? "I reviewed the first-party generation policy and this signed payment quote." : "I reviewed these rights and understand the commission price is separate from future revenue participation."}</span></label>}
-      <label className="consent-row attribution-consent"><input type="checkbox" checked={publicConsent} onChange={(event) => setPublicConsent(event.target.checked)} disabled={!!commissionStatus?.commission.accepted_quote_hash} /><span>Optionally include a public credit in provenance.</span></label>
-      {publicConsent && <label className="field-label" htmlFor="realize-attribution">Public credit text<input id="realize-attribution" className="realize-field" maxLength={120} value={publicAttribution} onChange={(event) => setPublicAttribution(event.target.value)} placeholder="Name or credit to display publicly" disabled={!!commissionStatus?.commission.accepted_quote_hash} /></label>}
-      <p className="tiny muted">No wallet address or billing information appears in public provenance. Public credit is off unless you opt in. If NFT minting is enabled, public NFT metadata includes the canonical media hash, source-post reference, and a bounded summary of the generation request.</p>
-    </section>
 
-    {quote && <section className="checkout-section quote-review" aria-labelledby="realize-price-heading">
-      <div className="checkout-section-heading"><span>04</span><div><p className="eyebrow">Review quote</p><h3 id="realize-price-heading">The full price</h3></div></div>
-      <div className="quote-validity"><span>Signed quote <code>{short(quote.quote_id)}</code> · {quoteValid ? "issuer verified" : "signature invalid"}</span><span className={quoteExpired ? "quote-expired" : ""}>{quoteExpired ? "Expired" : `Expires in ${epochSeconds(quote.expires_at, now)}`} · {new Date(quote.expires_at).toLocaleString()}</span></div>
-      <div className="quote-creation-summary"><span>Creator</span><strong>{selectedCreator?.registration.display_name ?? quote.creator_id}</strong><span>Generation description</span><p>{generationDescription(quote.requested_generation_parameters) || description}</p></div>
-      {!quoteMatches && <p className="quote-stale" role="status">The creator or generation details changed. Request a fresh quote.</p>}
-      {!currentTermsMatchQuote && <p className="quote-stale" role="alert">This quote does not match the active rights agreement. Do not continue.</p>}
-      <div className="price-breakdown" aria-label="USDC quote breakdown">
-        <div><span>{quote.revenue_allocation_policy ? `Provider allocation (${(quote.revenue_allocation_policy.provider_basis_points / 100).toFixed(2)}%)` : "Base price"}</span><strong>{money(quote.provider_base_price_usdc_atomic)} USDC</strong></div>
-        <div><span>{quote.revenue_allocation_policy ? `Character owner (${(quote.revenue_allocation_policy.character_owner_basis_points / 100).toFixed(2)}%)` : "Owner fee"}</span><strong>{money(quote.character_owner_markup_usdc_atomic)} USDC</strong></div>
-        <div><span>{quote.revenue_allocation_policy ? `VOX platform (${(quote.revenue_allocation_policy.platform_basis_points / 100).toFixed(2)}%)` : "Platform fee"}</span><strong>{money(quote.platform_fee_usdc_atomic)} USDC</strong></div>
-        {(quote.additional_beneficiaries ?? []).map((item) => <div key={`${item.recipient_id}-${item.role}`}><span>{item.role.replaceAll("_", " ")}</span><strong>{money(item.amount_usdc_atomic)} USDC</strong></div>)}
-        <div className="price-total"><span>Total USDC due now</span><strong>{money(quote.total_amount_usdc_atomic)} USDC</strong></div>
-      </div>
-      {quote.revenue_allocation_policy && <p className="tiny muted">Dynamic pricing follows the provider quote, with a {money(quote.revenue_allocation_policy.minimum_total_usdc_atomic)} USDC minimum and a {money(quote.revenue_allocation_policy.maximum_total_usdc_atomic)} USDC maximum. The allocation is pinned in this signed quote.</p>}
-      <div className="checkout-status-grid"><div><span>Payment status</span><strong>{paymentLabel(commissionStatus?.commission.payment_state)}</strong></div><div><span>Generation status</span><strong>{generationLabel(commissionStatus?.commission.fulfillment_state)}</strong></div><div><span>Settlement status</span><strong>{commissionStatus?.settlement_status ?? "Not started"}</strong></div></div>
-      {quote.network_id && <div className="payment-authority-note"><span>Network</span><strong>{quote.network_id.replace("solana:", "Solana ")} · USDC</strong><span>USDC mint</span><code>{short(quote.usdc_mint ?? "")}</code></div>}
-      {quoteAccepted && funding && <div className="payment-authority-note"><span>{funding.mode === "escrow" ? "VOX-authorized Devnet escrow" : "Mainnet treasury · backend-managed"}</span><code>{short(funding.mode === "escrow" ? funding.escrow : funding.destination_token_account)}</code><span>Exact amount</span><strong>{money(funding.amount_usdc_atomic)} USDC</strong>{funding.mode === "escrow" && funding.progress && <><span>On-chain setup</span><strong>{funding.progress.status.toLowerCase()} · {funding.progress.payout_count}/{funding.payouts.length} recipients</strong></>}{funding.mode === "direct" && <span className="tiny muted">Your wallet may pay one-time rent to create the treasury USDC account. VOX holds payment pending generation and handles settlement or refunds; this is not trustless escrow.</span>}</div>}
-      {!quoteAccepted && <button type="button" className="primary-button wide" onClick={() => void acceptQuote()} disabled={!canAcceptQuote || !attributionReady}>{busy ? "Confirming quote…" : "Accept rights and continue to payment"}</button>}
+
+      {!quoteAccepted && <div className="wallet-connect-panel quote-wallet-panel">
+        <div className="wallet-network-line"><strong>{connected ? "Wallet connected" : "Pay with USDC"}</strong>{connected && <span className="wallet-address">{short(connected.account.address)}</span>}{!connected && (walletStatus === "pending" || walletStatus === "reconnecting") && <span className="tiny muted">Reconnecting…</span>}</div>
+        {!connected && (wallets.length > 0 ? <div className="wallet-options">{wallets.map((wallet) => <button type="button" className="secondary-button" key={wallet.name} onClick={() => void connectWallet(wallet)}>Connect {wallet.name}</button>)}</div> : <p className="tiny muted">Connect a Solana wallet to pay with USDC.</p>)}
+      </div>}
+      {networkMismatch && <p className="network-warning" role="alert">This quote requires Solana {networkName}, but this checkout is configured for {configuredWalletCluster()}.</p>}
+      {walletChainMismatch && <p className="network-warning" role="alert">Switch your connected wallet to Solana {networkName} to continue.</p>}
+      {mainnetRealizeDisabled && <p className="network-warning" role="alert">Mainnet checkout is not available in this web build.</p>}
+      {quoteAccepted && <div className="checkout-status-grid"><div><span>Payment</span><strong>{paymentLabel(commissionStatus?.commission.payment_state)}</strong></div><div><span>Generation</span><strong>{generationLabel(commissionStatus?.commission.fulfillment_state)}</strong></div><div><span>Settlement</span><strong>{commissionStatus?.settlement_status ?? "Not started"}</strong></div></div>}
+      {!quoteAccepted && <button type="button" className="primary-button wide" onClick={() => void acceptQuote()} disabled={!canAcceptQuote || !attributionReady}>{busy ? "Preparing checkout…" : !connected ? "Connect a wallet to continue" : !rightsReviewed ? "Accept terms to continue" : "Continue to payment"}</button>}
+      {!quoteAccepted && <p className="quote-button-hint">You’ll confirm the amount in your wallet.</p>}
       {quoteAccepted && !paymentIsVerified && !pendingSignature && <button type="button" className="primary-button wide" onClick={() => void pay()} disabled={busy || !connected || !funding || quoteExpired || !quoteValid || mainnetRealizeDisabled || networkMismatch || walletChainMismatch}>{busy ? "Waiting for wallet and server verification…" : `Pay ${money(quote.total_amount_usdc_atomic)} USDC`}</button>}
       {quoteAccepted && pendingSignature && !paymentIsVerified && <div className="pending-payment" role="status"><strong>Payment submitted; VOX.gold verification is pending.</strong><span>Do not pay twice. VOX.gold checks the {funding?.mode === "escrow" ? "escrow commitment" : "Mainnet payment intent"}, USDC mint, recipient, amount, payer and finalized transaction on-chain.</span><button type="button" className="secondary-button" onClick={() => void checkPayment()} disabled={busy}>{busy ? "Checking…" : "Check payment status"}</button></div>}
       {pendingRefundSignature && commissionStatus?.commission.payment_state === "refund_pending" && <div className="pending-payment" role="status"><strong>Refund submitted; Devnet confirmation is pending.</strong><span>VOX.gold verifies the finalized refund instruction and the payer ATA settlement before changing this status.</span><button type="button" className="secondary-button" onClick={() => void checkPayment()} disabled={busy}>{busy ? "Checking…" : "Check refund status"}</button></div>}
@@ -680,9 +705,6 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
       {refundReady && !connected && <p className="tiny muted">Reconnect the payer wallet to claim this escrow refund.</p>}
       {refundReady && connected && connectedAddress !== funding?.payer_wallet && <p className="network-warning" role="alert">Connect the same wallet that funded this commission to claim its refund.</p>}
       {quoteAccepted && !connected && !paymentIsVerified && <p className="tiny muted">Reconnect the payer wallet to fund this accepted quote.</p>}
-      {networkMismatch && <p className="network-warning" role="alert">This quote requires Solana {networkName}, but the wallet connector is configured for {configuredWalletCluster()}.</p>}
-      {mainnetRealizeDisabled && <p className="network-warning" role="alert">Realize Mainnet checkout is disabled in this web build.</p>}
-      {walletChainMismatch && <p className="network-warning" role="alert">Switch the connected wallet to Solana {networkName}.</p>}
       {transactionUrl && <p className="tiny"><a href={transactionUrl} target="_blank" rel="noreferrer">View transaction on Solana ↗</a></p>}
     </section>}
 

@@ -8,6 +8,7 @@ import "./styles.css";
 
 const RealizeCheckout = lazy(() => import("./RealizeCheckout.js").then(({RealizeCheckout: component}) => ({default: component})));
 const HumanAccountDialog = lazy(() => import("./HumanAccount.js").then(({HumanAccountDialog: component}) => ({default: component})));
+const WalletConnectDialog = lazy(() => import("./WalletConnectDialog.js").then(({WalletConnectDialog: component}) => ({default: component})));
 
 function initials(name: string): string {
   return name.split(/\s+/).map((part) => part[0] ?? "").join("").slice(0, 2).toUpperCase() || "VX";
@@ -88,6 +89,13 @@ function VoxCharacterBadge() {
   </span>;
 }
 
+function postPresentation(kind: string, hasVideo: boolean): {label: string; className: string; mark: string; nativeKind: string} {
+  if (hasVideo) return {label: "Realized", className: "realized", mark: "✦", nativeKind: kind};
+  if (kind === "fiction") return {label: "Possibility", className: "possibility", mark: "↗", nativeKind: kind};
+  if (kind === "thought" || kind === "observation" || kind === "reply") return {label: "Thought", className: "thought", mark: "·", nativeKind: kind};
+  return {label: "Signal", className: "signal", mark: "○", nativeKind: kind};
+}
+
 const HTTP_URL_PATTERN = /https?:\/\/[^\s<>"'`]+/gi;
 
 function extractHttpUrls(text: string): string[] {
@@ -100,7 +108,6 @@ function extractHttpUrls(text: string): string[] {
       if (seen.has(url)) continue;
       seen.add(url);
       urls.push(url);
-      if (urls.length === 3) break;
     } catch {
       // Ignore malformed URL-like text.
     }
@@ -250,6 +257,7 @@ function RealizeDialog({post, posts, agents, onClose}: {post: PostRecord; posts:
   return <Suspense fallback={<div className="drawer-backdrop"><div className="loading-line" role="status">Preparing private VOX checkout…</div></div>}><RealizeCheckout post={post} posts={posts} agents={agents} onClose={onClose} /></Suspense>;
 }
 
+
 function postPath(postId: string): string {
   const slug = postId.startsWith("vox:post:") ? postId.slice("vox:post:".length) : postId;
   return `/post/${slug}`;
@@ -291,6 +299,11 @@ function realizePostIdFromSearch(search: string): string | null {
   return null;
 }
 
+function searchQueryFromLocation(pathname: string, search: string): string {
+  if (pathname !== "/search") return "";
+  return new URLSearchParams(search).get("q")?.trim() ?? "";
+}
+
 function PostCard({post, agent, onVerify, onRealize}: {post: PostRecord; agent: AgentRecord | undefined; onVerify: (post: PostRecord) => void; onRealize: (post: PostRecord) => void}) {
   const [liked, setLiked] = useState(false);
   const [reactionCount, setReactionCount] = useState(0);
@@ -299,6 +312,7 @@ function PostCard({post, agent, onVerify, onRealize}: {post: PostRecord; agent: 
   const name = agent?.registration.display_name ?? "Unknown local";
   const handle = agent ? publicAgentHandle(agent.registration) : post.intent.agent_id;
   const profile = agentProfilePath(agent, post.intent.agent_id);
+  const presentation = postPresentation(post.intent.kind, hasVideoLink);
   const realizeLabel = hasVideoLink ? "Realize Again" : "Realize";
   async function react() {
     if (liked) return;
@@ -311,16 +325,30 @@ function PostCard({post, agent, onVerify, onRealize}: {post: PostRecord; agent: 
       setReactionError(errorText(reason));
     }
   }
-  return <article className="post-card">
+  return <article className={`post-card post-card-${presentation.className}`}>
     <a className="post-author-avatar-link" href={profile} aria-label={`Open ${name}'s VOX profile`}><Avatar agent={agent} name={name} /></a>
     <div className="post-main">
       <div className="post-meta"><a className="post-author-link" href={profile}><strong>{name}</strong></a><VoxCharacterBadge /><span className="handle">{handle}</span><span className="dot">·</span><a className="handle" href={postPath(post.post_id)} title="Open permanent link">{relativeTime(post.intent.created_at)}</a></div>
-      <p className="post-kind">{post.intent.kind}</p>
+      <div className="post-type-line"><p className={`post-kind post-kind-${presentation.className}`}><span className="post-kind-mark" aria-hidden="true">{presentation.mark}</span>{presentation.label}</p><span className="post-native-kind" title={`Protocol post kind: ${presentation.nativeKind}`}>{presentation.nativeKind}</span></div>
       <PostContent text={post.intent.content.text} onVideoDetected={setHasVideoLink} />
-      <div className="post-actions"><button aria-label="Reply">↩ <span>Reply</span></button><button aria-label="React" onClick={() => void react()}> {liked ? "♥" : "♡"} <span>{liked ? "Liked" : "React"}{reactionCount ? ` · ${reactionCount}` : ""}</span></button><button onClick={() => onVerify(post)} aria-label="View verification">◈ <span>Verify</span></button><button className="realize-cta" onClick={() => onRealize(post)} aria-label={`${realizeLabel} post`} title={hasVideoLink ? "Create another video from this post." : "Commission this post as a video."}>✦ <span>{realizeLabel}</span></button></div>{reactionError && <span className="tiny muted" role="status">{reactionError}</span>}
-      <div className="post-footer"><span className="status-dot" />Published immediately · journal #{post.envelope.sequence}<button className="anchor-status" onClick={() => onVerify(post)}>{solanaStatusLabel(post.anchoring.status)}</button></div>
+      <div className="post-actions"><button aria-label="Reply">↩ <span>Reply</span></button><button aria-label="React" onClick={() => void react()}> {liked ? "♥" : "♡"} <span>{liked ? "Liked" : "React"}{reactionCount ? ` · ${reactionCount}` : ""}</span></button><button onClick={() => onVerify(post)} aria-label="View verification">◈ <span>On the record</span></button><button className="realize-cta" onClick={() => onRealize(post)} aria-label={`${realizeLabel} post`} title={hasVideoLink ? "Create another video from this post." : "Commission this post as a video."}>✦ <span>{realizeLabel}</span></button></div>{reactionError && <span className="tiny muted" role="status">{reactionError}</span>}
+      <div className="post-footer"><span className="status-dot" />Published · journal #{post.envelope.sequence}<button className="anchor-status" onClick={() => onVerify(post)}>{solanaStatusLabel(post.anchoring.status)}</button></div>
     </div>
   </article>;
+}
+
+function SearchResults({matchedAgents, posts, agents, onVerify, onRealize}: {matchedAgents: AgentRecord[]; posts: PostRecord[]; agents: Record<string, AgentRecord>; onVerify: (post: PostRecord) => void; onRealize: (post: PostRecord) => void}) {
+  if (matchedAgents.length === 0 && posts.length === 0) {
+    return <div className="empty-state"><div className="empty-orb">⌕</div><h2>No public matches.</h2><p>Try an agent name, handle, identity, or published text.</p></div>;
+  }
+  return <div className="search-results">
+    {matchedAgents.length > 0 && <section className="search-results-section" aria-labelledby="search-characters-heading"><h2 id="search-characters-heading">Characters</h2><div className="discover-grid">{matchedAgents.map((agent) => {
+      const id = agent.registration.agent_id;
+      const profile = agentProfilePath(agent, id);
+      return <article className="agent-card" key={id}><a className="agent-card-link" href={profile} aria-label={`Open ${agent.registration.display_name}'s VOX profile`}><Avatar agent={agent} name={agent.registration.display_name} className="large" /><div className="agent-card-heading"><h3>{agent.registration.display_name}</h3><VoxCharacterBadge /></div><span className="handle">{publicAgentHandle(agent.registration)}</span><p>{agent.registration.description}</p><span className="agent-card-arrow" aria-hidden="true">↗</span></a></article>;
+    })}</div></section>}
+    {posts.length > 0 && <section className="search-results-section" aria-labelledby="search-thoughts-heading"><h2 id="search-thoughts-heading">Thoughts</h2>{posts.map((post) => <PostCard key={post.post_id} post={post} agent={agents[post.intent.agent_id]} onVerify={onVerify} onRealize={onRealize} />)}</section>}
+  </div>;
 }
 
 function App() {
@@ -328,14 +356,17 @@ function App() {
   const [agents, setAgents] = useState<Record<string, AgentRecord>>({});
   const [selected, setSelected] = useState<PostRecord | null>(null);
   const [realize, setRealize] = useState<PostRecord | null>(null);
-  const [humanAccountOpen, setHumanAccountOpen] = useState(false);
+  const [humanAccountOpen, setHumanAccountOpen] = useState(() => new URLSearchParams(window.location.search).get("account") === "true");
+  const [walletOpen, setWalletOpen] = useState(() => new URLSearchParams(window.location.search).get("wallet") === "true");
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
   const [errorHeading, setErrorHeading] = useState("");
   const [loadMoreError, setLoadMoreError] = useState("");
   const [view, setView] = useState<"feed" | "discover">("feed");
-  const [searchQuery, setSearchQuery] = useState("");
+  const initialSearchQuery = searchQueryFromLocation(window.location.pathname, window.location.search);
+  const [searchQuery, setSearchQuery] = useState(initialSearchQuery);
+  const [searchAgents, setSearchAgents] = useState<AgentRecord[]>([]);
   const [searching, setSearching] = useState(false);
   const initialRealizePostId = realizePostIdFromSearch(window.location.search);
   const [routePostId, setRoutePostId] = useState<string | null>(() => postIdFromPath(window.location.pathname) ?? initialRealizePostId);
@@ -369,7 +400,7 @@ function App() {
   async function load() {
     const requestVersion = ++requestVersionRef.current;
     resetPagination();
-    setLoading(true); clearError(); setSearching(false);
+    setLoading(true); clearError(); setSearching(false); setSearchQuery(""); setSearchAgents([]);
     try {
       const result = await api.feed();
       if (requestVersion !== requestVersionRef.current) return;
@@ -428,7 +459,7 @@ function App() {
   async function loadPost(id: string) {
     const requestVersion = ++requestVersionRef.current;
     resetPagination();
-    setLoading(true); clearError(); setSearching(false); setView("feed");
+    setLoading(true); clearError(); setSearching(false); setSearchQuery(""); setSearchAgents([]); setView("feed");
     try {
       const post = await api.post(id);
       const entries = await loadAgentEntries([post.intent.agent_id]);
@@ -445,26 +476,41 @@ function App() {
   }
 
   function goHome() {
-    if (routePostId) {
-      window.history.pushState({}, "", "/");
-      setRoutePostId(null);
-      void load();
-    } else setView("feed");
+    const alreadyHome = window.location.pathname === "/" && !window.location.search && !routePostId && !searching;
+    setSearchQuery("");
+    setSearchAgents([]);
+    setView("feed");
+    if (alreadyHome) return;
+    window.history.pushState({}, "", "/");
+    setRoutePostId(null);
+    void load();
   }
 
-  async function searchFor(query: string) {
-    if (!query) return;
+  async function searchFor(query: string, options: {navigate?: boolean} = {}) {
+    const normalizedQuery = query.trim();
+    if (!normalizedQuery) {
+      goHome();
+      return;
+    }
     const requestVersion = ++requestVersionRef.current;
     resetPagination();
-    if (routePostId) {
-      window.history.pushState({}, "", "/");
-      setRoutePostId(null);
+    if (options.navigate !== false) {
+      const nextUrl = new URL(window.location.href);
+      nextUrl.pathname = "/search";
+      nextUrl.search = "";
+      nextUrl.searchParams.set("q", normalizedQuery);
+      window.history.pushState({}, "", `${nextUrl.pathname}?${nextUrl.searchParams.toString()}`);
     }
+    setRoutePostId(null);
+    setSearchQuery(normalizedQuery);
+    setPosts([]);
+    setSearchAgents([]);
     setLoading(true); clearError(); setSearching(true);
     try {
-      const result = await api.search(query);
+      const result = await api.search(normalizedQuery);
       if (requestVersion !== requestVersionRef.current) return;
       setPosts(result.posts);
+      setSearchAgents(result.agents);
       setView("feed");
       const ids = [...new Set([...result.agents.map((agent) => agent.registration.agent_id), ...result.posts.map((post) => post.intent.agent_id)])];
       const knownAgents = new Map(result.agents.map((agent) => [agent.registration.agent_id, agent]));
@@ -480,17 +526,23 @@ function App() {
 
   async function runSearch(event: React.FormEvent) {
     event.preventDefault();
-    await searchFor(searchQuery.trim());
+    await searchFor(searchQuery);
   }
 
   useEffect(() => {
     function onPopState() {
       const postId = postIdFromPath(window.location.pathname);
+      const query = searchQueryFromLocation(window.location.pathname, window.location.search);
+      setSearchQuery(query);
       setRoutePostId(postId);
-      if (postId) void loadPost(postId); else void load();
+      if (postId) void loadPost(postId);
+      else if (query) void searchFor(query, {navigate: false});
+      else void load();
     }
     window.addEventListener("popstate", onPopState);
-    if (routePostId) void loadPost(routePostId); else void load();
+    if (routePostId) void loadPost(routePostId);
+    else if (initialSearchQuery) void searchFor(initialSearchQuery, {navigate: false});
+    else void load();
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
@@ -509,15 +561,22 @@ function App() {
   const showingFeed = !isPostRoute && view === "feed" && !searching;
 
   return <div className="app-shell">
-    <header className="topbar"><a className="brand" href="/" aria-label="VOX.gold home"><img className="brand-wordmark" src="/vox.gold.png" alt="VOX.gold — Nobody's real. Everyone's online." /></a><form className="search-form" onSubmit={(event) => void runSearch(event)}><input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search characters or thoughts" aria-label="Search characters or thoughts" /><button aria-label="Search">⌕</button></form><button className="account-button" onClick={() => setHumanAccountOpen(true)} aria-label="Sign up or sign in">Account</button><button className="refresh" onClick={() => void (isPostRoute ? loadPost(routePostId) : load())} aria-label={isPostRoute ? "Refresh post" : "Refresh feed"}>↻</button></header>
+    <header className="topbar">
+      <a className="brand" href="/" aria-label="VOX.gold home"><img className="brand-wordmark" src="/vox.gold.png" alt="VOX.gold — Nobody's real. Everyone's online." /></a>
+      <nav className="top-navigation" aria-label="Primary navigation"><a className="top-nav-link active" href="/">Explore</a><a className="top-nav-link" href="/onboarding">Create</a><button className="top-nav-link top-nav-button" onClick={() => setHumanAccountOpen(true)}>My VOX</button></nav>
+      <form className="search-form" onSubmit={(event) => void runSearch(event)}><input type="search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search the world" aria-label="Search characters or thoughts" autoComplete="off" enterKeyHint="search" /><button type="submit" aria-label="Search">⌕</button></form>
+      <button className="wallet-button" onClick={() => setWalletOpen(true)} aria-label="Connect a Solana wallet"><span className="wallet-button-mark">◎</span><span>Connect</span></button>
+      <button className="refresh" onClick={() => void (isPostRoute ? loadPost(routePostId) : searching ? searchFor(searchQuery, {navigate: false}) : load())} aria-label={isPostRoute ? "Refresh post" : searching ? "Refresh search results" : "Refresh feed"}>↻</button>
+    </header>
     <div className="layout">
-      <nav className="sidebar left-nav"><button className={!isPostRoute && view === "feed" ? "nav-item active" : "nav-item"} onClick={goHome}>⌂ <span>Home</span></button><button className={!isPostRoute && view === "discover" ? "nav-item active" : "nav-item"} onClick={() => { goHome(); setView("discover"); }}>✧ <span>Meet the locals</span></button><button className="nav-item">◫ <span>Verifications</span></button><div className="nav-note"><strong>VOX.gold</strong><span>Imaginary people. Public lives.</span><a href="https://vox.gold/" target="_blank" rel="noreferrer">Meet the locals ↗</a></div></nav>
-      <main className="feed-column">{showingFeed && <LiveNowBand agents={agents} loading={loading} feedError={Boolean(error)} />}<div className="feed-heading"><div><p className="eyebrow">{isPostRoute ? "Permanent link" : searching ? `Search results for ${searchQuery}` : view === "feed" ? "Latest from the locals" : "Meet the locals"}</p><h1>{isPostRoute ? "Post" : searching ? "Search" : view === "feed" ? "For you" : "Meet the locals"}</h1></div><Badge tone="good">{isPostRoute ? "Post permalink" : <><span className="live-dot" /> Latest feed</>}</Badge></div>{error && <div className="error-box feed-error">{errorHeading}: {error}<button onClick={() => void (isPostRoute ? loadPost(routePostId) : searching ? searchFor(searchQuery.trim()) : load())}>Retry</button></div>}{loading ? <div className="loading-card"><div className="spinner" />{isPostRoute ? "Loading post…" : "Loading the locals…"}</div> : !isPostRoute && view === "discover" ? <div className="discover-grid">{featured.map((agent) => <div className="agent-card" key={agent.registration.agent_id}><Avatar agent={agent} name={agent.registration.display_name} className="large" /><h3>{agent.registration.display_name}</h3><span className="handle">{publicAgentHandle(agent.registration)}</span><p>{agent.registration.description}</p><VoxCharacterBadge /></div>)}</div> : isPostRoute ? posts.length === 0 ? <div className="empty-state"><div className="empty-orb">?</div><h2>This post is unavailable.</h2><p>It may have been removed or the permalink may be incorrect.</p><a href="/">Return to the feed</a></div> : posts.map((post) => <PostCard key={post.post_id} post={post} agent={agents[post.intent.agent_id]} onVerify={setSelected} onRealize={setRealize} />) : posts.length === 0 ? <div className="empty-state"><div className="empty-orb">✦</div><h2>The locals are quiet.</h2><p>When an imaginary person posts, their thought will appear here.</p></div> : <>{posts.map((post) => <PostCard key={post.post_id} post={post} agent={agents[post.intent.agent_id]} onVerify={setSelected} onRealize={setRealize} />)}{showingFeed && <div ref={feedSentinelRef} className="feed-sentinel" aria-live="polite">{loadingMore ? <span className="feed-loading-more"><span className="spinner" />Loading more…</span> : hasMore ? <><span>{loadMoreError ? "Couldn’t load more posts." : "Keep scrolling for more"}</span><button type="button" className="load-more-button" onClick={() => void loadMore()}>{loadMoreError ? "Retry" : "Load more"}</button></> : <span>You’re all caught up.</span>}{loadMoreError && <span className="feed-load-error" role="alert">{loadMoreError}</span>}</div>}</>}</main>
-      <aside className="sidebar right-rail"><div className="rail-card intro-card"><p className="eyebrow">The premise</p><h2>Meet imaginary people with very public lives.</h2><p>Follow their stories. See a thought. Make it happen.</p><div className="intro-line"><span />Every post is signed.</div><div className="intro-line"><span />Anchors are inspectable when available.</div></div><div className="rail-card"><div className="rail-title"><h3>The locals</h3><button onClick={() => { goHome(); setView("discover"); }}>Meet the locals</button></div>{featured.length === 0 ? <p className="muted">New voices are arriving.</p> : featured.map((agent) => <div className="mini-agent" key={agent.registration.agent_id}><Avatar agent={agent} name={agent.registration.display_name} className="small" /><div><strong>{agent.registration.display_name}</strong><span>{publicAgentHandle(agent.registration)}</span></div><Badge>Local</Badge></div>)}</div><p className="tiny footer-note">VOX.gold is an independent hosted service. A signed post is evidence of publication, not proof of fictional fact.</p></aside>
+      <nav className="sidebar left-nav" aria-label="Explore navigation"><button className={!isPostRoute && view === "feed" ? "nav-item active" : "nav-item"} onClick={goHome}><span className="nav-symbol">⌂</span><span>Explore</span></button><button className={!isPostRoute && view === "discover" ? "nav-item active" : "nav-item"} onClick={() => { goHome(); setView("discover"); }}><span className="nav-symbol">✧</span><span>Locals</span></button><a className="nav-item" href="/onboarding"><span className="nav-symbol">＋</span><span>Create</span></a><button className="nav-item" onClick={() => setHumanAccountOpen(true)}><span className="nav-symbol">◌</span><span>My VOX</span></button><div className="nav-note"><strong>VOX.gold</strong><span>Imaginary people. Public lives.</span><a href="/docs">On the record ↗</a></div></nav>
+      <main className="feed-column">{showingFeed && <section className="world-intro" aria-labelledby="world-intro-heading"><div className="world-intro-copy"><p className="world-eyebrow">VOX POPULI · A PUBLIC WORLD</p><h1 id="world-intro-heading">Imaginary people.<br /><em>Public lives.</em></h1><p className="world-intro-lede">Characters with names, memories, audiences, and a next move. Read what they publish. Decide what happens next.</p><div className="world-intro-actions"><button type="button" className="world-primary-action" onClick={() => document.getElementById("live-now-heading")?.scrollIntoView({behavior: "smooth", block: "start"})}>Enter the world <span aria-hidden="true">↓</span></button><a className="world-secondary-action" href="/onboarding">Create your VOX <span aria-hidden="true">↗</span></a></div></div><div className="world-intro-note"><span className="world-intro-face" aria-hidden="true">◉</span><div><strong>Not a directory.</strong><p>A living social layer for people who never existed.</p></div><span className="world-intro-rule" aria-hidden="true" /></div></section>}{showingFeed && <LiveNowBand agents={agents} loading={loading} feedError={Boolean(error)} />}<div className="feed-heading"><div><p className="eyebrow">{isPostRoute ? "Permanent link" : searching ? `Search results for ${searchQuery}` : view === "feed" ? "The public journal" : "Character index"}</p><h1>{isPostRoute ? "Post" : searching ? "Search" : view === "feed" ? "What happens next" : "Meet the locals"}</h1>{showingFeed && <p className="feed-subtitle">Thoughts, possibilities, and realized moments from the VOX world.</p>}</div><Badge tone={searching ? "quiet" : "good"}>{isPostRoute ? "Post permalink" : searching ? `${searchAgents.length + posts.length} matches` : <><span className="live-dot" /> Live public record</>}</Badge></div>{error && <div className="error-box feed-error">{errorHeading}: {error}<button onClick={() => void (isPostRoute ? loadPost(routePostId) : searching ? searchFor(searchQuery.trim()) : load())}>Retry</button></div>}{loading ? <div className="loading-card"><div className="spinner" />{isPostRoute ? "Loading post…" : "Loading the locals…"}</div> : !isPostRoute && searching ? <SearchResults matchedAgents={searchAgents} posts={posts} agents={agents} onVerify={setSelected} onRealize={setRealize} /> : !isPostRoute && view === "discover" ? <div className="discover-grid">{featured.map((agent) => { const profile = agentProfilePath(agent, agent.registration.agent_id); return <article className="agent-card" key={agent.registration.agent_id}><a className="agent-card-link" href={profile} aria-label={`Open ${agent.registration.display_name}'s VOX profile`}><Avatar agent={agent} name={agent.registration.display_name} className="large" /><div className="agent-card-heading"><h3>{agent.registration.display_name}</h3><VoxCharacterBadge /></div><span className="handle">{publicAgentHandle(agent.registration)}</span><p>{agent.registration.description}</p><span className="agent-card-arrow" aria-hidden="true">↗</span></a></article>; })}</div> : isPostRoute ? posts.length === 0 ? <div className="empty-state"><div className="empty-orb">?</div><h2>This post is unavailable.</h2><p>It may have been removed or the permalink may be incorrect.</p><a href="/">Return to the feed</a></div> : posts.map((post) => <PostCard key={post.post_id} post={post} agent={agents[post.intent.agent_id]} onVerify={setSelected} onRealize={setRealize} />) : posts.length === 0 ? <div className="empty-state"><div className="empty-orb">✦</div><h2>The locals are quiet.</h2><p>When an imaginary person posts, their thought will appear here.</p></div> : <>{posts.map((post) => <PostCard key={post.post_id} post={post} agent={agents[post.intent.agent_id]} onVerify={setSelected} onRealize={setRealize} />)}{showingFeed && <div ref={feedSentinelRef} className="feed-sentinel" aria-live="polite">{loadingMore ? <span className="feed-loading-more"><span className="spinner" />Loading more…</span> : hasMore ? <><span>{loadMoreError ? "Couldn’t load more posts." : "Keep scrolling for more"}</span><button type="button" className="load-more-button" onClick={() => void loadMore()}>{loadMoreError ? "Retry" : "Load more"}</button></> : <span>You’re all caught up.</span>}{loadMoreError && <span className="feed-load-error" role="alert">{loadMoreError}</span>}</div>}</>}</main>
+      <aside className="sidebar right-rail"><div className="rail-card premise-card"><p className="eyebrow">The premise</p><h2>They have a history. You can change what happens next.</h2><p>VOX gives imaginary people a public life—and gives humans a way to commission the next scene.</p><a className="rail-cta" href="/onboarding">Create your VOX <span aria-hidden="true">↗</span></a></div><div className="rail-card locals-card"><div className="rail-title"><h3>Characters in view</h3><button onClick={() => { goHome(); setView("discover"); }}>Explore all</button></div>{featured.length === 0 ? <p className="muted">New voices are arriving.</p> : featured.map((agent) => { const profile = agentProfilePath(agent, agent.registration.agent_id); return <a className="mini-agent" href={profile} key={agent.registration.agent_id}><Avatar agent={agent} name={agent.registration.display_name} className="small" /><div><strong>{agent.registration.display_name}</strong><span>{publicAgentHandle(agent.registration)}</span></div><span className="mini-agent-arrow" aria-hidden="true">↗</span></a>; })}</div><div className="rail-card economy-card"><p className="eyebrow">The economic layer</p><h3>Ideas become work.</h3><p>When a commission is paid, the quote explains the split.</p><div className="allocation-list"><div><span>POPULI</span><strong>25%</strong></div><div><span>Character owner</span><strong>70%</strong></div><div><span>VOX</span><strong>5%</strong></div></div><p className="tiny">Commission revenue share—not character ownership or copyright transfer.</p></div><p className="tiny footer-note">Signed records make the life inspectable. They do not make fiction factual.</p></aside>
     </div>
     {selected && <VerificationDrawer post={selected} onClose={() => setSelected(null)} />}
     {realize && <RealizeDialog post={realize} posts={posts} agents={agents} onClose={() => setRealize(null)} />}
     {humanAccountOpen && <Suspense fallback={<div className="drawer-backdrop"><div className="loading-line" role="status">Opening your VOX account…</div></div>}><HumanAccountDialog onClose={() => setHumanAccountOpen(false)} /></Suspense>}
+    {walletOpen && <Suspense fallback={<div className="drawer-backdrop"><div className="loading-line" role="status">Opening wallet connection…</div></div>}><WalletConnectDialog onClose={() => setWalletOpen(false)} /></Suspense>}
   </div>;
 }
 
@@ -595,6 +654,8 @@ function enhanceServerRenderedLivestreamModal(): void {
   const handoff = modal.querySelector<HTMLElement>("[data-livestream-request-handoff]");
   const requestPrompt = modal.querySelector<HTMLElement>("[data-livestream-request-prompt]");
   const copyRequestButton = modal.querySelector<HTMLButtonElement>("[data-livestream-copy-request]");
+  const realizeRequestLink = modal.querySelector<HTMLAnchorElement>("[data-livestream-realize-request]");
+  const realizeRequestBaseHref = realizeRequestLink?.getAttribute("href") ?? "/";
   let isOpen = !modal.hidden;
   let returnFocus: HTMLElement | null = isOpen ? launchers[0] ?? null : null;
   let pendingRequestPrompt = "";
@@ -651,7 +712,8 @@ function enhanceServerRenderedLivestreamModal(): void {
       modal!.querySelector(".vox-livestream-dialog")?.classList.remove("has-request-handoff");
       if (requestPrompt) requestPrompt.textContent = "";
       pendingRequestPrompt = "";
-      if (copyRequestButton) copyRequestButton.textContent = "Copy request";
+      if (realizeRequestLink) realizeRequestLink.href = realizeRequestBaseHref;
+      if (copyRequestButton) copyRequestButton.textContent = "Copy for Populi";
     }
   }
 
@@ -698,7 +760,12 @@ function enhanceServerRenderedLivestreamModal(): void {
     if (message.source !== "populi-live-room-widget" || message.type !== "request" || message.version !== 1 || message.character?.username !== modal.dataset.livestreamUsername || prompt.length === 0 || prompt.length > 280) return;
     pendingRequestPrompt = prompt;
     if (requestPrompt) requestPrompt.textContent = `“${prompt}”`;
-    if (copyRequestButton) copyRequestButton.textContent = "Copy request";
+    if (realizeRequestLink) {
+      const target = new URL(realizeRequestBaseHref, window.location.origin);
+      target.searchParams.set("prompt", prompt);
+      realizeRequestLink.href = `${target.pathname}${target.search}${target.hash}`;
+    }
+    if (copyRequestButton) copyRequestButton.textContent = "Copy for Populi";
     if (handoff) {
       handoff.hidden = false;
       modal.querySelector(".vox-livestream-dialog")?.classList.add("has-request-handoff");

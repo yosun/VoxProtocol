@@ -174,7 +174,7 @@ function createWallet(page: Page) {
     };
     const wallet = {
       version: "1.0.0",
-      name: "VOX Test Wallet",
+      name: "Connect VOX Test Wallet",
       icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'><circle cx='.5' cy='.5' r='.5'/></svg>",
       chains: ["solana:mainnet"],
       accounts: [],
@@ -327,28 +327,29 @@ test("commissioner reviews rights, pays from the backend quote, and sees mocked 
   await page.getByRole("button", {name: "Realize post"}).click();
 
   const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
-  await expect(dialog.getByLabel("Generation description")).toHaveValue("A thought ready to become a moving image.");
-  await expect(dialog.getByText("Mira Vale", {exact: true})).toBeVisible();
-  await expect(dialog.getByText("A VOX first-party AI character")).toBeVisible();
-  await expect(dialog.getByText(/does not require a separate creator-signed rights agreement/)).toBeVisible();
-  await dialog.getByLabel("Generation description").fill("A blue moon rises above a quiet glass city.");
-  await dialog.getByRole("button", {name: "Get dynamic quote"}).click();
+  await expect(dialog.getByLabel("Your idea")).toHaveValue("A thought ready to become a moving image.");
+  await expect(dialog.getByText("Create a custom video with Mira Vale.")).toBeVisible();
+  await dialog.getByLabel("Your idea").fill("A blue moon rises above a quiet glass city.");
+  await dialog.getByRole("button", {name: "Get my price"}).click();
 
-  await expect(dialog.getByRole("heading", {name: "The full price"})).toBeVisible();
+  await expect(dialog.locator(".quote-price-hero")).toBeVisible();
+  await expect(dialog.locator(".quote-price-hero")).toBeInViewport();
+  await dialog.getByRole("button", {name: "Read the fine print"}).click();
+  await expect(dialog.getByText(/does not require a separate creator-signed rights agreement/)).toBeVisible();
   await expect(dialog.getByText("0.25 USDC", {exact: true})).toBeVisible();
   await expect(dialog.getByText("0.70 USDC", {exact: true})).toBeVisible();
   await expect(dialog.getByText("0.05 USDC", {exact: true})).toBeVisible();
   await expect(dialog.getByText("1.00 USDC", {exact: true})).toBeVisible();
   await expect(dialog.locator(".quote-creation-summary p")).toHaveText("A blue moon rises above a quiet glass city.");
-  await expect(dialog.getByText(/Expires in \d+:\d+ ·/)).toBeVisible();
-  await expect(dialog.getByText("Provider allocation (25.00%)")).toBeVisible();
-  await expect(dialog.getByText("Character owner (70.00%)")).toBeVisible();
-  await expect(dialog.getByText("VOX platform (5.00%)")).toBeVisible();
-  await dialog.getByRole("checkbox", {name: /I reviewed the first-party generation policy/}).check();
-  await dialog.getByRole("button", {name: "VOX Test Wallet"}).click();
+  await expect(dialog.getByText(/Price expires in \d+:\d+/)).toBeVisible();
+  await expect(dialog.getByText("Video generation (25.00%)")).toBeVisible();
+  await expect(dialog.getByText("Creator (70.00%)")).toBeVisible();
+  await expect(dialog.getByText("VOX service fee (5.00%)")).toBeVisible();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
   await expect(dialog.getByText(PAYER.toBase58().slice(0, 8))).toBeVisible();
-  await dialog.getByRole("button", {name: "Accept rights and continue to payment"}).click();
-  await expect(dialog.getByText(/VOX manages settlement and any refund after the standard USDC transfer/)).toBeVisible();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
+  await expect(dialog.getByText(/VOX manages settlement and refunds after generation/)).toBeVisible();
   await dialog.getByRole("button", {name: "Pay 1.00 USDC"}).click();
 
   await expect(dialog.getByText("Signed provenance verified")).toBeVisible();
@@ -385,9 +386,10 @@ test("integration-test checkout requests only the fixed prerecorded Bob clip and
   const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
   await dialog.getByRole("button", {name: "Use prerecorded payment-path test"}).click();
   await expect(dialog.getByRole("note", {name: "Prerecorded payment-path test"})).toContainText("does not generate a clip from a custom prompt");
-  await dialog.getByRole("button", {name: "Get prerecorded test quote"}).click();
+  await dialog.getByRole("button", {name: "Get demo price"}).click();
 
-  await expect(dialog.getByRole("heading", {name: "The full price"})).toBeVisible();
+  await expect(dialog.locator(".quote-price-hero")).toBeVisible();
+  await dialog.getByRole("button", {name: "Read the fine print"}).click();
   await expect(dialog.getByText("0.25 USDC", {exact: true})).toBeVisible();
   await expect(dialog.getByText("0.70 USDC", {exact: true})).toBeVisible();
   await expect(dialog.getByText("0.05 USDC", {exact: true})).toBeVisible();
@@ -418,12 +420,12 @@ test("a restored draft adopts the provider's current settings before quoting", a
   await page.getByRole("button", {name: "Realize post"}).click();
 
   const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
-  await expect(dialog.getByLabel("Style")).toHaveCount(0);
-  await expect(dialog.getByLabel("Duration")).toHaveCount(0);
-  await expect(dialog.getByLabel("Resolution")).toHaveCount(0);
-  await expect(dialog.getByRole("button", {name: "Get dynamic quote"})).toBeEnabled();
-  await dialog.getByRole("button", {name: "Get dynamic quote"}).click();
-  await expect(dialog.getByRole("heading", {name: "The full price"})).toBeVisible();
+  await expect(dialog.getByLabel("Style")).toHaveValue("special");
+  await expect(dialog.getByLabel("Length")).toHaveValue("6");
+  await expect(dialog.getByLabel("Quality")).toHaveValue("768P");
+  await expect(dialog.getByRole("button", {name: "Get my price"})).toBeEnabled();
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await expect(dialog.locator(".quote-price-hero")).toBeVisible();
   expect(state.quote?.requested_generation_parameters.resolution).toBe("480P");
 });
 
@@ -433,11 +435,11 @@ test("insufficient USDC leaves the accepted quote unfunded", async ({page}) => {
   await page.goto("/");
   await page.getByRole("button", {name: "Realize post"}).click();
   const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
-  await dialog.getByLabel("Generation description").fill("A blue moon above a quiet glass city.");
-  await dialog.getByRole("button", {name: "Get dynamic quote"}).click();
-  await dialog.getByRole("checkbox", {name: /I reviewed the first-party generation policy/}).check();
-  await dialog.getByRole("button", {name: "VOX Test Wallet"}).click();
-  await dialog.getByRole("button", {name: "Accept rights and continue to payment"}).click();
+  await dialog.getByLabel("Your idea").fill("A blue moon above a quiet glass city.");
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
   await dialog.getByRole("button", {name: "Pay 1.00 USDC"}).click();
   await expect(dialog.getByRole("alert").filter({hasText: "Insufficient USDC"})).toBeVisible();
   await expect(dialog.getByText("Awaiting server verification")).toHaveCount(2);
@@ -450,11 +452,11 @@ test("a wallet callback cannot mark payment successful before server verificatio
   await page.goto("/");
   await page.getByRole("button", {name: "Realize post"}).click();
   const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
-  await dialog.getByLabel("Generation description").fill("A quiet glass city beneath a blue moon.");
-  await dialog.getByRole("button", {name: "Get dynamic quote"}).click();
-  await dialog.getByRole("checkbox", {name: /I reviewed the first-party generation policy/}).check();
-  await dialog.getByRole("button", {name: "VOX Test Wallet"}).click();
-  await dialog.getByRole("button", {name: "Accept rights and continue to payment"}).click();
+  await dialog.getByLabel("Your idea").fill("A quiet glass city beneath a blue moon.");
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
   await dialog.getByRole("button", {name: "Pay 1.00 USDC"}).click();
 
   await expect(dialog.getByText("Payment submitted; VOX.gold verification is pending.")).toBeVisible();
@@ -470,13 +472,14 @@ test("public credit appears in provenance only after explicit consent", async ({
   await page.goto("/");
   await page.getByRole("button", {name: "Realize post"}).click();
   const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
-  await dialog.getByLabel("Generation description").fill("A glass city beneath a crescent moon.");
-  await dialog.getByRole("button", {name: "Get dynamic quote"}).click();
-  await dialog.getByRole("checkbox", {name: /I reviewed the first-party generation policy/}).check();
-  await dialog.getByRole("checkbox", {name: "Optionally include a public credit in provenance."}).check();
-  await dialog.getByLabel("Public credit text").fill("Commissioned by A. Vale");
-  await dialog.getByRole("button", {name: "VOX Test Wallet"}).click();
-  await dialog.getByRole("button", {name: "Accept rights and continue to payment"}).click();
+  await dialog.getByLabel("Your idea").fill("A glass city beneath a crescent moon.");
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.locator(".public-credit-details > summary").click();
+  await dialog.getByRole("checkbox", {name: "Include a public credit with the finished work."}).check();
+  await dialog.getByLabel("Credit text").fill("Commissioned by A. Vale");
+  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
   await dialog.getByRole("button", {name: "Pay 1.00 USDC"}).click();
   await expect(dialog.getByText("Public credit: Commissioned by A. Vale")).toBeVisible();
   expect(state.publicProvenance?.public_attribution).toBe("Commissioned by A. Vale");
@@ -490,14 +493,14 @@ test("an unavailable creator has a recoverable setup state", async ({page}) => {
   await page.getByRole("button", {name: "Realize post"}).click();
   const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
   await expect(dialog.getByRole("alert")).toContainText("not ready to accept commissions");
-  await expect(dialog.getByText("Loading this creator’s active rights agreement…")).not.toBeVisible();
-  await dialog.getByLabel("Generation description").fill("Keep my brief while reconnecting to this creator.");
+  await expect(dialog.getByText("Getting this creator ready…")).not.toBeVisible();
+  await dialog.getByLabel("Your idea").fill("Keep my brief while reconnecting to this creator.");
   await dialog.getByRole("button", {name: "Retry creator setup"}).click();
-  await expect(dialog.getByRole("button", {name: "Get dynamic quote"})).toBeEnabled();
-  await expect(dialog.getByLabel("Generation description")).toHaveValue("Keep my brief while reconnecting to this creator.");
-  await expect(dialog.getByLabel("Style")).toHaveCount(0);
-  await expect(dialog.getByLabel("Duration")).toHaveCount(0);
-  await expect(dialog.getByLabel("Resolution")).toHaveCount(0);
+  await expect(dialog.getByRole("button", {name: "Get my price"})).toBeEnabled();
+  await expect(dialog.getByLabel("Your idea")).toHaveValue("Keep my brief while reconnecting to this creator.");
+  await expect(dialog.getByLabel("Style")).toBeVisible();
+  await expect(dialog.getByLabel("Length")).toBeVisible();
+  await expect(dialog.getByLabel("Quality")).toBeVisible();
 });
 
 test("reloading an unverified payment restores the signature and prevents a second charge", async ({page}) => {
@@ -506,11 +509,11 @@ test("reloading an unverified payment restores the signature and prevents a seco
   await page.goto("/");
   await page.getByRole("button", {name: "Realize post"}).click();
   let dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
-  await dialog.getByLabel("Generation description").fill("A quiet cinematic scene for recovery testing.");
-  await dialog.getByRole("button", {name: "VOX Test Wallet"}).click();
-  await dialog.getByRole("button", {name: "Get dynamic quote"}).click();
-  await dialog.getByRole("checkbox", {name: /I reviewed the first-party generation policy/}).check();
-  await dialog.getByRole("button", {name: "Accept rights and continue to payment"}).click();
+  await dialog.getByLabel("Your idea").fill("A quiet cinematic scene for recovery testing.");
+  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
   await dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true}).click();
   await expect(dialog.getByRole("button", {name: "Check payment status"})).toBeVisible();
   const fundingCalls = state.fundCalls.length;

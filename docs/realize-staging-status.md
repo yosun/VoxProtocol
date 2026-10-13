@@ -601,3 +601,24 @@ submitted.
   promotion.
 - The selective production workflow has not been dispatched yet. No production
   deployment, Mainnet payment, payout, or refund was made during this setup.
+
+## Marketing-focused checkout update (2026-10-12)
+
+- VOX Realize staging now routes 100% traffic to revision
+  vox-realize-staging-00023-9l2 from image
+  us-east1-docker.pkg.dev/crueltycam/cruelty/vox-realize-staging:20261013-realize-marketing-v2.
+  The rollout changed only the image; the staging service account, Secret Manager
+  mounts, Devnet setting, and Mainnet-disabled setting were preserved.
+- The checkout now uses a short idea → price → payment path. The quote total,
+  USDC denomination, required terms consent, and wallet step stay visible. The
+  fee breakdown, full usage terms, network, settlement, and quote-signature
+  details appear behind one expandable “Read the fine print” link beside consent.
+  The prerecorded integration demo is
+  hidden in the deployed optimized web build.
+- Post-deploy checks returned HTTP 200 for the page, API health, and checkout
+  assets. The read-only Populi preflight still authenticated the staging client
+  and retrieved Bob's video capability and schema from staging.populi.cam.
+  Devnet remains enabled and Mainnet remains disabled.
+- No quote, payment, generation, payout, or refund was initiated during this UI
+  release. Cloud Build completed successfully; the browser E2E suite was not
+  run for this release.
