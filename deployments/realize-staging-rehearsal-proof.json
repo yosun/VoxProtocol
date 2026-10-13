@@ -1,0 +1,152 @@
+{
+  "origin": "https://vox-realize-staging-icin5yj4aa-ue.a.run.app",
+  "sourcePostId": "vox:post:0a276800abc55f11283b4b7ca0808b3285a1150a729b0326feb23df911e98045",
+  "checkoutUrl": "https://vox-realize-staging-icin5yj4aa-ue.a.run.app/?realize=vox%3Apost%3A0a276800abc55f11283b4b7ca0808b3285a1150a729b0326feb23df911e98045",
+  "creatorId": "vox:agent:A4KzQOc_iHZyTQOmSqqrmSlpjrpSMwigXmwzcXFCDiM",
+  "rightsAgreementId": "rights:bob-realize-staging-v1",
+  "rightsHash": "5ca9462750fa5c52ea60493b884524a7b604d7470799cdf8ddbecd3e597b3a1c",
+  "commissionId": "vox:commission:91fea05fd5801fef7593bfd450b192733013bbac2e33e43a318bb6991ed3b9d4",
+  "quoteId": "vox:quote:81c007e030dd5819e40ece36598525713468acaa78ead82bed7e470bea6acede",
+  "quoteHash": "afa22c2630319148cd7d09791cb37fb0762f34b38c1c2d75bf763abf18167389",
+  "network": "solana:devnet",
+  "quoteExpiresAt": "2026-10-12T08:32:11.363Z",
+  "providerBaseAtomic": "750000",
+  "ownerFeeAtomic": "200000",
+  "platformFeeAtomic": "50000",
+  "totalAtomic": "1000000",
+  "payouts": [
+    {
+      "role": "generation_provider",
+      "destination": "solana:devnet:45rmLepEcjBBNZLKnFgxVg2zyzyj1YWbC63yBRMeH9gr",
+      "amountAtomic": "750000"
+    },
+    {
+      "role": "character_owner",
+      "destination": "solana:devnet:4MSTtPJKELknreL2uaPJd9xpCZetypfoEjoMLY17btbL",
+      "amountAtomic": "200000"
+    },
+    {
+      "role": "platform",
+      "destination": "solana:devnet:45rmLepEcjBBNZLKnFgxVg2zyzyj1YWbC63yBRMeH9gr",
+      "amountAtomic": "50000"
+    }
+  ],
+  "status": "live-rehearsal-passed",
+  "note": "Approved live staging funding, actual video generation, byte hash/provenance verification and all three Devnet payouts passed.",
+  "escrow": {
+    "status": "Settled",
+    "payout_count": 3,
+    "allocated_usdc_atomic": "1000000",
+    "paid_usdc_atomic": "1000000",
+    "claimed_bitmap": "7",
+    "total_usdc_atomic": "1000000"
+  },
+  "payer": "45rmLepEcjBBNZLKnFgxVg2zyzyj1YWbC63yBRMeH9gr",
+  "tokenAccountBalanceAtomic": "19700000",
+  "simulation": {
+    "err": null,
+    "unitsConsumed": 54969,
+    "transactionBytes": 977
+  },
+  "estimatedPayerSolLamports": 18475800,
+  "proposedMaxPayerSolLamports": 30000000,
+  "actualTokenRecipients": [
+    {
+      "recipient": "45rmLepEcjBBNZLKnFgxVg2zyzyj1YWbC63yBRMeH9gr",
+      "amount_usdc_atomic": "750000"
+    },
+    {
+      "recipient": "4MSTtPJKELknreL2uaPJd9xpCZetypfoEjoMLY17btbL",
+      "amount_usdc_atomic": "200000"
+    },
+    {
+      "recipient": "45rmLepEcjBBNZLKnFgxVg2zyzyj1YWbC63yBRMeH9gr",
+      "amount_usdc_atomic": "50000"
+    }
+  ],
+  "networkFeeLamports": 10000,
+  "estimatedAccountRentLamports": 18465800,
+  "vault": "5uDuay18i9RCBCETZDoTxc8JmmmBMoRbFduLZTaphE1v",
+  "deployedRevision": "vox-realize-staging-00006-qvz",
+  "deployedImage": "us-east1-docker.pkg.dev/crueltycam/cruelty/vox-realize-staging:20261012-flow-v5",
+  "validation": {
+    "automatedTestsPassed": 46,
+    "browserTestsPassed": 6,
+    "firestoreEmulatorTestsSkipped": 2,
+    "liveDevnetHappyPathPassed": true,
+    "browserWalletLiveSigningTested": false,
+    "liveProviderFailureRefundTested": false
+  },
+  "liveRehearsalApproval": "approved",
+  "completedAt": "2026-10-12T08:53:58.656Z",
+  "fundingTransactionSignature": "3nbbX41y1n2akPmHc5AKynZg4fEJyt1TKDdCNMqgsLwA5CHashoDXZVgZf3zvKdG8Dd2bTQpDPvtDZjMR6WLD3Ff",
+  "commissionState": "SETTLED",
+  "fulfillmentRequestId": "vox:fulfillment:7d9aeb98af367f1887aefe6064f6724301aaebfdc797e30892cd9bbf18c5ccf1",
+  "artifacts": [
+    {
+      "uri": "https://populi-realize-staging-icin5yj4aa-ue.a.run.app/v1/realize/artifacts?fulfillment_request_id=vox%3Afulfillment%3A7d9aeb98af367f1887aefe6064f6724301aaebfdc797e30892cd9bbf18c5ccf1&output_index=0",
+      "page_url": "https://populi-realize-staging-icin5yj4aa-ue.a.run.app/bob/6eebe7e6-3b15-4feb-933a-cbb2cf05d7b9",
+      "media_type": "video/mp4",
+      "sha256": "9615dde42f709f031ddd6c5862c3f70156baa9d57149176def4c861143f41185",
+      "byte_length": 768834
+    }
+  ],
+  "provenanceRecordId": "vox:provenance:42c1844a9d3d034834744f2a9bff8350e2909080f87f7cc3b876a387b8fc0be0",
+  "provenanceSignatureVerified": true,
+  "payerTokenDeltaAtomic": "-200000",
+  "ownerTokenDeltaAtomic": "200000",
+  "vaultBalanceAtomic": "0",
+  "actualPayerSolLamports": 18358560,
+  "settlement": {
+    "settlement_id": "vox:settlement:7d9aeb98af367f1887aefe6064f6724301aaebfdc797e30892cd9bbf18c5ccf1",
+    "status": "settled",
+    "transaction_signatures": [
+      "4qPgC9knBcT7kgYAVp3qrq2oDSKrTAcq6CjyuJB4mZsj6rconNPpHoTxoazayXfLtFZ8mZ1icY98tejuwxZRjmJj",
+      "4w6ZyryFS4fk3khSw6deXRnLt8UsVuUPBvHET2oseQ8PAkYQmbPom9QTBpLXyJS7WyctczqtHN6WYShCnNCcaBag",
+      "4RN49NGbHuV9zte8vAsg8Y2R8mq9Yyh2E2G9ws3TRasDzRVTdEH7wyqo3f9xTyG8noDMgAp1sVHGnG63TKRpajLz"
+    ],
+    "settled_amount_usdc_atomic": "1000000",
+    "failed_payout_ids": [],
+    "updated_at": "2026-10-12T08:50:30.644Z"
+  },
+  "onChainTransactions": [
+    {
+      "signature": "4qPgC9knBcT7kgYAVp3qrq2oDSKrTAcq6CjyuJB4mZsj6rconNPpHoTxoazayXfLtFZ8mZ1icY98tejuwxZRjmJj",
+      "slot": 510209020,
+      "feeLamports": 5000,
+      "computeUnits": 14229,
+      "finalized": true
+    },
+    {
+      "signature": "4w6ZyryFS4fk3khSw6deXRnLt8UsVuUPBvHET2oseQ8PAkYQmbPom9QTBpLXyJS7WyctczqtHN6WYShCnNCcaBag",
+      "slot": 510209016,
+      "feeLamports": 5000,
+      "computeUnits": 14229,
+      "finalized": true
+    },
+    {
+      "signature": "4RN49NGbHuV9zte8vAsg8Y2R8mq9Yyh2E2G9ws3TRasDzRVTdEH7wyqo3f9xTyG8noDMgAp1sVHGnG63TKRpajLz",
+      "slot": 510209012,
+      "feeLamports": 5000,
+      "computeUnits": 14227,
+      "finalized": true
+    },
+    {
+      "signature": "57YewwucwwyBtz6a2ysMGHACU9mzeZCmukPh6E8rjn5Zqkjeepdzpf3oR174Wfh7oCfkEoS6mw4ZBTJrgG49Yj42",
+      "slot": 510209000,
+      "feeLamports": 10000,
+      "computeUnits": 7864,
+      "finalized": true
+    },
+    {
+      "signature": "3nbbX41y1n2akPmHc5AKynZg4fEJyt1TKDdCNMqgsLwA5CHashoDXZVgZf3zvKdG8Dd2bTQpDPvtDZjMR6WLD3Ff",
+      "slot": 510208900,
+      "feeLamports": 10000,
+      "computeUnits": 50469,
+      "finalized": true
+    }
+  ],
+  "totalNetworkFeesLamports": 35000,
+  "actualAccountRentLamports": 18323560,
+  "productionRevisionUnchanged": "vox-api-00046-fqt"
+}

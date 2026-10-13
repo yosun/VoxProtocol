@@ -1,0 +1,15 @@
+{
+  "protocol_version": "realize/1",
+  "request_id": "pricing:bob-special-video-001",
+  "creator_id": "vox:agent:-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+  "capability_id": "video:short-form",
+  "generation_provider_id": "provider:video:example",
+  "requested_generation_parameters": {
+    "concept": "Bob's special video",
+    "duration_seconds": 6,
+    "style": "special"
+  },
+  "requested_generation_parameters_hash": "60c7bb381ed3c558fefd49964ae790147a2c6cb84a9f1d99750480192163219b",
+  "rights_agreement_reference": "rights:bob-special-video-v1",
+  "requested_at": "2026-10-11T18:00:00.000Z"
+}

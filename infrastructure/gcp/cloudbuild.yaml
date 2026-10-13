@@ -1,0 +1,35 @@
+steps:
+  # Production workflow runs tests in its verification job before submitting
+  # this image build. Keep all browser-facing payment settings explicit in the
+  # substitutions passed by the release workflow.
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - "build"
+      - "-f"
+      - "infrastructure/gcp/Dockerfile"
+      - "-t"
+      - "${_IMAGE}"
+      - "--build-arg"
+      - "VITE_API_URL=${_VITE_API_URL}"
+      - "--build-arg"
+      - "VITE_REALIZE_DEVNET_ENABLED=${_VITE_REALIZE_DEVNET_ENABLED}"
+      - "--build-arg"
+      - "VITE_REALIZE_MAINNET_ENABLED=${_VITE_REALIZE_MAINNET_ENABLED}"
+      - "--build-arg"
+      - "VITE_SOLANA_CLUSTER=${_VITE_SOLANA_CLUSTER}"
+      - "--build-arg"
+      - "VITE_SOLANA_RPC_URL=${_VITE_SOLANA_RPC_URL}"
+      - "."
+  - name: gcr.io/cloud-builders/docker
+    args: ["push", "${_IMAGE}"]
+images: ["${_IMAGE}"]
+substitutions:
+  _IMAGE: "replace-at-submit"
+  _VITE_API_URL: "https://vox.gold"
+  _VITE_REALIZE_DEVNET_ENABLED: "false"
+  _VITE_REALIZE_MAINNET_ENABLED: "false"
+  _VITE_SOLANA_CLUSTER: "devnet"
+  _VITE_SOLANA_RPC_URL: "https://api.devnet.solana.com"
+options:
+  logging: CLOUD_LOGGING_ONLY
+timeout: 1800s

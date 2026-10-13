@@ -1,0 +1,122 @@
+{
+  "protocol_version": "realize/1",
+  "agreement_id": "rights:commissioner-participation-001",
+  "version": 1,
+  "artifact_scope": {
+    "subject_type": "commission",
+    "subject_id": "commission:participation-001"
+  },
+  "parties": [
+    {
+      "party_id": "vox:agent:-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+      "role": "creator"
+    },
+    {
+      "party_id": "vox:human:GX9rI-FshTLGq8g4-s1ep4m-DHaykgM0A5v6iz02jWE",
+      "role": "commissioner"
+    }
+  ],
+  "grant": {
+    "work_scope": "Short-form video generated from the accepted commission.",
+    "rights": [
+      "generate",
+      "reproduce",
+      "display",
+      "commercial_use"
+    ],
+    "license_type": "non_exclusive",
+    "territory": [
+      "worldwide"
+    ],
+    "attribution_required": true,
+    "starts_at": "2026-10-11T18:00:00.000Z"
+  },
+  "revenue_definition": {
+    "basis": "gross_received",
+    "description": "USDC actually received from eligible downstream transactions.",
+    "permitted_deductions": []
+  },
+  "eligible_transaction_types": [
+    "artifact_sale",
+    "license",
+    "streaming",
+    "secondary_sale"
+  ],
+  "allocations": [
+    {
+      "beneficiary_id": "vox:human:GX9rI-FshTLGq8g4-s1ep4m-DHaykgM0A5v6iz02jWE",
+      "basis_points": 1000
+    },
+    {
+      "beneficiary_id": "vox:agent:-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+      "basis_points": 9000
+    }
+  ],
+  "duration": {
+    "starts_at": "2026-10-11T18:00:00.000Z"
+  },
+  "termination_conditions": [
+    "mutual_consent",
+    "legal_requirement"
+  ],
+  "modification_policy": {
+    "proposer_party_ids": [
+      "vox:agent:-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+      "vox:human:GX9rI-FshTLGq8g4-s1ep4m-DHaykgM0A5v6iz02jWE"
+    ],
+    "required_acceptance_party_ids": [
+      "vox:agent:-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+      "vox:human:GX9rI-FshTLGq8g4-s1ep4m-DHaykgM0A5v6iz02jWE"
+    ]
+  },
+  "required_acceptance_party_ids": [
+    "vox:agent:-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+    "vox:human:GX9rI-FshTLGq8g4-s1ep4m-DHaykgM0A5v6iz02jWE"
+  ],
+  "termination_policy": {
+    "authorized_party_ids": [
+      "vox:agent:-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+      "vox:human:GX9rI-FshTLGq8g4-s1ep4m-DHaykgM0A5v6iz02jWE"
+    ],
+    "required_acceptance_party_ids": [
+      "vox:agent:-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+      "vox:human:GX9rI-FshTLGq8g4-s1ep4m-DHaykgM0A5v6iz02jWE"
+    ]
+  },
+  "provenance_references": [
+    {
+      "category": "commissioning",
+      "party_id": "vox:human:GX9rI-FshTLGq8g4-s1ep4m-DHaykgM0A5v6iz02jWE",
+      "record_id": "provenance:commission:participation-001"
+    }
+  ],
+  "attribution": [
+    {
+      "party_id": "vox:agent:-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+      "credit_text": "Created by Bob."
+    },
+    {
+      "party_id": "vox:human:GX9rI-FshTLGq8g4-s1ep4m-DHaykgM0A5v6iz02jWE",
+      "credit_text": "Commissioned by the requester."
+    }
+  ],
+  "acceptances": [
+    {
+      "party_id": "vox:agent:-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+      "key_id": "key:bob-root-01",
+      "public_key": "-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+      "terms_hash": "256d089023007e20b5d793cb6b231eeb4ecf709c2e2d221a23ec4e0525205397",
+      "accepted_at": "2026-10-11T18:00:00.000Z",
+      "signature": "0JzRrZfPdz7vMQnu3-qoCL7zIbb8VVPy_29tYGWO2PJMU7zQg30U-CKyuUytK_2OKZ4GwhM3zEp2VNSV8vvLCA"
+    },
+    {
+      "party_id": "vox:human:GX9rI-FshTLGq8g4-s1ep4m-DHaykgM0A5v6iz02jWE",
+      "key_id": "key:commissioner-42",
+      "public_key": "GX9rI-FshTLGq8g4-s1ep4m-DHaykgM0A5v6iz02jWE",
+      "terms_hash": "256d089023007e20b5d793cb6b231eeb4ecf709c2e2d221a23ec4e0525205397",
+      "accepted_at": "2026-10-11T18:00:00.000Z",
+      "signature": "GUQoPjInmHAqzuQCQwOOEajx9kDrJJEyja_ZqYcIuZgHn0fl0pKmHlE8j7Ss4I2we5rSvOYiJErCV_h11O5bCw"
+    }
+  ],
+  "created_at": "2026-10-11T18:00:00.000Z"
+}

@@ -1,0 +1,9 @@
+{
+  "name": "@vox/merkle",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "exports": {".": {"types": "./dist/index.d.ts", "import": "./dist/index.js"}},
+  "scripts": {"build": "tsc -p tsconfig.json"},
+  "dependencies": {"@vox/protocol": "1.1.0"}
+}

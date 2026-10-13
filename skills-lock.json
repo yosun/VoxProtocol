@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "solana-dev": {
+      "source": "solana-foundation/solana-dev-skill",
+      "sourceType": "github",
+      "skillPath": "skills/solana-dev/SKILL.md",
+      "computedHash": "841c75d49657f6ee0bce0edea5e42dd982173e9b97c92b887bc87e21dd9809e4"
+    }
+  }
+}

@@ -1,0 +1,7 @@
+[workspace]
+members = ["programs/realize-escrow", "tools/escrow-idl"]
+resolver = "2"
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1

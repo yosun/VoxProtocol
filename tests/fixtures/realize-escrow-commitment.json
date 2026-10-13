@@ -1,0 +1,36 @@
+{
+  "header": {
+    "clusterIdentity": "solana:devnet",
+    "protocolVersion": 2,
+    "configRevision": "2",
+    "program": "GHLw1HY5BMXRUNzxeMVsv5r7usjQKWJA9SGVMGzNi3tb",
+    "config": "DZdQE4QRJSq1yusCtV8X4Jt3AXE97YLpqQVkp1magdfm",
+    "commission": "0707070707070707070707070707070707070707070707070707070707070707",
+    "quoteHash": "0808080808080808080808080808080808080808080808080808080808080808",
+    "payer": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+    "fulfillmentAuthority": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF",
+    "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "total": "1000000",
+    "recipientCount": 3,
+    "quoteExpiresAt": "1100",
+    "refundAfter": "1200",
+    "commitment": "a01612f574964a34a63cb20910a2b79039a2b7401ba63608bc313245e60ec3c8",
+    "escrow": "778eo8HEt878upmRC45udfRXdZH4gwSwTySgLm57aTBA"
+  },
+  "payouts": [
+    {
+      "recipient": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+      "amount": "750000"
+    },
+    {
+      "recipient": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+      "amount": "200000"
+    },
+    {
+      "recipient": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+      "amount": "50000"
+    }
+  ],
+  "commitment": "a01612f574964a34a63cb20910a2b79039a2b7401ba63608bc313245e60ec3c8"
+}

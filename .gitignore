@@ -1,0 +1,30 @@
+node_modules/
+dist/
+.vite/
+coverage/
+test-results/
+playwright-report/
+.env*
+!.env.example
+*.tfvars
+*.tfvars.json
+*.tfstate
+*.tfstate.*
+.terraform/
+.firebase/
+.kiro/gcp-project.json
+.gcloud/
+*.log
+.DS_Store
+.vox-local/
+.agents/
+
+# Local credentials and generated deployment state
+*.pem
+*.key
+service-account*.json
+firebase-debug.log
+
+# Solana build output (IDL is published separately under idl/)
+/target/
+test-ledger/

@@ -1,0 +1,49 @@
+{
+  "scenario": "expired_quote",
+  "quote": {
+    "protocol_version": "realize/1",
+    "quote_id": "quote:expired-001",
+    "pricing_request_id": "pricing:expired-001",
+    "creator_id": "vox:agent:-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+    "generation_provider_id": "provider:video:example",
+    "requested_generation_parameters": {
+      "concept": "Bob's special video",
+      "duration_seconds": 6,
+      "style": "special"
+    },
+    "provider_base_price_usdc_atomic": "750000",
+    "character_owner_markup_usdc_atomic": "200000",
+    "platform_fee_usdc_atomic": "50000",
+    "total_amount_usdc_atomic": "1000000",
+    "payout_recipients": [
+      {
+        "payout_id": "payout:bob:provider",
+        "recipient_id": "provider:video:example",
+        "role": "generation_provider",
+        "amount_usdc_atomic": "750000"
+      },
+      {
+        "payout_id": "payout:bob:owner",
+        "recipient_id": "vox:agent:-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+        "role": "character_owner",
+        "amount_usdc_atomic": "200000"
+      },
+      {
+        "payout_id": "payout:bob:platform",
+        "recipient_id": "platform:vox.gold",
+        "role": "platform",
+        "amount_usdc_atomic": "50000"
+      }
+    ],
+    "expires_at": "2026-10-01T12:15:00.000Z",
+    "issued_at": "2026-10-01T12:00:00.000Z",
+    "rights_agreement_reference": "rights:bob-special-video-v1",
+    "issuer_id": "vox:agent:-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+    "issuer_key_id": "key:bob-realize-01",
+    "issuer_public_key": "-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+    "canonical_quote_hash": "0c1040475b0ebed9ecf70e1a19359ea017979593d2691079f7da54b0caf0956a",
+    "signature": "8G8kfihas5WqKw3qwR9yhZFyQCfZbnYFUh1TEf5xkNEiIUHCTxhppD_gaV3L1Jlm4A1GLM8hK7KwaCkvKCgMDg"
+  },
+  "attempted_acceptance_at": "2026-10-01T12:15:00.001Z",
+  "expected_error_code": "QUOTE_EXPIRED"
+}

@@ -1,0 +1,497 @@
+{
+  "openapi": "3.1.0",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "info": {
+    "title": "VOX–Populi Realize v1 provider contract",
+    "version": "1.0.0",
+    "description": "Exact provider and callback contract for VOX and Populi implementers. This document does not assert that Populi routes are deployed. VOX's hosted commissioning API is documented separately in docs/openapi.yaml. Public Populi /api/cost estimates are a separate interface."
+  },
+  "servers": [
+    {
+      "url": "https://{vox_host}",
+      "variables": {
+        "vox_host": {
+          "default": "vox.example.invalid"
+        }
+      }
+    }
+  ],
+  "paths": {
+    "/v1/realize/creators/{creator_id}/capabilities": {
+      "get": {
+        "operationId": "getProviderCapabilities",
+        "description": "Populi advertises supported creator capabilities. VOX may proxy discovery.",
+        "tags": [
+          "Populi provider contract"
+        ],
+        "security": [
+          {
+            "serviceBearer": []
+          }
+        ],
+        "servers": [
+          {
+            "url": "https://{populi_host}",
+            "variables": {
+              "populi_host": {
+                "default": "populi.example.invalid"
+              }
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "name": "creator_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatorCapabilities"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Stable Realize error code; see protocol error table.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RealizeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/realize/provider-prices": {
+      "post": {
+        "operationId": "quoteProviderPrice",
+        "description": "Populi issues an authoritative provider base-price reservation with expiration. This is not the final VOX commission quote.",
+        "tags": [
+          "Populi provider contract"
+        ],
+        "security": [
+          {
+            "serviceBearer": []
+          }
+        ],
+        "servers": [
+          {
+            "url": "https://{populi_host}",
+            "variables": {
+              "populi_host": {
+                "default": "populi.example.invalid"
+              }
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderPricingRequest"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderPriceQuote"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Stable Realize error code; see protocol error table.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RealizeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/realize/fulfillments": {
+      "post": {
+        "operationId": "submitProviderFulfillment",
+        "description": "Populi accepts externally funded generation. Authenticate VOX and validate funding authorization; bypass Stripe and credit balances. Replays return the original job.",
+        "tags": [
+          "Populi provider contract"
+        ],
+        "security": [
+          {
+            "serviceBearer": []
+          }
+        ],
+        "servers": [
+          {
+            "url": "https://{populi_host}",
+            "variables": {
+              "populi_host": {
+                "default": "populi.example.invalid"
+              }
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderFulfillmentRequest"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FulfillmentResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Stable Realize error code; see protocol error table.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RealizeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/realize/fulfillments/{fulfillment_request_id}": {
+      "get": {
+        "operationId": "getProviderFulfillment",
+        "description": "Populi returns the current durable generation status and final artifact references.",
+        "tags": [
+          "Populi provider contract"
+        ],
+        "security": [
+          {
+            "serviceBearer": []
+          }
+        ],
+        "servers": [
+          {
+            "url": "https://{populi_host}",
+            "variables": {
+              "populi_host": {
+                "default": "populi.example.invalid"
+              }
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "name": "fulfillment_request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FulfillmentResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Stable Realize error code; see protocol error table.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RealizeError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/realize/webhooks/populi": {
+      "post": {
+        "operationId": "receivePopuliFulfillmentCallback",
+        "description": "VOX receives signed, idempotent fulfillment events. Acknowledge after durable storage; polling remains the recovery path.",
+        "tags": [
+          "VOX callback contract"
+        ],
+        "security": [
+          {
+            "webhookSignature": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FulfillmentResult"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-Realize-Webhook-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9:_-]{1,256}$"
+            }
+          },
+          {
+            "name": "X-Realize-Webhook-Timestamp",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]{0,12})$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookAcknowledgment"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Existing VOX lowercase compatibility error; see docs/openapi.yaml.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "serviceBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Scoped server-to-server token; never a commissioner-supplied credential. See docs/realize-populi-handoff.md."
+      },
+      "webhookSignature": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Realize-Webhook-Signature",
+        "description": "v1=HMAC-SHA256(secret, timestamp + '.' + raw_body), lowercase hex."
+      }
+    },
+    "schemas": {
+      "AcceptQuoteRequest": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/AcceptQuoteRequest"
+      },
+      "AcceptQuoteResponse": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/AcceptQuoteResponse"
+      },
+      "AdditionalBeneficiary": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/AdditionalBeneficiary"
+      },
+      "CommissionFulfillmentState": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/CommissionFulfillmentState"
+      },
+      "CommissionPaymentState": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/CommissionPaymentState"
+      },
+      "CommissionState": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/CommissionState"
+      },
+      "Commission": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/Commission"
+      },
+      "CreateCommissionRequest": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/CreateCommissionRequest"
+      },
+      "CreatePaymentIntentRequest": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/CreatePaymentIntentRequest"
+      },
+      "CreatorCapabilities": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/CreatorCapabilities"
+      },
+      "CreatorPricingRequest": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/CreatorPricingRequest"
+      },
+      "CreatorPricingResponse": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/CreatorPricingResponse"
+      },
+      "DistributionReward": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/DistributionReward"
+      },
+      "ExternalFundingAuthorization": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/ExternalFundingAuthorization"
+      },
+      "FulfillmentRequest": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/FulfillmentRequest"
+      },
+      "FulfillmentResult": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/FulfillmentResult"
+      },
+      "GenerationParameters": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/GenerationParameters"
+      },
+      "PaymentIntent": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/PaymentIntent"
+      },
+      "PayoutRecipient": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/PayoutRecipient"
+      },
+      "PayoutRole": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/PayoutRole"
+      },
+      "ProvenanceRecord": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/ProvenanceRecord"
+      },
+      "ProviderFulfillmentRequest": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/ProviderFulfillmentRequest"
+      },
+      "ProviderPriceQuote": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/ProviderPriceQuote"
+      },
+      "ProviderPricingRequest": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/ProviderPricingRequest"
+      },
+      "RealizeErrorCode": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/RealizeErrorCode"
+      },
+      "RealizeError": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/RealizeError"
+      },
+      "RealizeQuote": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/RealizeQuote"
+      },
+      "ReferralAttribution": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/ReferralAttribution"
+      },
+      "RevenueRightsAgreement": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/RevenueRightsAgreement"
+      },
+      "RightsAgreementAcceptance": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/RightsAgreementAcceptance"
+      },
+      "RightsAgreementTermination": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/RightsAgreementTermination"
+      },
+      "RightsAllocation": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/RightsAllocation"
+      },
+      "RightsArtifactScope": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/RightsArtifactScope"
+      },
+      "RightsAuditEvent": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/RightsAuditEvent"
+      },
+      "RightsParty": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/RightsParty"
+      },
+      "RightsPayoutInstruction": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/RightsPayoutInstruction"
+      },
+      "RightsRevenueAllocation": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/RightsRevenueAllocation"
+      },
+      "RightsRevenueEvent": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/RightsRevenueEvent"
+      },
+      "RightsTerminationAcceptance": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/RightsTerminationAcceptance"
+      },
+      "SettlementAcknowledgment": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/SettlementAcknowledgment"
+      },
+      "SettlementInstruction": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/SettlementInstruction"
+      },
+      "UsdcAtomic": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/UsdcAtomic"
+      },
+      "WebhookAcknowledgment": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/WebhookAcknowledgment"
+      }
+    }
+  }
+}

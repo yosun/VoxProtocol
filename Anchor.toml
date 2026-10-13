@@ -1,0 +1,13 @@
+[toolchain]
+anchor_version = "1.2.1"
+[features]
+resolution = true
+[programs.localnet]
+realize_escrow = "GHLw1HY5BMXRUNzxeMVsv5r7usjQKWJA9SGVMGzNi3tb"
+[programs.devnet]
+realize_escrow = "GHLw1HY5BMXRUNzxeMVsv5r7usjQKWJA9SGVMGzNi3tb"
+[provider]
+cluster = "Localnet"
+wallet = "~/.config/solana/id.json"
+[scripts]
+test = "cargo test -p realize-escrow --test adversarial"

@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "../realize-contracts/dist/types",
+    "emitDeclarationOnly": true,
+    "declarationMap": false
+  },
+  "include": ["src/realize-index.ts"]
+}

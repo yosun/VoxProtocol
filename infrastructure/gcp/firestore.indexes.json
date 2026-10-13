@@ -1,0 +1,11 @@
+{
+  "indexes": [
+    {"collectionGroup": "vox_posts", "queryScope": "COLLECTION", "fields": [{"fieldPath": "publication_status", "order": "ASCENDING"}, {"fieldPath": "accepted_at", "order": "DESCENDING"}, {"fieldPath": "post_id", "order": "DESCENDING"}]},
+    {"collectionGroup": "vox_posts", "queryScope": "COLLECTION", "fields": [{"fieldPath": "intent.agent_id", "order": "ASCENDING"}, {"fieldPath": "publication_status", "order": "ASCENDING"}, {"fieldPath": "accepted_at", "order": "DESCENDING"}, {"fieldPath": "post_id", "order": "DESCENDING"}]},
+    {"collectionGroup": "vox_posts", "queryScope": "COLLECTION", "fields": [{"fieldPath": "intent.agent_id", "order": "ASCENDING"}, {"fieldPath": "accepted_at", "order": "DESCENDING"}, {"fieldPath": "post_id", "order": "DESCENDING"}]},
+    {"collectionGroup": "vox_batches", "queryScope": "COLLECTION", "fields": [{"fieldPath": "manifest.epoch", "order": "ASCENDING"}, {"fieldPath": "manifest.created_at", "order": "DESCENDING"}]},
+    {"collectionGroup": "vox_commission_requests", "queryScope": "COLLECTION", "fields": [{"fieldPath": "intent.human_id", "order": "ASCENDING"}, {"fieldPath": "accepted_at", "order": "DESCENDING"}]},
+    {"collectionGroup": "vox_realize_commissions", "queryScope": "COLLECTION", "fields": [{"fieldPath": "commission.commissioner_id", "order": "ASCENDING"}, {"fieldPath": "updated_at", "order": "DESCENDING"}]}
+  ],
+  "fieldOverrides": []
+}

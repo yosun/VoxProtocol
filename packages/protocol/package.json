@@ -1,0 +1,25 @@
+{
+  "name": "@vox/protocol",
+  "version": "1.1.0",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./schemas/realize-v1.schema.json": "./schemas/realize-v1.schema.json"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "generate:schemas": "npm run build && node scripts/generate-realize-schemas.mjs",
+    "generate:fixtures": "npm run build && node scripts/generate-realize-fixtures.mjs"
+  },
+  "dependencies": {
+    "tweetnacl": "1.0.3",
+    "zod": "3.25.20"
+  },
+  "devDependencies": {
+    "zod-to-json-schema": "3.24.6"
+  }
+}

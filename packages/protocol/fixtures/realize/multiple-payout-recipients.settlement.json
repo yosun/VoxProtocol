@@ -1,0 +1,110 @@
+{
+  "protocol_version": "realize/1",
+  "settlement_id": "settlement:multi-001",
+  "commission_id": "commission:multi-001",
+  "payment_intent_id": "payment-intent:multi-001",
+  "quote_id": "quote:multi-001",
+  "canonical_quote_hash": "88ac0a484afc85c4060765f49ff60fd1e03904b93a837ae777d042572bbe0aaf",
+  "asset": "USDC",
+  "network_id": "solana:devnet",
+  "total_amount_usdc_atomic": "1000000",
+  "payout_recipients": [
+    {
+      "payout_id": "payout:multi:1",
+      "recipient_id": "beneficiary:1",
+      "role": "generation_provider",
+      "amount_usdc_atomic": "100000",
+      "destination": "solana:devnet:fixture-wallet-1"
+    },
+    {
+      "payout_id": "payout:multi:2",
+      "recipient_id": "beneficiary:2",
+      "role": "character_owner",
+      "amount_usdc_atomic": "100000",
+      "destination": "solana:devnet:fixture-wallet-2"
+    },
+    {
+      "payout_id": "payout:multi:3",
+      "recipient_id": "beneficiary:3",
+      "role": "platform",
+      "amount_usdc_atomic": "100000",
+      "destination": "solana:devnet:fixture-wallet-3"
+    },
+    {
+      "payout_id": "payout:multi:4",
+      "recipient_id": "beneficiary:4",
+      "role": "additional_beneficiary",
+      "amount_usdc_atomic": "100000",
+      "destination": "solana:devnet:fixture-wallet-4"
+    },
+    {
+      "payout_id": "payout:multi:5",
+      "recipient_id": "beneficiary:5",
+      "role": "additional_beneficiary",
+      "amount_usdc_atomic": "100000",
+      "destination": "solana:devnet:fixture-wallet-5"
+    },
+    {
+      "payout_id": "payout:multi:6",
+      "recipient_id": "beneficiary:6",
+      "role": "additional_beneficiary",
+      "amount_usdc_atomic": "100000",
+      "destination": "solana:devnet:fixture-wallet-6"
+    },
+    {
+      "payout_id": "payout:multi:7",
+      "recipient_id": "beneficiary:7",
+      "role": "additional_beneficiary",
+      "amount_usdc_atomic": "100000",
+      "destination": "solana:devnet:fixture-wallet-7"
+    },
+    {
+      "payout_id": "payout:multi:8",
+      "recipient_id": "beneficiary:8",
+      "role": "additional_beneficiary",
+      "amount_usdc_atomic": "100000",
+      "destination": "solana:devnet:fixture-wallet-8"
+    },
+    {
+      "payout_id": "payout:multi:9",
+      "recipient_id": "beneficiary:9",
+      "role": "additional_beneficiary",
+      "amount_usdc_atomic": "100000",
+      "destination": "solana:devnet:fixture-wallet-9"
+    },
+    {
+      "payout_id": "payout:multi:10",
+      "recipient_id": "beneficiary:10",
+      "role": "additional_beneficiary",
+      "amount_usdc_atomic": "100000",
+      "destination": "solana:devnet:fixture-wallet-10"
+    }
+  ],
+  "transaction_batches": [
+    {
+      "transaction_index": 0,
+      "payout_ids": [
+        "payout:multi:1",
+        "payout:multi:2",
+        "payout:multi:3",
+        "payout:multi:4",
+        "payout:multi:5",
+        "payout:multi:6",
+        "payout:multi:7",
+        "payout:multi:8"
+      ],
+      "compute_units": 600000,
+      "serialized_size_bytes": 1100
+    },
+    {
+      "transaction_index": 1,
+      "payout_ids": [
+        "payout:multi:9",
+        "payout:multi:10"
+      ],
+      "compute_units": 180000,
+      "serialized_size_bytes": 520
+    }
+  ],
+  "created_at": "2026-10-11T18:00:00.000Z"
+}

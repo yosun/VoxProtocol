@@ -1,0 +1,19 @@
+{
+  "protocol_version": "realize/1",
+  "fulfillment_request_id": "fulfillment:bob-video-001",
+  "commission_id": "commission:001",
+  "generation_provider_id": "provider:video:example",
+  "status": "completed",
+  "outputs": [
+    {
+      "uri": "https://artifacts.example.invalid/bob-special-video-001.mp4",
+      "page_url": "https://populi.cam/bob/action-001",
+      "media_type": "video/mp4",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "byte_length": 1000000
+    }
+  ],
+  "started_at": "2026-10-11T18:02:00.000Z",
+  "completed_at": "2026-10-11T18:08:00.000Z",
+  "provenance_record_id": "provenance:bob-video-001"
+}

@@ -1,0 +1,8 @@
+{
+  "name": "@vox/bob",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {"build": "tsc -p tsconfig.json", "publish": "tsx src/cli.ts", "avatar": "tsx src/avatar-cli.ts", "identity": "tsx src/identity-cli.ts", "verify": "tsx src/verify-cli.ts"},
+  "dependencies": {"@vox/client": "1.0.0", "@vox/identity": "1.0.0", "@vox/protocol": "1.1.0"}
+}

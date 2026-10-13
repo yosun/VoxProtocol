@@ -1,0 +1,7 @@
+{
+  "sha256_abc": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+  "post_hash": "5b3e320e31793dab927a18497e6d66c7cf440ceec3fe92453943372a3d2b5b49",
+  "post_id": "vox:post:5b3e320e31793dab927a18497e6d66c7cf440ceec3fe92453943372a3d2b5b49",
+  "merkle_root_single_leaf": "a878d38fcd4d940a6aef244bcd5afdb882627a787dc38b8be560da7b5f8ada80",
+  "manifest_hash": "7e7d7595f5f475228665d5e40045746cb7e97f8f2da5b45c45a9f4dde910b8eb"
+}

@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "integrationVersion": "0.2.0",
+  "protocolVersion": 2,
+  "idl": "../idl/realize_escrow.json",
+  "idlSha256": "39c8992069bfeff7a35630195b53f0c287f5a1db25e080feaacf26c9137f4d24",
+  "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+  "devnet": {
+    "clusterIdentity": "solana:devnet",
+    "rpcEndpoint": "https://api.devnet.solana.com",
+    "programId": "GHLw1HY5BMXRUNzxeMVsv5r7usjQKWJA9SGVMGzNi3tb",
+    "usdcMint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    "admin": "4MSTtPJKELknreL2uaPJd9xpCZetypfoEjoMLY17btbL",
+    "quoteAuthority": "6yj1txeBEHJX5RULpRHExRCXe4x2p8ZeWYgc5y353im4",
+    "fulfillmentAuthority": "8RiNuRwnJydiZq9tuAVBZWKw77UA7qovNMySJQS3AcE9",
+    "active": true,
+    "status": "deployed-configured-devnet-e2e-passed",
+    "deployment": {
+      "programId": "GHLw1HY5BMXRUNzxeMVsv5r7usjQKWJA9SGVMGzNi3tb",
+      "configPda": "DZdQE4QRJSq1yusCtV8X4Jt3AXE97YLpqQVkp1magdfm",
+      "admin": "4MSTtPJKELknreL2uaPJd9xpCZetypfoEjoMLY17btbL",
+      "quoteAuthority": "6yj1txeBEHJX5RULpRHExRCXe4x2p8ZeWYgc5y353im4",
+      "fulfillmentAuthority": "8RiNuRwnJydiZq9tuAVBZWKw77UA7qovNMySJQS3AcE9",
+      "feePayer": "45rmLepEcjBBNZLKnFgxVg2zyzyj1YWbC63yBRMeH9gr",
+      "keypairsDirectory": ".vox-local/realize-devnet/",
+      "deploymentSubmitted": true,
+      "deploymentAttempt": {
+        "cluster": "devnet",
+        "result": "failed-before-program-publish",
+        "reason": "Public Devnet RPC returned HTTP 429 and program-buffer writes exceeded retry limit",
+        "bufferAddress": "TYfcab84AW23RVQXe4ookU4W9XGpdJjC2MA7i5fsePP",
+        "bufferClosed": true,
+        "bufferRentReturned": true,
+        "netFeesSol": 0.00019
+      },
+      "configInitialized": true,
+      "observedFeePayerBalanceSol": 3.0716176,
+      "programBinaryBytes": 368936,
+      "programAccountRentMinimumSol": 1.87507372,
+      "devnetSbfSha256": "55c0141bbf8c30ae3a10db7197abe07d13641d2ef9a65932c468aacea0bad67e",
+      "idlSha256": "39c8992069bfeff7a35630195b53f0c287f5a1db25e080feaacf26c9137f4d24",
+      "deploymentSignature": "5VtTSUWsJRSdRtRUuEbej38TPFfUEwBktgkAMC1ypqF5z7PjLpRKLfF1MJ7X2iBJLG8d4YpKyrqoqRJxNEKPCB3L",
+      "deploymentSlot": 510068832,
+      "programDataAddress": "BJW9Ht5U5LCC7UC2Gvm5AjCFAU7VL3Wgf4HSgCei6JAz",
+      "configPda": "DZdQE4QRJSq1yusCtV8X4Jt3AXE97YLpqQVkp1magdfm",
+      "configInitializationSignature": "4CagubfmSsqi7RBZAnNB8po1WNnKM5hSpeEJb1ZbASXQQcc6uaRjDDwoa1D9ne292tKzuS9SqdLV6LVNR6XGuHyF",
+      "devnetUsdcFaucetSignature": "3Wq8S8bukGF8EpremUtbPboYf6pUX9aQMUrUogk9ipAmhsC3pAb5uAdRnoXrE7pKcRQ8wRHTSX3uiquTe7YjUG8U",
+      "liveE2e": {
+        "status": "passed",
+        "manifest": ".vox-local/realize-devnet/devnet-e2e-manifest.json",
+        "distributionEscrow": "Fu1Fg25vCqqXBHvjVS8f8CpEs7JSyA2qsmAmX5ozh2Kn",
+        "refundEscrow": "EPGtFnyi1HjXWKsCWvy8FgQy137mB75jTDe7UsF5yyap",
+        "distributionAtomic": 1200000,
+        "recipientCount": 2,
+        "distributionClaimedBitmap": 3,
+        "distributionVaultRemainingAtomic": 0,
+        "refundAtomic": 250000,
+        "refundScenario": "synthetic test-only failure attestation; this was not a failed video job",
+        "refundVaultRemainingAtomic": 0,
+        "feePayerUsdcBalance": "19.700000"
+      }
+    }
+  },
+  "mainnet": {
+    "clusterIdentity": "solana:mainnet-beta",
+    "rpcEndpoint": "https://api.mainnet-beta.solana.com",
+    "programId": null,
+    "usdcMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "admin": null,
+    "quoteAuthority": null,
+    "fulfillmentAuthority": null,
+    "active": false,
+    "status": "prepared-inactive",
+    "compiledArtifact": {
+      "feature": "mainnet",
+      "bytes": 368936,
+      "sha256": "61f41996ea372e0eb82cfdc52d538863f17038d377c0efa06134cd117cd4e124",
+      "deployed": false
+    }
+  }
+}

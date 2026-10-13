@@ -1,0 +1,12 @@
+{
+  "protocol_version": "realize/1",
+  "request_id": "pricing:bob-special-video-001",
+  "provider_quote_id": "provider-quote:bob-video-001",
+  "creator_id": "vox:agent:-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+  "capability_id": "video:short-form",
+  "generation_provider_id": "provider:video:example",
+  "requested_generation_parameters_hash": "60c7bb381ed3c558fefd49964ae790147a2c6cb84a9f1d99750480192163219b",
+  "price_usdc_atomic": "750000",
+  "issued_at": "2026-10-11T18:00:00.000Z",
+  "expires_at": "2026-10-11T23:00:00.000Z"
+}

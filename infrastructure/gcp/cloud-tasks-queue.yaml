@@ -1,0 +1,10 @@
+# Apply with gcloud tasks queues create/update using the explicit project/region
+# from .kiro/gcp-project.json. Values are intentionally bounded.
+queue:
+  name: vox-anchor
+  maxConcurrentDispatches: 2
+  maxDispatchesPerSecond: 0.2
+  retryConfig:
+    maxAttempts: 8
+    maxRetryDuration: 3600s
+    maxBackoff: 600s

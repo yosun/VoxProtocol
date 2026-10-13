@@ -1,0 +1,30 @@
+{
+  "protocol_version": "realize/1",
+  "provenance_record_id": "provenance:bob-video-001",
+  "subject_type": "fulfillment",
+  "subject_id": "fulfillment:bob-video-001",
+  "creator_id": "vox:agent:-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+  "generation_provider_id": "provider:video:example",
+  "commission_id": "commission:001",
+  "quote_hash": "fbb63e22472cc443360b32eafc09b931874bd8b00ae121e2fbb1815de492f0d6",
+  "rights_agreement_reference": "rights:bob-special-video-v1",
+  "inputs": [
+    {
+      "sha256": "60c7bb381ed3c558fefd49964ae790147a2c6cb84a9f1d99750480192163219b",
+      "media_type": "application/json"
+    }
+  ],
+  "outputs": [
+    {
+      "uri": "https://artifacts.example.invalid/bob-special-video-001.mp4",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "media_type": "video/mp4",
+      "byte_length": 1000000
+    }
+  ],
+  "parent_record_ids": [],
+  "created_at": "2026-10-11T18:08:00.000Z",
+  "issuer_id": "vox:agent:-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+  "issuer_key_id": "key:bob-realize-01",
+  "signature": "dLfLQkCCG79b0IAXF_KA_uImAZma2N1KrFxalVA2Kg85gHjhbdyTt8wuG84ziM7hOYRJbeT0ltb1dDlE9PkbBQ"
+}

@@ -1,0 +1,36 @@
+{
+  "status": "live-no-render-refund-rehearsal-passed",
+  "completedAt": "2026-10-12T22:45:12.924Z",
+  "commissionId": "vox:commission:1924d738285c4f2676899e7139b89f4bdd8e18f6d98291f3cc9bbefa3267ecb2",
+  "failureEvidence": {
+    "source": "staging_no_render_test",
+    "fulfillment_request_id": "vox:fulfillment:553e5276793e8fa5b516671780adc63a0d4302297cf1ecab9b74e9e16169085c",
+    "observed_at": "2026-10-12T22:44:59.303Z",
+    "payload_hash": "6baf173258e35c62a36225dd4aa49f25ba66b11321893689f76b4fb1030d3489",
+    "error_code": "STAGING_NO_RENDER_FAILURE_REHEARSAL"
+  },
+  "providerJobSubmitted": false,
+  "refundApproval": {
+    "operatorHumanId": "vox:human:c8wA8L9eW34i_SUnd4WxSE3nHAiJDPWvz0mKXp10E3k",
+    "approvalPayloadHash": "6ec722c6afca150e25d39f91c8233107a8e441a2ce0ce9a91607788bffb56111"
+  },
+  "cluster": "solana:devnet",
+  "usdcMint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+  "amountUsdcAtomic": "1000000",
+  "originalPayer": "45rmLepEcjBBNZLKnFgxVg2zyzyj1YWbC63yBRMeH9gr",
+  "escrow": "eAuBZfVkHSopXZ61KsGr3UuU88t8t15dwjCYUckvptT",
+  "fundingSignature": "UHs83NWbCppffJZodUVjNgBjkrdtXmQmS5FgTyAJY8z1PJFanCzia1zYARLatZcQ5PkPviHNeH6rLz233PCbV93",
+  "refundSignature": "4G5WmUJbEcv7rxjxKq98hBoYh86Dw4bu8KGUUX9R7P8aVF1Xg6S7YBEo7RU7XtGwCfoeNtLQueeehjHykMEvjkRL",
+  "refundFinalized": true,
+  "payerUsdcDeltaAtomic": "0",
+  "payerSolSpentLamports": "18348560",
+  "payerSolCeilingLamports": "30000000",
+  "vaultBalanceAtomic": "0",
+  "outcome": "refunded",
+  "auditActions": [
+    "no_render_failure_armed",
+    "generation_failed",
+    "refund_approved",
+    "refund_finalized"
+  ]
+}

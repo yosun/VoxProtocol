@@ -1,0 +1,158 @@
+name: Production CI and deployment
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release_profile:
+        description: Select a reviewed production release profile
+        type: choice
+        options:
+          - realize-refund-settlement
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Test and production frontend build
+    needs: [scope]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Install browser for frontend end-to-end tests
+        if: needs.scope.outputs.run_e2e == 'true'
+        run: npx playwright install --with-deps chromium
+      - name: Run mocked frontend end-to-end tests
+        if: needs.scope.outputs.run_e2e == 'true'
+        run: npm run test:e2e
+      - name: Build production frontend
+        if: needs.scope.outputs.deploy_hosting == 'true'
+        run: npm run build --workspace @vox/web
+        env:
+          VITE_API_URL: https://vox.gold
+          VITE_REALIZE_DEVNET_ENABLED: "false"
+          VITE_REALIZE_MAINNET_ENABLED: "true"
+          VITE_SOLANA_CLUSTER: mainnet-beta
+          VITE_SOLANA_RPC_URL: https://api.mainnet.solana.com
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch && needs.scope.outputs.deploy_hosting == 'true'
+        with:
+          name: vox-web-dist-${{ github.sha }}
+          path: apps/web/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  scope:
+    name: Classify production deployment scope
+    runs-on: ubuntu-latest
+    outputs:
+      deploy_api: ${{ steps.scope.outputs.deploy_api }}
+      deploy_hosting: ${{ steps.scope.outputs.deploy_hosting }}
+      run_e2e: ${{ steps.scope.outputs.run_e2e }}
+      deploy_settlement: ${{ steps.scope.outputs.deploy_settlement }}
+      deploy_reconcile: ${{ steps.scope.outputs.deploy_reconcile }}
+      deploy_anchor: ${{ steps.scope.outputs.deploy_anchor }}
+      sensitive: ${{ steps.scope.outputs.sensitive }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: scope
+        name: Detect changed application targets and sensitive paths
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_PROFILE: ${{ inputs.release_profile }}
+          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event_name == 'push' && github.sha || github.event.pull_request.head.sha }}
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            node scripts/production-deployment-scope.mjs --release-profile "$RELEASE_PROFILE"
+          else
+            node scripts/production-deployment-scope.mjs "$BASE_SHA" "$HEAD_SHA"
+          fi
+
+  deploy-production:
+    name: Release production changes
+    needs: [verify, scope]
+    if: >-
+      ((github.event_name == 'push' &&
+        github.ref_name == github.event.repository.default_branch) ||
+       (github.event_name == 'workflow_dispatch' &&
+        inputs.release_profile == 'realize-refund-settlement')) &&
+      (needs.scope.outputs.deploy_api == 'true' ||
+       needs.scope.outputs.deploy_hosting == 'true' ||
+       needs.scope.outputs.deploy_settlement == 'true' ||
+       needs.scope.outputs.deploy_reconcile == 'true' ||
+       needs.scope.outputs.deploy_anchor == 'true')
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ needs.scope.outputs.sensitive == 'true' && 'production-sensitive' || 'production' }}
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    env:
+      VOX_GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.VOX_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      VOX_GCP_DEPLOY_SERVICE_ACCOUNT: ${{ vars.VOX_GCP_DEPLOY_SERVICE_ACCOUNT }}
+      VOX_PRODUCTION_IMAGE: us-central1-docker.pkg.dev/voxprotocol/vox/vox-api:${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+      VOX_DEPLOY_API: ${{ needs.scope.outputs.deploy_api }}
+      VOX_DEPLOY_HOSTING: ${{ needs.scope.outputs.deploy_hosting }}
+      VOX_DEPLOY_SETTLEMENT: ${{ needs.scope.outputs.deploy_settlement }}
+      VOX_DEPLOY_RECONCILE: ${{ needs.scope.outputs.deploy_reconcile }}
+      VOX_DEPLOY_ANCHOR: ${{ needs.scope.outputs.deploy_anchor }}
+      VOX_PRODUCTION_SENSITIVE_APPROVED: ${{ needs.scope.outputs.sensitive }}
+      VOX_PRODUCTION_BASE_SHA: ${{ github.event.before }}
+      VOX_PRODUCTION_HEAD_SHA: ${{ github.sha }}
+    steps:
+      - name: Fail closed unless sensitive production releases require reviewers
+        if: needs.scope.outputs.sensitive == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          reviewer_count="$(gh api "repos/$GITHUB_REPOSITORY/environments/production-sensitive" --jq '[.protection_rules[]? | select(.type == "required_reviewers")] | length')"
+          if [[ "$reviewer_count" -lt 1 ]]; then
+            echo "Configure required reviewers on the production-sensitive GitHub environment before releasing this change." >&2
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        if: needs.scope.outputs.deploy_hosting == 'true'
+        with:
+          name: vox-web-dist-${{ github.sha }}
+          path: apps/web/dist
+      - uses: google-github-actions/auth@v3
+        with:
+          project_id: voxprotocol
+          workload_identity_provider: ${{ vars.VOX_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.VOX_GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: voxprotocol
+      - name: Build and push production Cloud Run image
+        if: needs.scope.outputs.deploy_api == 'true' || needs.scope.outputs.deploy_settlement == 'true' || needs.scope.outputs.deploy_reconcile == 'true' || needs.scope.outputs.deploy_anchor == 'true'
+        run: |
+          gcloud builds submit . \
+            --project=voxprotocol \
+            --config=infrastructure/gcp/cloudbuild.yaml \
+            --substitutions="_IMAGE=$VOX_PRODUCTION_IMAGE,_VITE_API_URL=https://vox.gold,_VITE_REALIZE_DEVNET_ENABLED=false,_VITE_REALIZE_MAINNET_ENABLED=true,_VITE_SOLANA_CLUSTER=mainnet-beta,_VITE_SOLANA_RPC_URL=https://api.mainnet.solana.com"
+          digest="$(gcloud artifacts docker images describe "$VOX_PRODUCTION_IMAGE" --project=voxprotocol --format='value(image_summary.digest)')"
+          if [[ ! "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Artifact Registry did not return a valid image digest." >&2
+            exit 1
+          fi
+          echo "VOX_PRODUCTION_IMAGE=${VOX_PRODUCTION_IMAGE%:*}@$digest" >> "$GITHUB_ENV"
+      - name: Release production Cloud Run and Firebase Hosting targets
+        run: bash scripts/deploy-production-app.sh

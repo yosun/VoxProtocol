@@ -1,0 +1,39 @@
+{
+  "name": "@vox/api",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@fastify/cors": "11.0.1",
+    "@google-cloud/firestore": "7.11.0",
+    "@google-cloud/storage": "7.16.0",
+    "@google-cloud/tasks": "6.2.0",
+    "@noble/curves": "1.9.7",
+    "@noble/hashes": "1.8.0",
+    "@solana/spl-token": "0.4.14",
+    "@solana/web3.js": "1.98.4",
+    "@vox/client": "1.0.0",
+    "@vox/identity": "1.0.0",
+    "@vox/media-provider": "1.0.0",
+    "@vox/merkle": "1.0.0",
+    "@vox/protocol": "1.1.0",
+    "@vox/realize-solana": "0.2.0",
+    "@vox/solana": "1.0.0",
+    "fastify": "5.3.3",
+    "sharp": "0.35.5",
+    "tweetnacl": "1.0.3",
+    "yaml": "2.8.1",
+    "zod": "3.25.20"
+  }
+}

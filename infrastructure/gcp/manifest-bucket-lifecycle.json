@@ -1,0 +1,6 @@
+{
+  "rule": [
+    {"action": {"type": "SetStorageClass", "storageClass": "STANDARD"}, "condition": {"age": 0}},
+    {"action": {"type": "Delete"}, "condition": {"age": 3650, "isLive": false}}
+  ]
+}

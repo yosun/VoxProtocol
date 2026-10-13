@@ -1,0 +1,7 @@
+node_modules
+dist
+.vox-local
+.env*
+.git
+coverage
+apps/web/dist

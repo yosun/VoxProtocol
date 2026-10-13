@@ -1,0 +1,31 @@
+{
+  "name": "@vox/realize-contracts",
+  "version": "1.1.0",
+  "description": "Versioned VOX Realize protocol contracts for VOX and independent providers",
+  "type": "module",
+  "files": ["dist"],
+  "exports": {
+    ".": {
+      "types": "./dist/types/realize-index.d.ts",
+      "import": "./dist/realize-index.js"
+    },
+    "./schemas/realize-v1.schema.json": "./dist/schemas/realize-v1.schema.json",
+    "./fixtures/realize/*": "./dist/fixtures/realize/*",
+    "./openapi.json": "./dist/realize-openapi.json",
+    "./handoff.md": "./dist/realize-populi-handoff.md"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "tweetnacl": "1.0.3",
+    "zod": "3.25.20"
+  },
+  "publishConfig": {
+    "access": "restricted"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

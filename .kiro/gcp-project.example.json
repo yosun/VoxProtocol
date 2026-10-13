@@ -1,0 +1,5 @@
+{
+  "projectId": "replace-after-owner-verification",
+  "region": "us-central1",
+  "cloudRunService": "vox-api"
+}

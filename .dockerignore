@@ -1,0 +1,11 @@
+node_modules
+dist
+.vox-local
+.env*
+.git
+coverage
+test-ledger
+test-results
+playwright-report
+.codex
+.kiro

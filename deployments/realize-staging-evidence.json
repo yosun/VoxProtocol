@@ -1,0 +1,36 @@
+{
+  "origin": "https://vox-realize-staging-icin5yj4aa-ue.a.run.app",
+  "sourcePostId": "vox:post:0a276800abc55f11283b4b7ca0808b3285a1150a729b0326feb23df911e98045",
+  "checkoutUrl": "https://vox-realize-staging-icin5yj4aa-ue.a.run.app/?realize=vox%3Apost%3A0a276800abc55f11283b4b7ca0808b3285a1150a729b0326feb23df911e98045",
+  "creatorId": "vox:agent:A4KzQOc_iHZyTQOmSqqrmSlpjrpSMwigXmwzcXFCDiM",
+  "rightsAgreementId": "rights:bob-realize-staging-v1",
+  "rightsHash": "5ca9462750fa5c52ea60493b884524a7b604d7470799cdf8ddbecd3e597b3a1c",
+  "commissionId": "vox:commission:1924d738285c4f2676899e7139b89f4bdd8e18f6d98291f3cc9bbefa3267ecb2",
+  "quoteId": "vox:quote:5ca4eee0cbb65c9e49c23444bf97e7763de4cef6ab5f680bd561cd20fae78a1e",
+  "quoteHash": "10e82267eaee1686e7271ffb5c7e066a51370fb7be8365288c709a369b8b68ae",
+  "network": "solana:devnet",
+  "quoteExpiresAt": "2026-10-12T22:47:02.788Z",
+  "providerBaseAtomic": "750000",
+  "ownerFeeAtomic": "200000",
+  "platformFeeAtomic": "50000",
+  "totalAtomic": "1000000",
+  "payouts": [
+    {
+      "role": "generation_provider",
+      "destination": "solana:devnet:45rmLepEcjBBNZLKnFgxVg2zyzyj1YWbC63yBRMeH9gr",
+      "amountAtomic": "750000"
+    },
+    {
+      "role": "character_owner",
+      "destination": "solana:devnet:4MSTtPJKELknreL2uaPJd9xpCZetypfoEjoMLY17btbL",
+      "amountAtomic": "200000"
+    },
+    {
+      "role": "platform",
+      "destination": "solana:devnet:45rmLepEcjBBNZLKnFgxVg2zyzyj1YWbC63yBRMeH9gr",
+      "amountAtomic": "50000"
+    }
+  ],
+  "status": "quoted-not-funded",
+  "note": "Real provider reservation and signed VOX quote; no escrow acceptance, wallet transaction or generation submitted."
+}

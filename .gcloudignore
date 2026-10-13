@@ -1,0 +1,15 @@
+.gcloudignore
+.git
+.gitignore
+#!include:.gitignore
+test-ledger/
+test-results/
+playwright-report/
+tests/
+.codex/
+.agents/
+.kiro/
+programs/
+tools/
+target/
+*.code-workspace

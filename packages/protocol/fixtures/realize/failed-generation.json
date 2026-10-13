@@ -1,0 +1,38 @@
+{
+  "scenario": "failed_generation",
+  "commission": {
+    "protocol_version": "realize/1",
+    "commission_id": "commission:bob-video-failed",
+    "commissioner_id": "vox:human:GX9rI-FshTLGq8g4-s1ep4m-DHaykgM0A5v6iz02jWE",
+    "creator_id": "vox:agent:-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+    "capability_id": "video:short-form",
+    "requested_generation_parameters": {
+      "concept": "Bob's special video",
+      "duration_seconds": 6,
+      "style": "special"
+    },
+    "quote_id": "quote:bob-special-video-001",
+    "accepted_quote_hash": "fbb63e22472cc443360b32eafc09b931874bd8b00ae121e2fbb1815de492f0d6",
+    "rights_agreement_reference": "rights:bob-special-video-v1",
+    "state": "FAILED",
+    "payment_state": "captured",
+    "fulfillment_state": "failed",
+    "payment_intent_id": "payment-intent:bob-video-failed",
+    "fulfillment_request_id": "fulfillment:bob-video-failed",
+    "created_at": "2026-10-11T18:01:00.000Z",
+    "updated_at": "2026-10-11T18:09:00.000Z"
+  },
+  "fulfillment_result": {
+    "protocol_version": "realize/1",
+    "fulfillment_request_id": "fulfillment:bob-video-failed",
+    "commission_id": "commission:bob-video-failed",
+    "generation_provider_id": "provider:video:example",
+    "status": "failed",
+    "outputs": [],
+    "error_code": "GENERATION_PROVIDER_FAILED",
+    "error_message": "The generation provider could not complete this request.",
+    "started_at": "2026-10-11T18:02:00.000Z",
+    "completed_at": "2026-10-11T18:09:00.000Z"
+  },
+  "expected_follow_up": "REFUND_PENDING"
+}

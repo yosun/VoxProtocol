@@ -1,0 +1,1832 @@
+{
+  "address": "GHLw1HY5BMXRUNzxeMVsv5r7usjQKWJA9SGVMGzNi3tb",
+  "metadata": {
+    "name": "realize_escrow",
+    "version": "0.2.0",
+    "spec": "0.1.0"
+  },
+  "instructions": [
+    {
+      "name": "append_payouts",
+      "discriminator": [
+        172,
+        203,
+        30,
+        129,
+        238,
+        165,
+        129,
+        221
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "signer": true,
+          "relations": [
+            "escrow"
+          ]
+        },
+        {
+          "name": "escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrow.config",
+                "account": "Escrow"
+              },
+              {
+                "kind": "account",
+                "path": "escrow.commission",
+                "account": "Escrow"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "payouts",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "Payout"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "attest",
+      "docs": [
+        "The configured fulfillment authority can attest only to this funded commission once."
+      ],
+      "discriminator": [
+        83,
+        148,
+        120,
+        119,
+        144,
+        139,
+        117,
+        160
+      ],
+      "accounts": [
+        {
+          "name": "fulfillment_authority",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  111,
+                  120,
+                  45,
+                  114,
+                  101,
+                  97,
+                  108,
+                  105,
+                  122,
+                  101,
+                  45,
+                  118,
+                  49
+                ]
+              }
+            ]
+          },
+          "relations": [
+            "escrow"
+          ]
+        },
+        {
+          "name": "escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrow.config",
+                "account": "Escrow"
+              },
+              {
+                "kind": "account",
+                "path": "escrow.commission",
+                "account": "Escrow"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "quote_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "fulfillment_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "success",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "cancel",
+      "discriminator": [
+        232,
+        219,
+        223,
+        41,
+        219,
+        236,
+        220,
+        190
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "signer": true,
+          "relations": [
+            "escrow"
+          ]
+        },
+        {
+          "name": "escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrow.config",
+                "account": "Escrow"
+              },
+              {
+                "kind": "account",
+                "path": "escrow.commission",
+                "account": "Escrow"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "claim",
+      "docs": [
+        "Permissionless claim, payable only to the exact committed recipient's ATA."
+      ],
+      "discriminator": [
+        62,
+        198,
+        214,
+        193,
+        213,
+        159,
+        108,
+        210
+      ],
+      "accounts": [
+        {
+          "name": "escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrow.config",
+                "account": "Escrow"
+              },
+              {
+                "kind": "account",
+                "path": "escrow.commission",
+                "account": "Escrow"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrow"
+              }
+            ]
+          }
+        },
+        {
+          "name": "recipient"
+        },
+        {
+          "name": "destination",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "recipient"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        }
+      ],
+      "args": [
+        {
+          "name": "index",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "create_escrow",
+      "discriminator": [
+        253,
+        215,
+        165,
+        116,
+        36,
+        108,
+        68,
+        80
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  111,
+                  120,
+                  45,
+                  114,
+                  101,
+                  97,
+                  108,
+                  105,
+                  122,
+                  101,
+                  45,
+                  118,
+                  49
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "config"
+              },
+              {
+                "kind": "arg",
+                "path": "args.commission"
+              }
+            ]
+          }
+        },
+        {
+          "name": "quote_used",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "config"
+              },
+              {
+                "kind": "arg",
+                "path": "args.quote_hash"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrow"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "instructions",
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "CreateArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "expire",
+      "discriminator": [
+        243,
+        83,
+        205,
+        58,
+        57,
+        201,
+        247,
+        146
+      ],
+      "accounts": [
+        {
+          "name": "escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrow.config",
+                "account": "Escrow"
+              },
+              {
+                "kind": "account",
+                "path": "escrow.commission",
+                "account": "Escrow"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "fund",
+      "discriminator": [
+        218,
+        188,
+        111,
+        221,
+        152,
+        113,
+        174,
+        7
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "signer": true,
+          "relations": [
+            "escrow"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  111,
+                  120,
+                  45,
+                  114,
+                  101,
+                  97,
+                  108,
+                  105,
+                  122,
+                  101,
+                  45,
+                  118,
+                  49
+                ]
+              }
+            ]
+          },
+          "relations": [
+            "escrow"
+          ]
+        },
+        {
+          "name": "escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrow.config",
+                "account": "Escrow"
+              },
+              {
+                "kind": "account",
+                "path": "escrow.commission",
+                "account": "Escrow"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "source",
+          "writable": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrow"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "initialize_config",
+      "docs": [
+        "Initializes the unique config PDA. Its signer must be the loader-v3 upgrade authority.",
+        "Mint and token program become immutable for this deployment."
+      ],
+      "discriminator": [
+        208,
+        127,
+        21,
+        1,
+        194,
+        190,
+        196,
+        70
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  111,
+                  120,
+                  45,
+                  114,
+                  101,
+                  97,
+                  108,
+                  105,
+                  122,
+                  101,
+                  45,
+                  118,
+                  49
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "program",
+          "address": "GHLw1HY5BMXRUNzxeMVsv5r7usjQKWJA9SGVMGzNi3tb"
+        },
+        {
+          "name": "program_data"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "quote_authority",
+          "type": "pubkey"
+        },
+        {
+          "name": "fulfillment_authority",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "pause",
+      "docs": [
+        "Emergency pause is bounded to one hour and blocks new activity only."
+      ],
+      "discriminator": [
+        211,
+        22,
+        221,
+        251,
+        74,
+        121,
+        193,
+        47
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  111,
+                  120,
+                  45,
+                  114,
+                  101,
+                  97,
+                  108,
+                  105,
+                  122,
+                  101,
+                  45,
+                  118,
+                  49
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "until",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "recover_surplus",
+      "docs": [
+        "Donations do not change the quote. Terminal surplus returns only to the original payer."
+      ],
+      "discriminator": [
+        139,
+        222,
+        216,
+        117,
+        189,
+        233,
+        251,
+        158
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "signer": true,
+          "relations": [
+            "escrow"
+          ]
+        },
+        {
+          "name": "escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrow.config",
+                "account": "Escrow"
+              },
+              {
+                "kind": "account",
+                "path": "escrow.commission",
+                "account": "Escrow"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrow"
+              }
+            ]
+          }
+        },
+        {
+          "name": "destination",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "payer"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "refund",
+      "discriminator": [
+        2,
+        96,
+        183,
+        251,
+        63,
+        208,
+        46,
+        46
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "signer": true,
+          "relations": [
+            "escrow"
+          ]
+        },
+        {
+          "name": "escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrow.config",
+                "account": "Escrow"
+              },
+              {
+                "kind": "account",
+                "path": "escrow.commission",
+                "account": "Escrow"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrow"
+              }
+            ]
+          }
+        },
+        {
+          "name": "destination",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "payer"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "seal",
+      "discriminator": [
+        102,
+        202,
+        171,
+        163,
+        27,
+        152,
+        105,
+        242
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "signer": true,
+          "relations": [
+            "escrow"
+          ]
+        },
+        {
+          "name": "escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrow.config",
+                "account": "Escrow"
+              },
+              {
+                "kind": "account",
+                "path": "escrow.commission",
+                "account": "Escrow"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "transfer_admin",
+      "docs": [
+        "Admin rotation requires both the current and replacement authority to sign."
+      ],
+      "discriminator": [
+        42,
+        242,
+        66,
+        106,
+        228,
+        10,
+        111,
+        156
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "new_admin",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  111,
+                  120,
+                  45,
+                  114,
+                  101,
+                  97,
+                  108,
+                  105,
+                  122,
+                  101,
+                  45,
+                  118,
+                  49
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "update_settlement_authorities",
+      "docs": [
+        "Settlement authorities may rotate only through the config admin."
+      ],
+      "discriminator": [
+        250,
+        206,
+        119,
+        252,
+        106,
+        240,
+        3,
+        245
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  111,
+                  120,
+                  45,
+                  114,
+                  101,
+                  97,
+                  108,
+                  105,
+                  122,
+                  101,
+                  45,
+                  118,
+                  49
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "quote_authority",
+          "type": "pubkey"
+        },
+        {
+          "name": "fulfillment_authority",
+          "type": "pubkey"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Config",
+      "discriminator": [
+        155,
+        12,
+        170,
+        224,
+        30,
+        250,
+        204,
+        130
+      ]
+    },
+    {
+      "name": "Escrow",
+      "discriminator": [
+        31,
+        213,
+        123,
+        187,
+        186,
+        22,
+        218,
+        155
+      ]
+    },
+    {
+      "name": "QuoteUsed",
+      "discriminator": [
+        200,
+        177,
+        165,
+        176,
+        194,
+        4,
+        94,
+        169
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "Authority",
+      "msg": "Unauthorized authority"
+    },
+    {
+      "code": 6001,
+      "name": "Deadline",
+      "msg": "Invalid deadlines or pause duration"
+    },
+    {
+      "code": 6002,
+      "name": "Allocation",
+      "msg": "Invalid allocation"
+    },
+    {
+      "code": 6003,
+      "name": "Commitment",
+      "msg": "Commitment mismatch"
+    },
+    {
+      "code": 6004,
+      "name": "State",
+      "msg": "Invalid state transition"
+    },
+    {
+      "code": 6005,
+      "name": "Overflow",
+      "msg": "Integer overflow"
+    },
+    {
+      "code": 6006,
+      "name": "Conservation",
+      "msg": "Payout conservation violated"
+    },
+    {
+      "code": 6007,
+      "name": "Expired",
+      "msg": "Quote or fulfillment window expired"
+    },
+    {
+      "code": 6008,
+      "name": "AlreadyClaimed",
+      "msg": "Recipient already paid"
+    },
+    {
+      "code": 6009,
+      "name": "RefundIneligible",
+      "msg": "Refund is not eligible"
+    },
+    {
+      "code": 6010,
+      "name": "Paused",
+      "msg": "New activity paused"
+    },
+    {
+      "code": 6011,
+      "name": "Mint",
+      "msg": "Wrong configured mint or precision"
+    },
+    {
+      "code": 6012,
+      "name": "TokenProgram",
+      "msg": "Wrong token program"
+    },
+    {
+      "code": 6013,
+      "name": "Recipient",
+      "msg": "Wrong recipient"
+    },
+    {
+      "code": 6014,
+      "name": "QuoteSignature",
+      "msg": "Quote signature instruction is missing or malformed"
+    },
+    {
+      "code": 6015,
+      "name": "QuoteDomain",
+      "msg": "Quote settlement domain does not match this deployment"
+    }
+  ],
+  "types": [
+    {
+      "name": "ClusterId",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Localnet"
+          },
+          {
+            "name": "Devnet"
+          },
+          {
+            "name": "MainnetBeta"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Config",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "quote_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "fulfillment_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "token_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "cluster",
+            "type": {
+              "defined": {
+                "name": "ClusterId"
+              }
+            }
+          },
+          {
+            "name": "protocol_version",
+            "type": "u16"
+          },
+          {
+            "name": "revision",
+            "type": "u64"
+          },
+          {
+            "name": "pause_until",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CreateArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "commission",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "quote_hash",
+            "docs": [
+              "Canonical accepted quote hash from the shared Realize protocol."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "quote_domain_hash",
+            "docs": [
+              "Quote hash signed by the configured quote authority for this deployment domain."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "total",
+            "type": "u64"
+          },
+          {
+            "name": "recipient_count",
+            "type": "u8"
+          },
+          {
+            "name": "quote_expires_at",
+            "type": "i64"
+          },
+          {
+            "name": "refund_after",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Escrow",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "config",
+            "type": "pubkey"
+          },
+          {
+            "name": "payer",
+            "type": "pubkey"
+          },
+          {
+            "name": "commission",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "quote_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "quote_domain_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "running_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "fulfillment_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "token_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "cluster",
+            "type": {
+              "defined": {
+                "name": "ClusterId"
+              }
+            }
+          },
+          {
+            "name": "protocol_version",
+            "type": "u16"
+          },
+          {
+            "name": "config_revision",
+            "type": "u64"
+          },
+          {
+            "name": "quote_expires_at",
+            "type": "i64"
+          },
+          {
+            "name": "refund_after",
+            "type": "i64"
+          },
+          {
+            "name": "total",
+            "type": "u64"
+          },
+          {
+            "name": "allocated",
+            "type": "u64"
+          },
+          {
+            "name": "paid",
+            "type": "u64"
+          },
+          {
+            "name": "claimed",
+            "type": "u64"
+          },
+          {
+            "name": "recipient_count",
+            "type": "u8"
+          },
+          {
+            "name": "status",
+            "type": {
+              "defined": {
+                "name": "Status"
+              }
+            }
+          },
+          {
+            "name": "fulfillment_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "payouts",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "Payout"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Payout",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "QuoteUsed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "escrow",
+            "type": "pubkey"
+          },
+          {
+            "name": "quote_domain_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Status",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Draft"
+          },
+          {
+            "name": "Ready"
+          },
+          {
+            "name": "Funded"
+          },
+          {
+            "name": "Fulfilled"
+          },
+          {
+            "name": "Refundable"
+          },
+          {
+            "name": "Settled"
+          },
+          {
+            "name": "Refunded"
+          },
+          {
+            "name": "Canceled"
+          },
+          {
+            "name": "Expired"
+          }
+        ]
+      }
+    }
+  ]
+}

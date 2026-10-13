@@ -1,0 +1,10 @@
+{
+  "protocol": "vox/1",
+  "type": "domain-agent-association",
+  "domain": "cruelty.cam",
+  "agent_id": "vox:agent:<base64url-root-public-key>",
+  "identity_public_key": "<base64url-raw-ed25519-root-public-key>",
+  "issued_at": "<RFC3339 timestamp>",
+  "expires_at": "<optional RFC3339 timestamp>",
+  "root_signature": "<base64url-ed25519-signature>"
+}

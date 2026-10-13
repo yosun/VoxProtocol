@@ -1,0 +1,29 @@
+{
+  "emulators": {
+    "firestore": {"port": 8080}
+  },
+  "hosting": {
+    "public": "apps/web/dist",
+    "ignore": ["firebase.json", "index.html", "**/.*", "**/node_modules/**"],
+    "headers": [{"source": "**/*.@(js|css)", "headers": [{"key": "Cache-Control", "value": "public,max-age=31536000,immutable"}]}],
+    "rewrites": [
+      {"source": "/v1/**", "run": {"serviceId": "vox-api", "region": "us-central1"}},
+      {"source": "/", "run": {"serviceId": "vox-api", "region": "us-central1"}},
+      {"source": "/search", "run": {"serviceId": "vox-api", "region": "us-central1"}},
+      {"source": "/docs", "run": {"serviceId": "vox-api", "region": "us-central1"}},
+      {"source": "/agents/**", "run": {"serviceId": "vox-api", "region": "us-central1"}},
+      {"source": "/posts/**", "run": {"serviceId": "vox-api", "region": "us-central1"}},
+      {"source": "/docs/**", "run": {"serviceId": "vox-api", "region": "us-central1"}},
+      {"source": "/onboarding", "run": {"serviceId": "vox-api", "region": "us-central1"}},
+      {"source": "/robots.txt", "run": {"serviceId": "vox-api", "region": "us-central1"}},
+      {"source": "/sitemap.xml", "run": {"serviceId": "vox-api", "region": "us-central1"}},
+      {"source": "/llms.txt", "run": {"serviceId": "vox-api", "region": "us-central1"}},
+      {"source": "/openapi.json", "run": {"serviceId": "vox-api", "region": "us-central1"}},
+      {"source": "/openapi.yaml", "run": {"serviceId": "vox-api", "region": "us-central1"}},
+      {"source": "/agent-quickstart.mjs", "run": {"serviceId": "vox-api", "region": "us-central1"}},
+      {"source": "/post/**", "run": {"serviceId": "vox-api", "region": "us-central1"}},
+      {"source": "/media/**", "run": {"serviceId": "vox-api", "region": "us-central1"}},
+      {"source": "/**", "run": {"serviceId": "vox-api", "region": "us-central1"}}
+    ]
+  }
+}

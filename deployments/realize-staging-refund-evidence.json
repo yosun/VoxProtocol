@@ -1,0 +1,99 @@
+{
+  "origin": "https://vox-realize-staging-icin5yj4aa-ue.a.run.app",
+  "sourcePostId": "vox:post:0a276800abc55f11283b4b7ca0808b3285a1150a729b0326feb23df911e98045",
+  "checkoutUrl": "https://vox-realize-staging-icin5yj4aa-ue.a.run.app/?realize=vox%3Apost%3A0a276800abc55f11283b4b7ca0808b3285a1150a729b0326feb23df911e98045",
+  "creatorId": "vox:agent:A4KzQOc_iHZyTQOmSqqrmSlpjrpSMwigXmwzcXFCDiM",
+  "rightsAgreementId": "rights:bob-realize-staging-v1",
+  "rightsHash": "5ca9462750fa5c52ea60493b884524a7b604d7470799cdf8ddbecd3e597b3a1c",
+  "commissionId": "vox:commission:1924d738285c4f2676899e7139b89f4bdd8e18f6d98291f3cc9bbefa3267ecb2",
+  "quoteId": "vox:quote:5ca4eee0cbb65c9e49c23444bf97e7763de4cef6ab5f680bd561cd20fae78a1e",
+  "quoteHash": "10e82267eaee1686e7271ffb5c7e066a51370fb7be8365288c709a369b8b68ae",
+  "network": "solana:devnet",
+  "quoteExpiresAt": "2026-10-12T22:47:02.788Z",
+  "providerBaseAtomic": "750000",
+  "ownerFeeAtomic": "200000",
+  "platformFeeAtomic": "50000",
+  "totalAtomic": "1000000",
+  "payouts": [
+    {
+      "role": "generation_provider",
+      "destination": "solana:devnet:45rmLepEcjBBNZLKnFgxVg2zyzyj1YWbC63yBRMeH9gr",
+      "amountAtomic": "750000"
+    },
+    {
+      "role": "character_owner",
+      "destination": "solana:devnet:4MSTtPJKELknreL2uaPJd9xpCZetypfoEjoMLY17btbL",
+      "amountAtomic": "200000"
+    },
+    {
+      "role": "platform",
+      "destination": "solana:devnet:45rmLepEcjBBNZLKnFgxVg2zyzyj1YWbC63yBRMeH9gr",
+      "amountAtomic": "50000"
+    }
+  ],
+  "status": "simulated-not-funded",
+  "note": "Unsigned Devnet funding transaction simulated; internal staging no-render failure was armed before funding. No payer signature, blockchain transaction or provider generation was submitted.",
+  "noRenderFailureArmed": true,
+  "escrow": "eAuBZfVkHSopXZ61KsGr3UuU88t8t15dwjCYUckvptT",
+  "payer": "45rmLepEcjBBNZLKnFgxVg2zyzyj1YWbC63yBRMeH9gr",
+  "tokenAccountBalanceAtomic": "19500000",
+  "simulation": {
+    "err": null,
+    "unitsConsumed": 50469,
+    "transactionBytes": 977
+  },
+  "networkFeeLamports": 10000,
+  "estimatedAccountRentLamports": 18465800,
+  "estimatedPayerSolLamports": 18475800,
+  "proposedMaxPayerSolLamports": 30000000,
+  "actualTokenRecipients": [
+    {
+      "recipient": "45rmLepEcjBBNZLKnFgxVg2zyzyj1YWbC63yBRMeH9gr",
+      "amount_usdc_atomic": "750000"
+    },
+    {
+      "recipient": "4MSTtPJKELknreL2uaPJd9xpCZetypfoEjoMLY17btbL",
+      "amount_usdc_atomic": "200000"
+    },
+    {
+      "recipient": "45rmLepEcjBBNZLKnFgxVg2zyzyj1YWbC63yBRMeH9gr",
+      "amount_usdc_atomic": "50000"
+    }
+  ],
+  "refundRehearsal": {
+    "status": "live-no-render-refund-rehearsal-passed",
+    "completedAt": "2026-10-12T22:45:12.924Z",
+    "commissionId": "vox:commission:1924d738285c4f2676899e7139b89f4bdd8e18f6d98291f3cc9bbefa3267ecb2",
+    "failureEvidence": {
+      "source": "staging_no_render_test",
+      "fulfillment_request_id": "vox:fulfillment:553e5276793e8fa5b516671780adc63a0d4302297cf1ecab9b74e9e16169085c",
+      "observed_at": "2026-10-12T22:44:59.303Z",
+      "payload_hash": "6baf173258e35c62a36225dd4aa49f25ba66b11321893689f76b4fb1030d3489",
+      "error_code": "STAGING_NO_RENDER_FAILURE_REHEARSAL"
+    },
+    "providerJobSubmitted": false,
+    "refundApproval": {
+      "operatorHumanId": "vox:human:c8wA8L9eW34i_SUnd4WxSE3nHAiJDPWvz0mKXp10E3k",
+      "approvalPayloadHash": "6ec722c6afca150e25d39f91c8233107a8e441a2ce0ce9a91607788bffb56111"
+    },
+    "cluster": "solana:devnet",
+    "usdcMint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    "amountUsdcAtomic": "1000000",
+    "originalPayer": "45rmLepEcjBBNZLKnFgxVg2zyzyj1YWbC63yBRMeH9gr",
+    "escrow": "eAuBZfVkHSopXZ61KsGr3UuU88t8t15dwjCYUckvptT",
+    "fundingSignature": "UHs83NWbCppffJZodUVjNgBjkrdtXmQmS5FgTyAJY8z1PJFanCzia1zYARLatZcQ5PkPviHNeH6rLz233PCbV93",
+    "refundSignature": "4G5WmUJbEcv7rxjxKq98hBoYh86Dw4bu8KGUUX9R7P8aVF1Xg6S7YBEo7RU7XtGwCfoeNtLQueeehjHykMEvjkRL",
+    "refundFinalized": true,
+    "payerUsdcDeltaAtomic": "0",
+    "payerSolSpentLamports": "18348560",
+    "payerSolCeilingLamports": "30000000",
+    "vaultBalanceAtomic": "0",
+    "outcome": "refunded",
+    "auditActions": [
+      "no_render_failure_armed",
+      "generation_failed",
+      "refund_approved",
+      "refund_finalized"
+    ]
+  }
+}

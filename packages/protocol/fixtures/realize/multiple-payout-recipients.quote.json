@@ -1,0 +1,134 @@
+{
+  "protocol_version": "realize/1",
+  "quote_id": "quote:multi-001",
+  "pricing_request_id": "pricing:multi-001",
+  "creator_id": "vox:agent:-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+  "commission_id": "commission:multi-001",
+  "generation_provider_id": "provider:video:example",
+  "requested_generation_parameters": {
+    "concept": "Bob's special video",
+    "duration_seconds": 6,
+    "style": "special"
+  },
+  "provider_base_price_usdc_atomic": "100000",
+  "character_owner_markup_usdc_atomic": "100000",
+  "platform_fee_usdc_atomic": "100000",
+  "additional_beneficiaries": [
+    {
+      "recipient_id": "beneficiary:4",
+      "role": "additional_beneficiary",
+      "amount_usdc_atomic": "100000"
+    },
+    {
+      "recipient_id": "beneficiary:5",
+      "role": "additional_beneficiary",
+      "amount_usdc_atomic": "100000"
+    },
+    {
+      "recipient_id": "beneficiary:6",
+      "role": "additional_beneficiary",
+      "amount_usdc_atomic": "100000"
+    },
+    {
+      "recipient_id": "beneficiary:7",
+      "role": "additional_beneficiary",
+      "amount_usdc_atomic": "100000"
+    },
+    {
+      "recipient_id": "beneficiary:8",
+      "role": "additional_beneficiary",
+      "amount_usdc_atomic": "100000"
+    },
+    {
+      "recipient_id": "beneficiary:9",
+      "role": "additional_beneficiary",
+      "amount_usdc_atomic": "100000"
+    },
+    {
+      "recipient_id": "beneficiary:10",
+      "role": "additional_beneficiary",
+      "amount_usdc_atomic": "100000"
+    }
+  ],
+  "total_amount_usdc_atomic": "1000000",
+  "payout_recipients": [
+    {
+      "payout_id": "payout:multi:1",
+      "recipient_id": "beneficiary:1",
+      "role": "generation_provider",
+      "amount_usdc_atomic": "100000",
+      "destination": "solana:devnet:fixture-wallet-1"
+    },
+    {
+      "payout_id": "payout:multi:2",
+      "recipient_id": "beneficiary:2",
+      "role": "character_owner",
+      "amount_usdc_atomic": "100000",
+      "destination": "solana:devnet:fixture-wallet-2"
+    },
+    {
+      "payout_id": "payout:multi:3",
+      "recipient_id": "beneficiary:3",
+      "role": "platform",
+      "amount_usdc_atomic": "100000",
+      "destination": "solana:devnet:fixture-wallet-3"
+    },
+    {
+      "payout_id": "payout:multi:4",
+      "recipient_id": "beneficiary:4",
+      "role": "additional_beneficiary",
+      "amount_usdc_atomic": "100000",
+      "destination": "solana:devnet:fixture-wallet-4"
+    },
+    {
+      "payout_id": "payout:multi:5",
+      "recipient_id": "beneficiary:5",
+      "role": "additional_beneficiary",
+      "amount_usdc_atomic": "100000",
+      "destination": "solana:devnet:fixture-wallet-5"
+    },
+    {
+      "payout_id": "payout:multi:6",
+      "recipient_id": "beneficiary:6",
+      "role": "additional_beneficiary",
+      "amount_usdc_atomic": "100000",
+      "destination": "solana:devnet:fixture-wallet-6"
+    },
+    {
+      "payout_id": "payout:multi:7",
+      "recipient_id": "beneficiary:7",
+      "role": "additional_beneficiary",
+      "amount_usdc_atomic": "100000",
+      "destination": "solana:devnet:fixture-wallet-7"
+    },
+    {
+      "payout_id": "payout:multi:8",
+      "recipient_id": "beneficiary:8",
+      "role": "additional_beneficiary",
+      "amount_usdc_atomic": "100000",
+      "destination": "solana:devnet:fixture-wallet-8"
+    },
+    {
+      "payout_id": "payout:multi:9",
+      "recipient_id": "beneficiary:9",
+      "role": "additional_beneficiary",
+      "amount_usdc_atomic": "100000",
+      "destination": "solana:devnet:fixture-wallet-9"
+    },
+    {
+      "payout_id": "payout:multi:10",
+      "recipient_id": "beneficiary:10",
+      "role": "additional_beneficiary",
+      "amount_usdc_atomic": "100000",
+      "destination": "solana:devnet:fixture-wallet-10"
+    }
+  ],
+  "expires_at": "2026-10-11T23:00:00.000Z",
+  "issued_at": "2026-10-11T18:00:00.000Z",
+  "rights_agreement_reference": "rights:bob-special-video-v1",
+  "issuer_id": "vox:agent:-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+  "issuer_key_id": "key:bob-realize-01",
+  "issuer_public_key": "-kg0FH9uaQw2k-_2EzYEZAPNiuKhTzGzxAc1hWkjlWU",
+  "canonical_quote_hash": "88ac0a484afc85c4060765f49ff60fd1e03904b93a837ae777d042572bbe0aaf",
+  "signature": "pHzMo_OFbXvH0temXLEzEZtmI8XOA_sI72HcrPi2oc6uTpTZQTrLQ7r12gi1I46O-_Q32f7qGoZr1xgI0lx8Dg"
+}

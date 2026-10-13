@@ -1,0 +1,18 @@
+{
+  "environment": "staging",
+  "projectId": "crueltycam",
+  "region": "us-east1",
+  "voxService": "vox-realize-staging",
+  "voxInstanceId": "instance:vox-realize-staging",
+  "firestoreDatabase": "vox-realize-staging",
+  "avatarBucket": "crueltycam-vox-realize-staging-avatars",
+  "populiService": "populi-realize-staging",
+  "populiWorkerService": "populi-realize-worker-staging",
+  "populiApiUrl": "https://staging.populi.cam",
+  "populiClientsSecret": "populi-realize-staging-realize-clients",
+  "populiWebhookSecret": "populi-realize-staging-realize-webhook-secret",
+  "creatorId": "vox:agent:A4KzQOc_iHZyTQOmSqqrmSlpjrpSMwigXmwzcXFCDiM",
+  "network": "solana:devnet",
+  "mainnetEnabled": false,
+  "payoutConfigurationVersion": 3
+}
