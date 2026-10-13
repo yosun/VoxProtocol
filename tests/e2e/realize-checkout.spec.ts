@@ -422,7 +422,7 @@ test("a restored draft adopts the provider's current settings before quoting", a
   const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
   await expect(dialog.getByLabel("Style")).toHaveValue("special");
   await expect(dialog.getByLabel("Length")).toHaveValue("6");
-  await expect(dialog.getByLabel("Quality")).toHaveValue("768P");
+  await expect(dialog.getByLabel("Quality")).toHaveValue("480P");
   await expect(dialog.getByRole("button", {name: "Get my price"})).toBeEnabled();
   await dialog.getByRole("button", {name: "Get my price"}).click();
   await expect(dialog.locator(".quote-price-hero")).toBeVisible();
@@ -475,6 +475,7 @@ test("public credit appears in provenance only after explicit consent", async ({
   await dialog.getByLabel("Your idea").fill("A glass city beneath a crescent moon.");
   await dialog.getByRole("button", {name: "Get my price"}).click();
   await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.getByRole("button", {name: "Read the fine print"}).click();
   await dialog.locator(".public-credit-details > summary").click();
   await dialog.getByRole("checkbox", {name: "Include a public credit with the finished work."}).check();
   await dialog.getByLabel("Credit text").fill("Commissioned by A. Vale");
@@ -510,9 +511,9 @@ test("reloading an unverified payment restores the signature and prevents a seco
   await page.getByRole("button", {name: "Realize post"}).click();
   let dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
   await dialog.getByLabel("Your idea").fill("A quiet cinematic scene for recovery testing.");
-  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
   await dialog.getByRole("button", {name: "Get my price"}).click();
   await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
   await dialog.getByRole("button", {name: "Continue to payment"}).click();
   await dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true}).click();
   await expect(dialog.getByRole("button", {name: "Check payment status"})).toBeVisible();
