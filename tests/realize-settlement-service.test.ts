@@ -80,6 +80,22 @@ function refundRequest(overrides: Partial<RefundRequest> = {}): RefundRequest {
 describe("Mainnet Realize settlement adapter", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it("exposes public health on the Cloud Run-compatible path while protecting financial routes", async () => {
+    const chain = new FakeSettlementChain();
+    const processor = new RealizeSettlementProcessor(new MemorySettlementLedger(), chain, 1_000_000n);
+    const app = createSettlementApp({token: "test-only-settlement-token-with-at-least-32-chars", processor});
+    try {
+      const health = await app.inject({method: "GET", url: "/health"});
+      expect(health.statusCode).toBe(200);
+      expect(health.json()).toEqual({status: "ok", service: "vox-realize-settlement", network: "solana:mainnet-beta"});
+      expect((await app.inject({method: "GET", url: "/v1/payment-intents/health-check/resolution"})).statusCode).toBe(401);
+      expect(chain.prepareCount).toBe(0);
+      expect(chain.executeCount).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("authenticates, settles the exact payout plan once, and replays the stored result", async () => {
     const chain = new FakeSettlementChain();
     const processor = new RealizeSettlementProcessor(new MemorySettlementLedger(), chain, 1_000_000n);

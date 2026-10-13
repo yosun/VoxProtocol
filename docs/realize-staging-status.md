@@ -4,6 +4,54 @@ Verified 2026-10-12. This file contains public resource metadata only.
 The current production state is summarized first; later dated sections retain
 historical snapshots and may describe superseded deployment states.
 
+## Mainnet readiness preflight (2026-10-13)
+
+- Read-only discovery found production VOX routing 100% to `vox-api-00101-xew`
+  and Populi routing 100% to `cruelty-web-00147-h69`. Bob and Luna capabilities
+  and Bob's short-form input schema returned HTTP 200. Bob's active payout
+  configuration is version 6 and Luna's is version 1, both using Mainnet,
+  `https://cruelty.cam`, the existing treasury, and the approved 25/70/5 policy.
+- Mainnet genesis, classic SPL Token ownership, official USDC mint, and treasury
+  owner were verified through finalized public RPC reads. The treasury USDC
+  account exists with zero USDC; its owner has 8,506,560 lamports (0.00850656
+  SOL), above the settlement service's 0.005 SOL reserve before transaction
+  fees. No new treasury funding is required by that observed reserve check.
+- Production Firestore has 18 Realize commissions: 12 `QUOTED` and six
+  `AWAITING_PAYMENT`. None has a verified funding signature. This is evidence
+  of the observed records, not a live payment/render acceptance test.
+- The scheduled reconciliation job consistently returns HTTP 401: it sends a
+  bearer token while the API requires `x-vox-internal-token`. The source fix
+  uses the API's header; an integration regression calls the actual API route
+  with correct and incorrect tokens rather than mocking authentication away.
+- Settlement still routes 100% to `vox-realize-settlement-00001-25s`. An
+  authenticated read of a nonexistent payment intent's resolution returns
+  HTTP 404 on that live revision, and HTTP 200 with `kind: none` on the
+  no-traffic `refund-candidate` revision `vox-realize-settlement-00004-cuw`.
+  The updated settlement source still requires a protected production release.
+- Both live and candidate `/healthz` requests return a Google frontend 404
+  without reaching the application. Cloud Run reserves some paths ending in
+  `z`. The source now exposes `/health` and the protected deployment smoke
+  check uses it; `/healthz` remains a compatibility alias for local consumers.
+- Production `VOX_REALIZE_OPERATOR_HUMAN_IDS` is empty. An explicitly
+  authorized owner/operator identity must be configured through the protected
+  release process before a failed Mainnet render can receive its signed refund
+  approval. Do not reuse the staging fixture identity or silently grant access.
+- Quote allocations currently name treasury holds for provider, character
+  owner, and VOX. These are ledger liabilities, not completed external payouts.
+  Do not invent external payout destinations to complete a rehearsal.
+- Complete the protected checkout, API, settlement, and reconciliation releases,
+  verify successful scheduled recovery, and establish the refund operator before
+  an authorized bounded Mainnet rehearsal. The customer then needs a Wallet
+  Standard wallet on Mainnet with the fresh quote's exact USDC amount and SOL
+  for fees. Simulate first; obtain approval for the exact payer, recipient, token,
+  amount, fee ceiling, cluster, and single provider render before signing.
+- Acceptance evidence must include the finalized payment transaction, the
+  persisted verified funding receipt, exactly one provider fulfillment request,
+  the delivered MP4's media type/length/hash, signed provenance, and the correct
+  treasury-held revenue ledger entries. Production refund recovery and real
+  browser-wallet signing remain unverified. No quote, payment, render,
+  settlement, payout, or refund was initiated by this preflight.
+
 ## Current approved Mainnet policy (2026-10-12)
 
 - Mainnet uses backend-managed transfers of standard Solana SPL USDC. It is not

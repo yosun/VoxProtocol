@@ -24,7 +24,7 @@ export async function runRealizeReconciliation(
   try {
     const response = await fetcher(new URL("/v1/internal/realize/reconcile", base), {
       method: "POST",
-      headers: {authorization: `Bearer ${token}`, "content-type": "application/json", accept: "application/json"},
+      headers: {"x-vox-internal-token": token, "content-type": "application/json", accept: "application/json"},
       body: JSON.stringify({limit: Number(limitText)}),
       signal: controller.signal
     });
