@@ -316,7 +316,7 @@ export const CommissionFulfillmentStateV1Schema = z.enum(["not_started", "queued
 export const REALIZE_COMMISSION_TRANSITIONS = Object.freeze({
   DRAFT: Object.freeze(["QUOTED", "FAILED", "EXPIRED"] as const),
   QUOTED: Object.freeze(["AWAITING_PAYMENT", "FAILED", "EXPIRED"] as const),
-  AWAITING_PAYMENT: Object.freeze(["FUNDED", "FAILED", "EXPIRED"] as const),
+  AWAITING_PAYMENT: Object.freeze(["FUNDED", "FAILED", "EXPIRED", "MANUAL_REVIEW"] as const),
   FUNDED: Object.freeze(["GENERATING", "FAILED", "REFUND_PENDING", "MANUAL_REVIEW"] as const),
   GENERATING: Object.freeze(["COMPLETED", "FAILED", "REFUND_PENDING", "MANUAL_REVIEW"] as const),
   COMPLETED: Object.freeze(["SETTLED", "REFUND_PENDING", "MANUAL_REVIEW"] as const),
@@ -325,7 +325,10 @@ export const REALIZE_COMMISSION_TRANSITIONS = Object.freeze({
   REFUND_PENDING: Object.freeze(["REFUNDED", "FAILED", "MANUAL_REVIEW"] as const),
   REFUNDED: Object.freeze([]),
   MANUAL_REVIEW: Object.freeze(["COMPLETED", "REFUND_PENDING"] as const),
-  EXPIRED: Object.freeze([])
+  // A payer may submit a signature after expiry while recovering a transfer
+  // that was already broadcast. Reopen only into payment verification; the API
+  // decides from finalized chain time whether it can fulfill or needs review.
+  EXPIRED: Object.freeze(["AWAITING_PAYMENT", "FUNDED", "MANUAL_REVIEW"] as const)
 } as const satisfies Readonly<Record<CommissionStateValue, readonly CommissionStateValue[]>>);
 
 export function canTransitionRealizeCommission(from: CommissionStateValue, to: CommissionStateValue): boolean {
@@ -344,7 +347,7 @@ export const REALIZE_COMMISSION_STATE_REQUIREMENTS = Object.freeze({
   FAILED: {payment: ["not_started", "pending", "authorized", "captured", "failed", "refund_pending"], fulfillment: ["not_started", "queued", "failed", "canceled", "completed"]},
   REFUND_PENDING: {payment: ["refund_pending"], fulfillment: ["not_started", "failed", "canceled", "completed"]},
   REFUNDED: {payment: ["refunded"], fulfillment: ["not_started", "failed", "canceled", "completed"]},
-  MANUAL_REVIEW: {payment: ["captured", "refund_pending"], fulfillment: ["queued", "generating", "failed", "canceled", "completed"]},
+  MANUAL_REVIEW: {payment: ["captured", "refund_pending"], fulfillment: ["not_started", "queued", "generating", "failed", "canceled", "completed"]},
   EXPIRED: {payment: ["not_started", "pending", "failed"], fulfillment: ["not_started", "canceled"]}
 } as const);
 for (const requirements of Object.values(REALIZE_COMMISSION_STATE_REQUIREMENTS)) {

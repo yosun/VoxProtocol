@@ -10,6 +10,7 @@ ANCHOR_SERVICE="vox-anchor-worker"
 IMAGE="${VOX_PRODUCTION_IMAGE:-}"
 TAG="ci-${GITHUB_RUN_ID:-$(date +%s)}"
 FIRST_PARTY_CREATOR_IDS="${VOX_REALIZE_FIRST_PARTY_CREATOR_IDS:-vox:agent:A4KzQOc_iHZyTQOmSqqrmSlpjrpSMwigXmwzcXFCDiM,vox:agent:nERxpsSoi2oJWG9B6EuZSg9TkUDpTM6ASNOD0urMgAU}"
+REALIZE_OPERATOR_HUMAN_IDS="${VOX_REALIZE_OPERATOR_HUMAN_IDS:-}"
 
 for flag in VOX_DEPLOY_API VOX_DEPLOY_HOSTING VOX_DEPLOY_SETTLEMENT VOX_DEPLOY_RECONCILE VOX_DEPLOY_ANCHOR VOX_PRODUCTION_SENSITIVE_APPROVED; do
   value="${!flag:-false}"
@@ -55,7 +56,12 @@ deploy_service_candidate() {
   local -a extra_env_args=()
 
   if [[ "$service" == "$API_SERVICE" ]]; then
-    extra_env_args+=(--update-env-vars="^|^VOX_REALIZE_FIRST_PARTY_CREATOR_IDS=$FIRST_PARTY_CREATOR_IDS")
+    if [[ ! "$REALIZE_OPERATOR_HUMAN_IDS" =~ ^vox:human:[A-Za-z0-9_-]{43}(,vox:human:[A-Za-z0-9_-]{43})*$ ]]; then
+      echo "VOX_REALIZE_OPERATOR_HUMAN_IDS must contain at least one registered VOX human ID before releasing the Mainnet API." >&2
+      return 1
+    fi
+    ensure_realize_reconcile_index
+    extra_env_args+=(--update-env-vars="^|^VOX_REALIZE_FIRST_PARTY_CREATOR_IDS=$FIRST_PARTY_CREATOR_IDS|VOX_REALIZE_OPERATOR_HUMAN_IDS=$REALIZE_OPERATOR_HUMAN_IDS")
   fi
 
   gcloud run deploy "$service" \
@@ -116,6 +122,57 @@ deploy_service_candidate() {
     exit 1
   fi
   echo "$service is serving $revision (image $IMAGE). Previous revisions were retained."
+}
+
+ensure_realize_reconcile_index() {
+  local output timeout_seconds deadline state readiness
+  timeout_seconds="${VOX_INDEX_READY_TIMEOUT_SECONDS:-900}"
+  if [[ ! "$timeout_seconds" =~ ^[1-9][0-9]{0,4}$ ]]; then
+    echo "VOX_INDEX_READY_TIMEOUT_SECONDS must be a positive integer no greater than 99999." >&2
+    return 1
+  fi
+
+  output="$(gcloud firestore indexes composite create \
+    --collection-group=vox_realize_commissions \
+    --database="(default)" \
+    --project="$PROJECT_ID" \
+    --async \
+    --field-config=field-path=commission.state,order=ascending \
+    --field-config=field-path=updated_at,order=ascending 2>&1)" || {
+    if [[ "$output" != *"already exists"* && "$output" != *"ALREADY_EXISTS"* ]]; then
+      echo "$output" >&2
+      return 1
+    fi
+  }
+
+  deadline="$(( $(date +%s) + timeout_seconds ))"
+  while true; do
+    state="$(gcloud firestore indexes composite list --database="(default)" --project="$PROJECT_ID" --format=json)"
+    readiness="$(INDEX_STATE="$state" node --input-type=module -e '
+      const raw = JSON.parse(process.env.INDEX_STATE || "[]");
+      const indexes = Array.isArray(raw) ? raw : raw.indexes || [];
+      const index = indexes.find((candidate) => {
+        const collectionGroup = candidate.collectionGroup || candidate.name?.match(/collectionGroups\/([^/]+)/)?.[1];
+        if (collectionGroup !== "vox_realize_commissions") return false;
+        const fields = candidate.fields || [];
+        const expected = [["commission.state", "ASCENDING"], ["updated_at", "ASCENDING"]];
+        return fields.length === expected.length && expected.every(([fieldPath, order], index) => fields[index]?.fieldPath === fieldPath && fields[index]?.order === order);
+      });
+      process.stdout.write(index?.state === "READY" ? "ready" : index?.state === "ERROR" ? "error" : "pending");
+    ')"
+    if [[ "$readiness" == "ready" ]]; then
+      return 0
+    fi
+    if [[ "$readiness" == "error" ]]; then
+      echo "The Realize reconciliation Firestore index entered an error state." >&2
+      return 1
+    fi
+    if (( $(date +%s) >= deadline )); then
+      echo "Timed out waiting for the Realize reconciliation Firestore index to reach READY." >&2
+      return 1
+    fi
+    sleep 5
+  done
 }
 
 if [[ "${VOX_DEPLOY_API:-false}" == "true" ]]; then

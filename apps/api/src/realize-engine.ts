@@ -178,6 +178,7 @@ export const RealizeSettlementResponseV1Schema = z.object({
   status: z.enum(["accepted", "processing", "partial", "settled", "failed"]),
   transaction_signatures: z.array(z.string().min(32).max(128)).max(64).default([]),
   settled_amount_usdc_atomic: atomic.optional(),
+  held_amount_usdc_atomic: atomic.optional(),
   failed_payout_ids: z.array(id).max(64).default([]),
   updated_at: z.string().datetime({offset: true})
 }).strict();
@@ -198,6 +199,7 @@ export const RealizePaymentIntentResolutionV1Schema = z.object({
   record_id: id.optional(),
   state: z.string().max(64).optional(),
   settled_amount_usdc_atomic: atomic.optional(),
+  held_amount_usdc_atomic: atomic.optional(),
   batch_statuses: z.array(z.enum(["prepared", "finalized", "failed", "uncertain"])).max(64).optional()
 }).strict();
 export type RealizePaymentIntentResolutionV1 = z.infer<typeof RealizePaymentIntentResolutionV1Schema>;
@@ -440,7 +442,7 @@ export function buildRealizeQuote(input: {
   if (!Number.isFinite(issuedAtMs) || expiresAtMs <= issuedAtMs) throw new Error("Provider price expires too soon to issue a quote");
 
   const recipients: Array<{payout_id: string; recipient_id: string; role: "generation_provider" | "character_owner" | "platform" | "commissioner" | "referrer" | "sponsor" | "additional_beneficiary"; amount_usdc_atomic: string; destination: string}> = [];
-  const destinationPrefix = configuration.network_id === "solana:mainnet-beta" ? "solana:mainnet" : configuration.network_id;
+  const destinationPrefix = configuration.network_id;
   const destination = (wallet: string) => `${destinationPrefix}:${wallet}`;
   const addAllocation = (role: "generation_provider" | "character_owner" | "platform", amount: bigint, allocation: z.infer<typeof FeeAllocationV1Schema> | {recipients: z.infer<typeof WeightedRecipientV1Schema>[]}) => {
     if (amount === 0n) return;

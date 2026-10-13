@@ -325,6 +325,8 @@ export type NftMintState = "queued" | "claimable" | "signing" | "signed" | "subm
 export interface NftMediaRecord {
   media_id: string;
   source_kind: "realize_commission" | "realization";
+  /** Realize commission media is public only after explicit commissioner consent. */
+  publication_consent?: boolean;
   source_id: string;
   output_index: number;
   source_post_id?: string;
@@ -386,9 +388,16 @@ export interface RealizeCommissionRecord {
   rights_reviewed_at?: string;
   /** Public credit is kept private until the commissioner explicitly opts in. */
   public_attribution?: string;
+  /** Public Realize NFT media is created only after explicit commissioner consent. */
+  nft_publication_consent?: boolean;
+  nft_publication_consent_at?: string;
+  /** Signature submitted by the payer, persisted before RPC verification for safe retries. */
+  funding_submission_signature?: string;
   funding_signature?: string;
   funding_network_id?: string;
   funding_verified_at?: string;
+  funding_block_time?: number;
+  funding_timing_status?: "within_quote_window" | "after_quote_expiry" | "ambiguous_at_expiry" | "unavailable";
   funded_at?: string;
   fulfillment_request?: ProviderFulfillmentRequestV1;
   fulfillment_result?: FulfillmentResultV1;

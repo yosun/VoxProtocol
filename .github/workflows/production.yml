@@ -112,6 +112,7 @@ jobs:
       VOX_DEPLOY_RECONCILE: ${{ needs.scope.outputs.deploy_reconcile }}
       VOX_DEPLOY_ANCHOR: ${{ needs.scope.outputs.deploy_anchor }}
       VOX_PRODUCTION_SENSITIVE_APPROVED: ${{ needs.scope.outputs.sensitive }}
+      VOX_REALIZE_OPERATOR_HUMAN_IDS: ${{ vars.VOX_REALIZE_OPERATOR_HUMAN_IDS }}
       VOX_PRODUCTION_BASE_SHA: ${{ github.event.before }}
       VOX_PRODUCTION_HEAD_SHA: ${{ github.sha }}
     steps:

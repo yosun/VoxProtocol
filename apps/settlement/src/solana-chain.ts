@@ -9,7 +9,7 @@ import {
   unpackAccount
 } from "@solana/spl-token";
 import {verifyFinalizedUsdcTransfer} from "@vox/solana";
-import {MAINNET_GENESIS_HASH, MAINNET_USDC_MINT, type MainnetSettlementChain, type PreparedSettlementBatch, type RefundRequest, type SettlementTransfer, SettlementError} from "./engine.js";
+import {MAINNET_GENESIS_HASH, MAINNET_NETWORK_ID, MAINNET_USDC_MINT, solanaAddressForNetwork, type MainnetSettlementChain, type PreparedSettlementBatch, type RefundRequest, type SettlementTransfer, SettlementError} from "./engine.js";
 
 export interface SolanaSettlementOptions {
   rpcUrl: string;
@@ -22,6 +22,13 @@ export interface SolanaSettlementOptions {
 }
 
 const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+/** Normalize the signed network-qualified recipient only inside the Mainnet chain adapter. */
+export function solanaMainnetPayoutAddress(destination: string): string {
+  const address = solanaAddressForNetwork(destination, MAINNET_NETWORK_ID);
+  if (!address) throw new SettlementError(400, "invalid_destination", "payout destination is not qualified for Solana Mainnet");
+  return address;
+}
 
 function encodeBase58(bytes: Uint8Array): string {
   let zeroes = 0;
@@ -85,29 +92,35 @@ export class SolanaMainnetSettlementChain implements MainnetSettlementChain {
     return result.finalized && result.matched && result.network_matches !== false;
   }
 
+  isTreasuryDestination(destination: string): boolean {
+    return solanaMainnetPayoutAddress(destination) === this.owner.toBase58();
+  }
+
   async prepareBatch(input: {recordId: string; batchIndex: number; transfers: SettlementTransfer[]}): Promise<PreparedSettlementBatch> {
-    await this.ensureTreasury();
-    if (!input.transfers.length || input.transfers.some((transfer) => !/^[1-9][0-9]{0,19}$/.test(transfer.amount_usdc_atomic) || BigInt(transfer.amount_usdc_atomic) > this.options.maxPaymentAtomic || !/^[A-Za-z0-9:._-]{1,256}$/.test(transfer.payout_id))) {
+    const normalizedTransfers = input.transfers.map((transfer) => {
+      return {...transfer, destination: solanaMainnetPayoutAddress(transfer.destination)};
+    });
+    if (!normalizedTransfers.length || normalizedTransfers.some((transfer) => !/^[1-9][0-9]{0,19}$/.test(transfer.amount_usdc_atomic) || BigInt(transfer.amount_usdc_atomic) > this.options.maxPaymentAtomic || !/^[A-Za-z0-9:._-]{1,256}$/.test(transfer.payout_id))) {
       throw new SettlementError(400, "invalid_payout", "settlement payout is invalid");
     }
-    const total = input.transfers.reduce((sum, transfer) => sum + BigInt(transfer.amount_usdc_atomic), 0n);
+    if (normalizedTransfers.some((transfer) => transfer.destination === this.owner.toBase58())) throw new SettlementError(409, "treasury_liability", "treasury-owned allocations must remain liabilities and cannot be submitted as payouts");
+    await this.ensureTreasury();
+    const total = normalizedTransfers.reduce((sum, transfer) => sum + BigInt(transfer.amount_usdc_atomic), 0n);
     if (total > this.options.maxPaymentAtomic) throw new SettlementError(400, "payment_limit_exceeded", "settlement batch exceeds the configured payment limit");
-    const externalTransfers = input.transfers.filter((transfer) => !new PublicKey(transfer.destination).equals(this.owner));
     const base = {
       batch_index: input.batchIndex,
-      payout_ids: input.transfers.map((transfer) => transfer.payout_id),
+      payout_ids: normalizedTransfers.map((transfer) => transfer.payout_id),
       amount_usdc_atomic: total.toString(),
       updated_at: new Date().toISOString()
     };
-    if (externalTransfers.length === 0) return {...base, status: "finalized"};
-    const recipientAccounts = await Promise.all(externalTransfers.map(async (transfer) => {
+    const recipientAccounts = await Promise.all(normalizedTransfers.map(async (transfer) => {
       if (transfer.destination.length < 32 || transfer.destination.length > 64) throw new SettlementError(400, "invalid_destination", "payout destination is invalid");
       const owner = new PublicKey(transfer.destination);
       const tokenAccount = await getAssociatedTokenAddress(this.mint, owner, false, TOKEN_PROGRAM_ID);
       return {transfer, owner, tokenAccount};
     }));
     const treasuryBalance = BigInt((await this.connection.getTokenAccountBalance(this.tokenAccount, "finalized")).value.amount);
-    const outgoingAmount = externalTransfers.reduce((sum, transfer) => sum + BigInt(transfer.amount_usdc_atomic), 0n);
+    const outgoingAmount = normalizedTransfers.reduce((sum, transfer) => sum + BigInt(transfer.amount_usdc_atomic), 0n);
     if (treasuryBalance < outgoingAmount) throw new SettlementError(503, "treasury_usdc_low", "treasury USDC balance is below the requested settlement amount");
     const missingAccounts = await Promise.all(recipientAccounts.map(async ({tokenAccount}) => !(await this.connection.getAccountInfo(tokenAccount, "finalized"))));
     const {blockhash, lastValidBlockHeight} = await this.connection.getLatestBlockhash("finalized");

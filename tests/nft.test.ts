@@ -5,7 +5,7 @@ import {createHuman} from "@vox/identity";
 import {parseSecretKey, realizeClientRequestSigningPayload, signBytes, utf8} from "@vox/protocol";
 import {buildApp} from "../apps/api/src/app.js";
 import {MemoryStore} from "../apps/api/src/store.js";
-import {NftMintService, nftClaimMessage, type NftChainAdapter, type NftMediaInput, type NftPreparedTransaction} from "../apps/api/src/nft.js";
+import {NftMintService, nftClaimMessage, nftMediaIdFor, type NftChainAdapter, type NftMediaInput, type NftPreparedTransaction} from "../apps/api/src/nft.js";
 import type {NftChain, NftMediaRecord, NftMintRecord} from "../apps/api/src/types.js";
 
 let app: Awaited<ReturnType<typeof buildApp>> | undefined;
@@ -47,9 +47,10 @@ function base58(bytes: Uint8Array): string {
   return "1".repeat(zeroes) + encoded;
 }
 
-function input(ownerWallet?: string): NftMediaInput {
+function input(ownerWallet?: string, publicationConsent = true): NftMediaInput {
   return {
     source_kind: "realize_commission",
+    publication_consent: publicationConsent,
     source_id: "vox:commission:test",
     output_index: 0,
     source_post_id: "vox:post:" + "a".repeat(64),
@@ -68,6 +69,14 @@ function input(ownerWallet?: string): NftMediaInput {
 }
 
 describe("cross-chain NFT entitlements", () => {
+  it("requires affirmative consent before creating public Realize NFT media", async () => {
+    const store = new MemoryStore();
+    const service = new NftMintService({publicBaseUrl: "https://vox.example.test", adapters: [adapter("solana:devnet")]});
+    const privateInput = input(undefined, false);
+    await expect(service.ensureMedia(store, privateInput)).rejects.toThrow("explicit commissioner publication consent");
+    expect(await store.getNftMedia(nftMediaIdFor(privateInput))).toBeUndefined();
+  });
+
   it("creates one idempotent entitlement per chain and preserves walletless claims", async () => {
     const store = new MemoryStore();
     const solana = Keypair.generate().publicKey.toBase58();
@@ -148,5 +157,20 @@ describe("cross-chain NFT entitlements", () => {
     const page = await app.inject(`/media/${encodeURIComponent(media.media_id)}`);
     expect(page.statusCode).toBe(200);
     expect(page.body).toContain(media.media_id);
+    expect(JSON.stringify(metadata.json())).not.toContain("A silver sunrise over an ocean");
+    expect(page.body).not.toContain("A silver sunrise over an ocean");
+  });
+
+  it("keeps unconsented legacy Realize media private across JSON and HTML routes", async () => {
+    const sourceStore = new MemoryStore();
+    const service = new NftMintService({publicBaseUrl: "https://vox.example.test", adapters: [adapter("solana:devnet")]});
+    const publicMedia = await service.ensureMedia(sourceStore, input());
+    const store = new MemoryStore();
+    await store.createNftMedia({...publicMedia, publication_consent: false});
+    app = await buildApp({store, publicBaseUrl: "https://vox.example.test", nftService: service});
+
+    expect((await app.inject(`/v1/nft/media/${encodeURIComponent(publicMedia.media_id)}`)).statusCode).toBe(404);
+    expect((await app.inject(`/v1/nft/metadata/${encodeURIComponent(publicMedia.media_id)}`)).statusCode).toBe(404);
+    expect((await app.inject(`/media/${encodeURIComponent(publicMedia.media_id)}`)).statusCode).toBe(404);
   });
 });

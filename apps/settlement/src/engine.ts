@@ -7,9 +7,18 @@ import type {SettlementBatchRecord, SettlementLedger, SettlementRecord, Settleme
 
 export const MAINNET_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 export const MAINNET_GENESIS_HASH = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
+export const MAINNET_NETWORK_ID = "solana:mainnet-beta";
 
 const atomic = z.string().regex(/^[1-9][0-9]{0,19}$/).refine((value) => BigInt(value) <= 18_446_744_073_709_551_615n);
 const solanaAddress = z.string().min(32).max(64).refine(isValidSolanaAddress);
+/** Return the bare wallet address only when a recipient is qualified for the pinned network. */
+export function solanaAddressForNetwork(destination: string, networkId: string): string | undefined {
+  const prefix = `${networkId}:`;
+  if (!destination.startsWith(prefix)) return undefined;
+  const address = destination.slice(prefix.length);
+  if (address.includes(":") || !isValidSolanaAddress(address)) return undefined;
+  return address;
+}
 export const RefundRequestSchema = z.object({
   commission_id: z.string().min(1).max(256),
   payment_intent_id: z.string().min(1).max(256),
@@ -38,6 +47,7 @@ export interface PreparedSettlementBatch extends SettlementBatchRecord {
 }
 
 export interface MainnetSettlementChain {
+  isTreasuryDestination(destination: string): boolean;
   ensureTreasury(): Promise<void>;
   verifyFunding(input: RefundRequest): Promise<boolean>;
   prepareBatch(input: {recordId: string; batchIndex: number; transfers: SettlementTransfer[]}): Promise<PreparedSettlementBatch>;
@@ -50,6 +60,7 @@ export interface PaymentIntentResolution {
   record_id?: string;
   state?: string;
   settled_amount_usdc_atomic?: string;
+  held_amount_usdc_atomic?: string;
   batch_statuses?: SettlementBatchRecord["status"][];
 }
 
@@ -76,9 +87,9 @@ export class RealizeSettlementProcessor {
     try { instruction = SettlementInstructionV1Schema.parse(raw); }
     catch { throw new SettlementError(400, "invalid_settlement", "settlement instruction is invalid"); }
     if (idempotencyKey !== instruction.settlement_id) throw new SettlementError(400, "idempotency_key_mismatch", "Idempotency-Key must match settlement_id");
-    if (instruction.network_id !== "solana:mainnet-beta" || instruction.usdc_mint !== MAINNET_USDC_MINT || instruction.asset !== "USDC") throw new SettlementError(400, "unsupported_network", "settlement accepts only classic SPL USDC on Solana Mainnet");
+    if (instruction.network_id !== MAINNET_NETWORK_ID || instruction.usdc_mint !== MAINNET_USDC_MINT || instruction.asset !== "USDC") throw new SettlementError(400, "unsupported_network", "settlement accepts only classic SPL USDC on Solana Mainnet");
     if (!instruction.canonical_quote_hash || instruction.settlement_program_version !== "spl-usdc-mainnet-v1") throw new SettlementError(400, "settlement_binding_missing", "settlement must bind the accepted quote and Mainnet SPL payment version");
-    if (instruction.payout_recipients.some((payout) => !isValidSolanaAddress(payout.destination))) throw new SettlementError(400, "invalid_destination", "every payout destination must be a Solana wallet address");
+    if (instruction.payout_recipients.some((payout) => !solanaAddressForNetwork(payout.destination, instruction.network_id))) throw new SettlementError(400, "invalid_destination", "every payout destination must be a wallet qualified for the settlement network");
     if (amount(instruction.total_amount_usdc_atomic) > this.maxPaymentAtomic) throw new SettlementError(400, "payment_limit_exceeded", "settlement exceeds the configured payment limit");
     await this.chain.ensureTreasury();
     await this.reserve("settlement", instruction.settlement_id, instruction.payment_intent_id, instruction);
@@ -120,16 +131,21 @@ export class RealizeSettlementProcessor {
     const record = await this.ledger.getByPaymentIntent(paymentIntentId);
     if (!record) return {payment_intent_id: paymentIntentId, kind: "none"};
     const batches = await this.ledger.listBatches(record.record_id);
-    const settledAmount = record.kind === "settlement"
-      ? batches.filter((batch) => batch.status === "finalized").reduce((sum, batch) => sum + BigInt(batch.amount_usdc_atomic), 0n).toString()
+    const instruction = record.kind === "settlement" ? SettlementInstructionV1Schema.parse(record.request) : undefined;
+    const heldIds = new Set(instruction?.payout_recipients.filter((payout) => this.chain.isTreasuryDestination(payout.destination)).map((payout) => payout.payout_id));
+    const settledIds = new Set(batches.filter((batch) => batch.status === "finalized" && batch.transaction_signature).flatMap((batch) => batch.payout_ids.filter((payoutId) => !heldIds.has(payoutId))));
+    const settledAmount = instruction
+      ? instruction.payout_recipients.filter((payout) => settledIds.has(payout.payout_id)).reduce((sum, payout) => sum + amount(payout.amount_usdc_atomic), 0n).toString()
       : undefined;
+    const heldAmount = instruction ? this.heldAmount(instruction) : undefined;
     return {
       payment_intent_id: paymentIntentId,
       kind: record.kind,
       record_id: record.record_id,
       state: record.state,
       ...(settledAmount !== undefined ? {settled_amount_usdc_atomic: settledAmount} : {}),
-      batch_statuses: batches.map((batch) => batch.status)
+      ...(heldAmount !== undefined ? {held_amount_usdc_atomic: heldAmount} : {}),
+      batch_statuses: batches.filter((batch) => batch.payout_ids.some((payoutId) => !heldIds.has(payoutId))).map((batch) => batch.status)
     };
   }
 
@@ -145,35 +161,62 @@ export class RealizeSettlementProcessor {
     if (response.status === "settled") await this.ledger.updateRecordState(instruction.settlement_id, "settled");
     else if (response.status === "failed") await this.ledger.updateRecordState(instruction.settlement_id, "refundable");
     else if (response.status === "partial") await this.ledger.updateRecordState(instruction.settlement_id, "partial");
+    else if (response.held_amount_usdc_atomic !== "0" && response.settled_amount_usdc_atomic === "0") {
+      const record = await this.ledger.get(instruction.settlement_id);
+      if (record?.state === "settled") await this.ledger.updateRecordState(instruction.settlement_id, "active");
+    }
     return response;
   }
 
   private async progressSettlement(instruction: SettlementInstructionV1) {
     const byId = new Map(instruction.payout_recipients.map((payout) => [payout.payout_id, payout]));
+    let expectedBatchCount = 0;
     for (const plan of instruction.transaction_batches) {
       const transfers = plan.payout_ids.map((payoutId) => {
         const payout = byId.get(payoutId);
         if (!payout) throw new SettlementError(400, "invalid_settlement", "transaction batch references an unknown payout");
         return {payout_id: payout.payout_id, destination: payout.destination, amount_usdc_atomic: payout.amount_usdc_atomic};
       });
-      await this.progressBatch(instruction.settlement_id, plan.transaction_index, transfers);
+      const externalTransfers = transfers.filter((transfer) => !this.chain.isTreasuryDestination(transfer.destination));
+      if (externalTransfers.length) {
+        expectedBatchCount += 1;
+        await this.progressBatch(instruction.settlement_id, plan.transaction_index, externalTransfers);
+      }
     }
     const batches = await this.ledger.listBatches(instruction.settlement_id);
-    const settledIds = new Set(batches.filter((batch) => batch.status === "finalized").flatMap((batch) => batch.payout_ids));
-    const failedIds = batches.filter((batch) => batch.status === "failed").flatMap((batch) => batch.payout_ids);
+    const byPayoutId = new Map(instruction.payout_recipients.map((payout) => [payout.payout_id, payout]));
+    const isHeld = (payoutId: string) => {
+      const payout = byPayoutId.get(payoutId);
+      return payout ? this.chain.isTreasuryDestination(payout.destination) : false;
+    };
+    const settledIds = new Set(batches.filter((batch) => batch.status === "finalized" && batch.transaction_signature).flatMap((batch) => batch.payout_ids.filter((payoutId) => !isHeld(payoutId))));
+    const failedIds = batches.filter((batch) => batch.status === "failed").flatMap((batch) => batch.payout_ids.filter((payoutId) => !isHeld(payoutId)));
     const settledAmount = instruction.payout_recipients.filter((payout) => settledIds.has(payout.payout_id)).reduce((sum, payout) => sum + amount(payout.amount_usdc_atomic), 0n);
-    const terminal = batches.length === instruction.transaction_batches.length && batches.every((batch) => batch.status === "finalized" || batch.status === "failed");
-    const status = terminal && failedIds.length === 0 ? "settled" : terminal && settledAmount > 0n ? "partial" : terminal ? "failed" : "processing";
+    const heldAmount = BigInt(this.heldAmount(instruction));
+    const executionBatches = batches.filter((batch) => batch.payout_ids.some((payoutId) => !isHeld(payoutId)));
+    const terminal = executionBatches.length === expectedBatchCount && executionBatches.every((batch) => batch.status === "finalized" || batch.status === "failed");
+    const status = !terminal ? "processing"
+      : failedIds.length > 0 ? settledAmount > 0n ? "partial" : "failed"
+      : heldAmount > 0n ? settledAmount > 0n ? "partial" : "processing"
+      : "settled";
     return {
       settlement_id: instruction.settlement_id, status,
       transaction_signatures: batches.flatMap((batch) => batch.transaction_signature ? [batch.transaction_signature] : []),
-      settled_amount_usdc_atomic: settledAmount.toString(), failed_payout_ids: failedIds,
+      settled_amount_usdc_atomic: settledAmount.toString(), held_amount_usdc_atomic: heldAmount.toString(), failed_payout_ids: failedIds,
       updated_at: new Date().toISOString()
     };
   }
 
+  private heldAmount(rawInstruction: unknown): string {
+    const instruction = SettlementInstructionV1Schema.parse(rawInstruction);
+    return instruction.payout_recipients
+      .filter((payout) => this.chain.isTreasuryDestination(payout.destination))
+      .reduce((sum, payout) => sum + amount(payout.amount_usdc_atomic), 0n)
+      .toString();
+  }
+
   private async progressRefund(refundId: string, request: RefundRequest) {
-    await this.progressBatch(refundId, 0, [{payout_id: refundId, destination: request.payer_wallet, amount_usdc_atomic: request.amount_usdc_atomic}], true);
+    await this.progressBatch(refundId, 0, [{payout_id: refundId, destination: MAINNET_NETWORK_ID + ":" + request.payer_wallet, amount_usdc_atomic: request.amount_usdc_atomic}], true);
     const batch = await this.ledger.getBatch(refundId, 0);
     if (!batch) throw new SettlementError(503, "refund_pending", "refund transaction is not yet available");
     const status = batch.status === "finalized" ? "refunded" : batch.status === "failed" ? "failed" : batch.status === "uncertain" ? "uncertain" : "processing";
