@@ -9,6 +9,7 @@ RECONCILE_JOB="vox-realize-reconcile"
 ANCHOR_SERVICE="vox-anchor-worker"
 IMAGE="${VOX_PRODUCTION_IMAGE:-}"
 TAG="ci-${GITHUB_RUN_ID:-$(date +%s)}"
+FIRST_PARTY_CREATOR_IDS="${VOX_REALIZE_FIRST_PARTY_CREATOR_IDS:-vox:agent:A4KzQOc_iHZyTQOmSqqrmSlpjrpSMwigXmwzcXFCDiM,vox:agent:nERxpsSoi2oJWG9B6EuZSg9TkUDpTM6ASNOD0urMgAU}"
 
 for flag in VOX_DEPLOY_API VOX_DEPLOY_HOSTING VOX_DEPLOY_SETTLEMENT VOX_DEPLOY_RECONCILE VOX_DEPLOY_ANCHOR VOX_PRODUCTION_SENSITIVE_APPROVED; do
   value="${!flag:-false}"
@@ -51,6 +52,11 @@ deploy_service_candidate() {
   local service="$1"
   local candidate_url="$2"
   local revision
+  local -a extra_env_args=()
+
+  if [[ "$service" == "$API_SERVICE" ]]; then
+    extra_env_args+=(--update-env-vars="^|^VOX_REALIZE_FIRST_PARTY_CREATOR_IDS=$FIRST_PARTY_CREATOR_IDS")
+  fi
 
   gcloud run deploy "$service" \
     --image="$IMAGE" \
@@ -58,7 +64,8 @@ deploy_service_candidate() {
     --project="$PROJECT_ID" \
     --platform=managed \
     --no-traffic \
-    --tag="$TAG"
+    --tag="$TAG" \
+    "${extra_env_args[@]}"
 
   revision="$(gcloud run services describe "$service" --region="$REGION" --project="$PROJECT_ID" --format='value(status.latestCreatedRevisionName)')"
   if [[ -z "$revision" ]]; then

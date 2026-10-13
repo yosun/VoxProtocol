@@ -10,17 +10,19 @@ historical snapshots and may describe superseded deployment states.
   trustless escrow; the custom VOX escrow program stays on Devnet.
 - Generate each quote from Populi's live provider price. The total is at least
   1 USDC and at most the configurable 10,000 USDC cap, with the approved
-  provider/Bob/VOX allocation of 25/70/5. The total is the greater of 1 USDC or
-  four times provider cost, rounded up to one atomic USDC unit; a $0.75 provider
-  quote therefore becomes a $3.00 checkout price.
-- Bob is a VOX first-party AI character. The VOX first-party policy needs no
-  separate creator-signed rights agreement or Bob-specific wallet. Customers
-  still review and accept the quote before generation.
+  provider/character-owner/VOX allocation of 25/70/5. The total is the greater
+  of 1 USDC or four times provider cost, rounded up to one atomic USDC unit; a
+  $0.75 provider quote therefore becomes a $3.00 checkout price.
+- Bob and Luna are VOX first-party AI characters. The VOX first-party policy
+  needs no separate creator-signed rights agreement or character-specific
+  wallet. Customers still review and accept the quote before generation. Luna's
+  Mainnet first-party setup was authorized on 2026-10-12 and remains pending the
+  protected release and her payout configuration.
 - The existing GCP treasury is the only approved treasury identity. Do not
   invent recipient wallets. A share held in the treasury is a recorded
   allocation/liability until an authorized settlement pays its recipient.
-- Production Mainnet Realize is enabled on `vox-api-00064-dep`, with 100%
-  traffic, and Bob's active Firestore payout configuration is version 5. The
+- Production Mainnet Realize is enabled on `vox-api-00091-biw`, with 100%
+  traffic, and Bob's active Firestore payout configuration is version 6. The
   API retains its legacy `VOX_PAYMENT_MODE=mock` for other payment routes;
   Mainnet Realize uses a separate direct classic SPL USDC path pinned to
   `solana:mainnet-beta`. No real customer payment was submitted.
@@ -601,6 +603,28 @@ submitted.
   promotion.
 - The selective production workflow has not been dispatched yet. No production
   deployment, Mainnet payment, payout, or refund was made during this setup.
+
+## Luna first-party rollout preflight on 2026-10-12
+
+- The owner designated Luna as a VOX first-party AI character and selected the
+  Mainnet first-party path. Luna's stable creator ID is
+  `vox:agent:nERxpsSoi2oJWG9B6EuZSg9TkUDpTM6ASNOD0urMgAU`. Her Populi profile is
+  active and advertises `video:short-form` with
+  `provider:video:example` on the ready `cruelty-web-00143-hep` candidate.
+- Current production Populi traffic still serves `cruelty-web-00141-ghv`, where
+  `POPULI_REALIZE_ENABLED=false`; the candidate is tagged and receives no
+  production traffic. The public production Bob capabilities route currently
+  returns HTTP 503 `provider_unavailable`, and Luna's VOX capabilities route
+  returns HTTP 404 because she has no active payout configuration.
+- Production VOX currently routes 100% traffic to `vox-api-00091-biw` and its
+  first-party allowlist still contains Bob alone. Bob's active payout policy is
+  version 6. Luna has no VOX payout configuration yet. The Populi profile's
+  supplied Devnet wallet remains unverified and is not part of Luna's Mainnet
+  first-party policy.
+- No Luna quote, payment, generation, payout, or refund was submitted. Her
+  setup requires the protected VOX API release, the reviewed Populi production
+  release, and a first-party Mainnet payout configuration using the existing
+  treasury policy.
 
 ## Marketing-focused checkout update (2026-10-12)
 
