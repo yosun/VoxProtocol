@@ -1,7 +1,8 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
-import {Keypair} from "@solana/web3.js";
+import {Keypair, type Connection} from "@solana/web3.js";
 import {MAINNET_USDC_MINT, RealizeSettlementProcessor, createSettlementApp, type MainnetSettlementChain, type PreparedSettlementBatch, type RefundRequest, type SettlementTransfer} from "../apps/settlement/src/engine.js";
 import {MemorySettlementLedger} from "../apps/settlement/src/ledger.js";
+import {SolanaMainnetSettlementChain, solanaMainnetPayoutAddress} from "../apps/settlement/src/solana-chain.js";
 
 class FakeSettlementChain implements MainnetSettlementChain {
   prepareCount = 0;
@@ -10,6 +11,8 @@ class FakeSettlementChain implements MainnetSettlementChain {
   executionResult: "prepared" | "finalized" | "failed" | "uncertain" = "finalized";
   executionResults: Array<"prepared" | "finalized" | "failed" | "uncertain"> = [];
   executedSignatures: string[] = [];
+  treasuryDestination?: string;
+  isTreasuryDestination = vi.fn((destination: string) => destination === this.treasuryDestination);
   ensureTreasury = vi.fn(async () => {});
   verifyFunding = vi.fn(async (_input: RefundRequest) => this.verifyResult);
   prepareBatch = vi.fn(async (input: {recordId: string; batchIndex: number; transfers: SettlementTransfer[]}): Promise<PreparedSettlementBatch> => {
@@ -49,9 +52,9 @@ function settlementInstruction() {
     settlement_program_version: "spl-usdc-mainnet-v1",
     total_amount_usdc_atomic: "1000000",
     payout_recipients: [
-      {payout_id: "payout-provider", recipient_id: "provider:fal", role: "generation_provider" as const, amount_usdc_atomic: "750000", destination: provider},
-      {payout_id: "payout-owner", recipient_id: "creator:bob", role: "character_owner" as const, amount_usdc_atomic: "200000", destination: owner},
-      {payout_id: "payout-platform", recipient_id: "platform:vox", role: "platform" as const, amount_usdc_atomic: "50000", destination: Keypair.generate().publicKey.toBase58()}
+      {payout_id: "payout-provider", recipient_id: "provider:fal", role: "generation_provider" as const, amount_usdc_atomic: "750000", destination: "solana:mainnet-beta:" + provider},
+      {payout_id: "payout-owner", recipient_id: "creator:bob", role: "character_owner" as const, amount_usdc_atomic: "200000", destination: "solana:mainnet-beta:" + owner},
+      {payout_id: "payout-platform", recipient_id: "platform:vox", role: "platform" as const, amount_usdc_atomic: "50000", destination: "solana:mainnet-beta:" + Keypair.generate().publicKey.toBase58()}
     ],
     transaction_batches: [{transaction_index: 0, payout_ids: ["payout-provider", "payout-owner", "payout-platform"], compute_units: 120000, serialized_size_bytes: 800}],
     created_at: new Date().toISOString()
@@ -94,6 +97,123 @@ describe("Mainnet Realize settlement adapter", () => {
     } finally {
       await app.close();
     }
+  });
+
+  it("accepts only payout wallets qualified for the instruction's pinned network", async () => {
+    const chain = new FakeSettlementChain();
+    const processor = new RealizeSettlementProcessor(new MemorySettlementLedger(), chain, 1_000_000n);
+    const instruction = settlementInstruction();
+    await expect(processor.requestSettlement(instruction, instruction.settlement_id)).resolves.toMatchObject({status: "settled"});
+
+    for (const destination of [
+      instruction.payout_recipients[0]!.destination.slice("solana:mainnet-beta:".length),
+      instruction.payout_recipients[0]!.destination.replace("solana:mainnet-beta:", "solana:devnet:"),
+      instruction.payout_recipients[0]!.destination.replace("solana:mainnet-beta:", "solana:mainnet:")
+    ]) {
+      const invalid = settlementInstruction();
+      invalid.payout_recipients[0]!.destination = destination;
+      await expect(processor.requestSettlement(invalid, invalid.settlement_id)).rejects.toMatchObject({code: "invalid_destination"});
+    }
+  });
+
+  it("normalizes a qualified Mainnet recipient at the chain adapter boundary", () => {
+    const address = Keypair.generate().publicKey.toBase58();
+    expect(solanaMainnetPayoutAddress("solana:mainnet-beta:" + address)).toBe(address);
+    expect(() => solanaMainnetPayoutAddress("solana:devnet:" + address)).toThrowError(expect.objectContaining({code: "invalid_destination"}));
+  });
+
+  it("refuses to prepare a treasury self-transfer instead of recording a fake finalization", async () => {
+    const keypair = Keypair.generate();
+    const address = keypair.publicKey.toBase58();
+    const chain = new SolanaMainnetSettlementChain({
+      rpcUrl: "https://rpc.example",
+      treasuryOwner: address,
+      treasuryTokenAccount: Keypair.generate().publicKey.toBase58(),
+      keypair,
+      maxPaymentAtomic: 1_000_000n,
+      connection: {} as Connection
+    });
+    await expect(chain.prepareBatch({
+      recordId: "vox:settlement:test",
+      batchIndex: 0,
+      transfers: [{payout_id: "payout-held", destination: "solana:mainnet-beta:" + address, amount_usdc_atomic: "100"}]
+    })).rejects.toMatchObject({statusCode: 409, code: "treasury_liability"});
+  });
+
+  it("keeps treasury-owned allocations as a durable liability without a finalized batch", async () => {
+    const chain = new FakeSettlementChain();
+    const ledger = new MemorySettlementLedger();
+    const processor = new RealizeSettlementProcessor(ledger, chain, 1_000_000n);
+    const instruction = settlementInstruction();
+    const treasury = instruction.payout_recipients[0]!.destination;
+    chain.treasuryDestination = treasury;
+    instruction.payout_recipients.forEach((payout) => { payout.destination = treasury; });
+
+    const response = await processor.requestSettlement(instruction, instruction.settlement_id);
+    expect(response).toMatchObject({status: "processing", settled_amount_usdc_atomic: "0", held_amount_usdc_atomic: "1000000", transaction_signatures: []});
+    expect(chain.prepareCount).toBe(0);
+    expect(chain.executeCount).toBe(0);
+    expect(await processor.getPaymentIntentResolution(instruction.payment_intent_id)).toMatchObject({state: "active", settled_amount_usdc_atomic: "0", held_amount_usdc_atomic: "1000000", batch_statuses: []});
+    expect((await ledger.get(instruction.settlement_id))?.request).toEqual(instruction);
+  });
+
+  it("reclassifies a legacy treasury-only finalized record as an unpaid liability", async () => {
+    const chain = new FakeSettlementChain();
+    const ledger = new MemorySettlementLedger();
+    const processor = new RealizeSettlementProcessor(ledger, chain, 1_000_000n);
+    const instruction = settlementInstruction();
+    const treasury = instruction.payout_recipients[0]!.destination;
+    chain.treasuryDestination = treasury;
+    instruction.payout_recipients.forEach((payout) => { payout.destination = treasury; });
+    await ledger.reserve({
+      record_id: instruction.settlement_id,
+      payment_intent_id: instruction.payment_intent_id,
+      kind: "settlement",
+      state: "settled",
+      request_hash: "legacy",
+      request: instruction,
+      created_at: instruction.created_at
+    });
+    await ledger.createBatchIfAbsent(instruction.settlement_id, {
+      batch_index: 0,
+      payout_ids: instruction.payout_recipients.map((payout) => payout.payout_id),
+      amount_usdc_atomic: instruction.total_amount_usdc_atomic,
+      status: "finalized",
+      updated_at: instruction.created_at
+    });
+
+    const response = await processor.getSettlement(instruction.settlement_id);
+    expect(response).toMatchObject({status: "processing", settled_amount_usdc_atomic: "0", held_amount_usdc_atomic: "1000000"});
+    expect(await processor.getPaymentIntentResolution(instruction.payment_intent_id)).toMatchObject({state: "active", settled_amount_usdc_atomic: "0", held_amount_usdc_atomic: "1000000", batch_statuses: []});
+  });
+
+  it("settles only external payouts when a transaction plan also contains held allocations", async () => {
+    const chain = new FakeSettlementChain();
+    const processor = new RealizeSettlementProcessor(new MemorySettlementLedger(), chain, 1_000_000n);
+    const instruction = settlementInstruction();
+    const treasury = instruction.payout_recipients[0]!.destination;
+    chain.treasuryDestination = treasury;
+    instruction.payout_recipients[0]!.destination = treasury;
+    instruction.payout_recipients[1]!.destination = treasury;
+
+    const response = await processor.requestSettlement(instruction, instruction.settlement_id);
+    expect(response).toMatchObject({status: "partial", settled_amount_usdc_atomic: "50000", held_amount_usdc_atomic: "950000"});
+    expect(chain.prepareBatch).toHaveBeenCalledWith(expect.objectContaining({transfers: [{payout_id: "payout-platform", destination: instruction.payout_recipients[2]!.destination, amount_usdc_atomic: "50000"}]}));
+  });
+
+  it("marks all failed external payouts refundable when the remaining allocation is only held in treasury", async () => {
+    const chain = new FakeSettlementChain();
+    chain.executionResult = "failed";
+    const ledger = new MemorySettlementLedger();
+    const processor = new RealizeSettlementProcessor(ledger, chain, 1_000_000n);
+    const instruction = settlementInstruction();
+    chain.treasuryDestination = instruction.payout_recipients[0]!.destination;
+
+    const response = await processor.requestSettlement(instruction, instruction.settlement_id);
+
+    expect(response).toMatchObject({status: "failed", settled_amount_usdc_atomic: "0", held_amount_usdc_atomic: "750000", failed_payout_ids: ["payout-owner", "payout-platform"]});
+    expect(await processor.getPaymentIntentResolution(instruction.payment_intent_id)).toMatchObject({state: "refundable", settled_amount_usdc_atomic: "0", held_amount_usdc_atomic: "750000", batch_statuses: ["failed"]});
+    expect((await ledger.get(instruction.settlement_id))?.state).toBe("refundable");
   });
 
   it("authenticates, settles the exact payout plan once, and replays the stored result", async () => {
@@ -145,6 +265,7 @@ describe("Mainnet Realize settlement adapter", () => {
     const refund = refundRequest();
     const response = await refundProcessor.requestRefund(refund, refund.idempotency_key);
     expect(response.status).toBe("refunded");
+    expect(refundChain.prepareBatch).toHaveBeenCalledWith(expect.objectContaining({transfers: [expect.objectContaining({destination: "solana:mainnet-beta:" + refund.payer_wallet})]}));
     const secondRefund = refundRequest({commission_id: "vox:commission:another", payment_intent_id: refund.payment_intent_id, payer_wallet: refund.payer_wallet});
     await expect(refundProcessor.requestRefund(secondRefund, secondRefund.idempotency_key)).rejects.toMatchObject({code: "idempotency_conflict"});
     expect(refundChain.executeCount).toBe(1);

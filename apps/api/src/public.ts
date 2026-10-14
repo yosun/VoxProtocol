@@ -654,6 +654,7 @@ async function buildMediaPage(options: PublicRouteOptions, mediaIdValue: string)
   const mediaId = decodeURIComponent(mediaIdValue);
   const media = await options.store.getNftMedia(mediaId);
   if (!media) return {html: await notFoundPage(options, "Media not found", `No VOX media record exists for ${mediaIdValue}.`, mediaPath(mediaIdValue)), statusCode: 404};
+  if (media.source_kind === "realize_commission" && media.publication_consent !== true) return {html: await notFoundPage(options, "Media not found", `No VOX media record exists for ${mediaIdValue}.`, mediaPath(mediaIdValue)), statusCode: 404};
   const mints = await options.store.listNftMintsForMedia(media.media_id);
   const mediaUrl = safeHttpUrl(media.media_uri);
   const visual = mediaUrl && media.media_type.startsWith("video/")

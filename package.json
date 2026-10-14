@@ -36,6 +36,7 @@
     "prepare:realize-staging-payment": "tsx scripts/prepare-realize-staging-payment.ts",
     "rehearse:realize-staging": "tsx scripts/run-realize-staging-rehearsal.ts",
     "rehearse:realize-staging-refund": "tsx scripts/run-realize-staging-refund-rehearsal.ts",
+    "realize:approve-mainnet-refund": "tsx scripts/approve-realize-mainnet-refund.ts",
     "validate:nft-testnets": "tsx scripts/validate-nft-testnets.ts",
     "typecheck": "npm run build && npx tsc -p apps/web/tsconfig.json --noEmit",
     "verify": "npm test"

@@ -10,6 +10,7 @@ ANCHOR_SERVICE="vox-anchor-worker"
 IMAGE="${VOX_PRODUCTION_IMAGE:-}"
 TAG="ci-${GITHUB_RUN_ID:-$(date +%s)}"
 FIRST_PARTY_CREATOR_IDS="${VOX_REALIZE_FIRST_PARTY_CREATOR_IDS:-vox:agent:A4KzQOc_iHZyTQOmSqqrmSlpjrpSMwigXmwzcXFCDiM,vox:agent:nERxpsSoi2oJWG9B6EuZSg9TkUDpTM6ASNOD0urMgAU}"
+REALIZE_OPERATOR_HUMAN_IDS="${VOX_REALIZE_OPERATOR_HUMAN_IDS:-}"
 
 for flag in VOX_DEPLOY_API VOX_DEPLOY_HOSTING VOX_DEPLOY_SETTLEMENT VOX_DEPLOY_RECONCILE VOX_DEPLOY_ANCHOR VOX_PRODUCTION_SENSITIVE_APPROVED; do
   value="${!flag:-false}"
@@ -55,7 +56,7 @@ deploy_service_candidate() {
   local -a extra_env_args=()
 
   if [[ "$service" == "$API_SERVICE" ]]; then
-    extra_env_args+=(--update-env-vars="^|^VOX_REALIZE_FIRST_PARTY_CREATOR_IDS=$FIRST_PARTY_CREATOR_IDS")
+    extra_env_args+=(--update-env-vars="^|^VOX_REALIZE_FIRST_PARTY_CREATOR_IDS=$FIRST_PARTY_CREATOR_IDS|VOX_REALIZE_OPERATOR_HUMAN_IDS=$REALIZE_OPERATOR_HUMAN_IDS")
   fi
 
   gcloud run deploy "$service" \
@@ -118,11 +119,85 @@ deploy_service_candidate() {
   echo "$service is serving $revision (image $IMAGE). Previous revisions were retained."
 }
 
+ensure_realize_reconcile_index() {
+  local output timeout_seconds deadline state readiness
+  timeout_seconds="${VOX_INDEX_READY_TIMEOUT_SECONDS:-900}"
+  if [[ ! "$timeout_seconds" =~ ^[1-9][0-9]{0,4}$ ]]; then
+    echo "VOX_INDEX_READY_TIMEOUT_SECONDS must be a positive integer no greater than 99999." >&2
+    return 1
+  fi
+
+  output="$(gcloud firestore indexes composite create \
+    --collection-group=vox_realize_commissions \
+    --database="(default)" \
+    --project="$PROJECT_ID" \
+    --async \
+    --field-config=field-path=commission.state,order=ascending \
+    --field-config=field-path=updated_at,order=ascending 2>&1)" || {
+    if [[ "$output" != *"already exists"* && "$output" != *"ALREADY_EXISTS"* ]]; then
+      echo "$output" >&2
+      return 1
+    fi
+  }
+
+  deadline="$(( $(date +%s) + timeout_seconds ))"
+  while true; do
+    state="$(gcloud firestore indexes composite list --database="(default)" --project="$PROJECT_ID" --format=json)"
+    readiness="$(INDEX_STATE="$state" node --input-type=module -e '
+      const raw = JSON.parse(process.env.INDEX_STATE || "[]");
+      const indexes = Array.isArray(raw) ? raw : raw.indexes || [];
+      const index = indexes.find((candidate) => {
+        const collectionGroup = candidate.collectionGroup || candidate.name?.match(/collectionGroups\/([^/]+)/)?.[1];
+        if (collectionGroup !== "vox_realize_commissions") return false;
+        const fields = candidate.fields || [];
+        const expected = [["commission.state", "ASCENDING"], ["updated_at", "ASCENDING"]];
+        const explicitFields = fields.filter((field) => field.fieldPath !== "__name__");
+        const nameField = fields.find((field) => field.fieldPath === "__name__");
+        return explicitFields.length === expected.length &&
+          expected.every(([fieldPath, order], index) => explicitFields[index]?.fieldPath === fieldPath && explicitFields[index]?.order === order) &&
+          fields.length === expected.length + (nameField ? 1 : 0) &&
+          (!nameField || fields.at(-1) === nameField && nameField.order === expected.at(-1)?.[1]);
+      });
+      process.stdout.write(index?.state === "READY" ? "ready" : index?.state === "ERROR" ? "error" : "pending");
+    ')"
+    if [[ "$readiness" == "ready" ]]; then
+      return 0
+    fi
+    if [[ "$readiness" == "error" ]]; then
+      echo "The Realize reconciliation Firestore index entered an error state." >&2
+      return 1
+    fi
+    if (( $(date +%s) >= deadline )); then
+      echo "Timed out waiting for the Realize reconciliation Firestore index to reach READY." >&2
+      return 1
+    fi
+    sleep 5
+  done
+}
+
+# Validate API-only runtime configuration and provision the query index before
+# changing any production service or scheduled job. This keeps a missing
+# operator allowlist or a failed index build from leaving a partial release.
 if [[ "${VOX_DEPLOY_API:-false}" == "true" ]]; then
-  deploy_service_candidate "$API_SERVICE" api
+  if [[ ! "$REALIZE_OPERATOR_HUMAN_IDS" =~ ^vox:human:[A-Za-z0-9_-]{43}(,vox:human:[A-Za-z0-9_-]{43})*$ ]]; then
+    echo "VOX_REALIZE_OPERATOR_HUMAN_IDS must contain at least one registered VOX human ID before releasing the Mainnet API." >&2
+    exit 1
+  fi
+  ensure_realize_reconcile_index
 fi
+
+# Promote shared dependencies before the API starts using the new contract:
+# completed orders can call settlement immediately, and the scheduled worker
+# must send the corrected reconciliation authentication header.
 if [[ "${VOX_DEPLOY_SETTLEMENT:-false}" == "true" ]]; then
   deploy_service_candidate "$SETTLEMENT_SERVICE" settlement
+fi
+if [[ "${VOX_DEPLOY_RECONCILE:-false}" == "true" ]]; then
+  gcloud run jobs update "$RECONCILE_JOB" --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID"
+  echo "$RECONCILE_JOB image updated. No job execution was started."
+fi
+if [[ "${VOX_DEPLOY_API:-false}" == "true" ]]; then
+  deploy_service_candidate "$API_SERVICE" api
 fi
 if [[ "${VOX_DEPLOY_ANCHOR:-false}" == "true" ]]; then
   gcloud run deploy "$ANCHOR_SERVICE" \
@@ -133,11 +208,6 @@ if [[ "${VOX_DEPLOY_ANCHOR:-false}" == "true" ]]; then
   gcloud run services update-traffic "$ANCHOR_SERVICE" --to-revisions="${revision}=100" --region="$REGION" --project="$PROJECT_ID"
   echo "$ANCHOR_SERVICE is serving $revision (image $IMAGE). Previous revisions were retained."
 fi
-if [[ "${VOX_DEPLOY_RECONCILE:-false}" == "true" ]]; then
-  gcloud run jobs update "$RECONCILE_JOB" --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID"
-  echo "$RECONCILE_JOB image updated. No job execution was started."
-fi
-
 if [[ "${VOX_DEPLOY_HOSTING:-false}" == "true" ]]; then
   npx --yes firebase-tools@15.24.0 deploy \
     --only hosting \

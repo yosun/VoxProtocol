@@ -1052,7 +1052,9 @@ export class FirestoreStore implements VoxStore {
       const current = snapshot.data() as RealizeCommissionRecord;
       if (current.updated_at !== expectedUpdatedAt) throw new Error("Realize commission changed concurrently");
       if (current.commission.commissioner_id !== record.commission.commissioner_id || current.commission.creator_id !== record.commission.creator_id || current.commission.capability_id !== record.commission.capability_id || current.source_post_id !== record.source_post_id || !canonicalEqual(current.commission.requested_generation_parameters, record.commission.requested_generation_parameters) || current.commission.rights_agreement_reference !== record.commission.rights_agreement_reference) throw new Error("immutable Realize commission terms cannot be changed");
+      if (current.fulfillment_request && (!record.fulfillment_request || !canonicalEqual(current.fulfillment_request, record.fulfillment_request) || current.commission.fulfillment_request_id !== record.commission.fulfillment_request_id)) throw new Error("persisted Realize provider request and idempotency key are immutable");
       if (current.nft_media_ids && JSON.stringify(current.nft_media_ids) !== JSON.stringify(record.nft_media_ids)) throw new Error("Realize NFT media binding is immutable");
+      if (current.nft_publication_consent === true && (record.nft_publication_consent !== true || record.nft_publication_consent_at !== current.nft_publication_consent_at)) throw new Error("Realize NFT publication consent is immutable");
       if (current.commission.quote_id && current.commission.quote_id !== record.commission.quote_id) throw new Error("commission quote id is immutable after issuance");
       if (current.commission.accepted_quote_hash && current.commission.accepted_quote_hash !== record.commission.accepted_quote_hash) throw new Error("accepted quote hash is immutable");
       if (current.commission.state !== record.commission.state && !canTransitionRealizeCommission(current.commission.state, record.commission.state)) throw new Error("invalid Realize commission state transition");
@@ -1086,8 +1088,45 @@ export class FirestoreStore implements VoxStore {
   }
 
   async listRealizeCommissions(limit: number): Promise<RealizeCommissionRecord[]> {
-    const snapshot = await this.realizeCommissions.where("commission.state", "in", ["DRAFT", "QUOTED", "AWAITING_PAYMENT", "FUNDED", "GENERATING", "COMPLETED", "FAILED", "REFUND_PENDING", "MANUAL_REVIEW"]).get();
-    return snapshot.docs.map((doc) => doc.data() as RealizeCommissionRecord).sort((left, right) => left.updated_at.localeCompare(right.updated_at)).slice(0, limit);
+    const boundedLimit = Math.min(Math.max(Math.floor(limit), 1), 100);
+    const generationStates = ["FUNDED", "GENERATING"];
+    const deliveryStates = ["COMPLETED", "REFUND_PENDING"];
+    const paymentStates = ["QUOTED", "AWAITING_PAYMENT"];
+    // Keep most slots for paid generation while reserving room for delivery and quote-expiry work.
+    const deliveryReserve = boundedLimit > 2 ? Math.max(1, Math.floor(boundedLimit / 5)) : boundedLimit === 2 ? 1 : 0;
+    const paymentReserve = boundedLimit > 2 ? Math.max(1, Math.floor(boundedLimit / 5)) : 0;
+    const generationReserve = boundedLimit - deliveryReserve - paymentReserve;
+    const queryStates = async (states: string[], queryLimit: number) => {
+      if (queryLimit <= 0) return [];
+      const snapshot = await this.realizeCommissions.where("commission.state", "in", states).orderBy("updated_at", "asc").limit(queryLimit).get();
+      return snapshot.docs.map((doc) => doc.data() as RealizeCommissionRecord);
+    };
+    const generation = await queryStates(generationStates, generationReserve);
+    let remaining = boundedLimit - generation.length;
+    const deliveryLimit = Math.min(remaining - paymentReserve, deliveryReserve + (generationReserve - generation.length));
+    const delivery = await queryStates(deliveryStates, deliveryLimit);
+    remaining -= delivery.length;
+    const paymentLimit = Math.min(remaining, paymentReserve + (generationReserve - generation.length) + (deliveryReserve - delivery.length));
+    const payments = await queryStates(paymentStates, paymentLimit);
+    remaining -= payments.length;
+    if (remaining > 0) {
+      const additionalDelivery = await queryStates(deliveryStates, delivery.length + remaining);
+      const additional = additionalDelivery.slice(delivery.length);
+      delivery.push(...additional);
+      remaining -= additional.length;
+    }
+    if (remaining > 0) {
+      const additionalGeneration = await queryStates(generationStates, generation.length + remaining);
+      const additional = additionalGeneration.slice(generation.length);
+      generation.push(...additional);
+      remaining -= additional.length;
+    }
+    if (remaining > 0) {
+      const additionalPayments = await queryStates(paymentStates, payments.length + remaining);
+      payments.push(...additionalPayments.slice(payments.length));
+    }
+    const unique = new Map([...generation, ...delivery, ...payments].map((record) => [record.commission.commission_id, record]));
+    return [...unique.values()].slice(0, boundedLimit);
   }
 
   async listRealizeCommissionsForHuman(humanId: string, limit: number): Promise<RealizeCommissionRecord[]> {

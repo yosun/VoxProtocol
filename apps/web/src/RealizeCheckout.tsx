@@ -9,7 +9,7 @@ import {RealizeNfts} from "./RealizeNfts.js";
 import {generationDescription, videoOptions, type VideoOptions} from "./realize-parameters.js";
 
 type RealizeStyle = "cinematic" | "portrait" | "documentary" | "ambient" | "special";
-type SavedCheckout = {version: 2; originPostId: string; creatorId: string; description: string; style: RealizeStyle; duration: number; resolution?: string; testVideo?: boolean; idempotencyKey: string; requestId: string; commissionId?: string; transactionSignature?: string; refundTransactionSignature?: string; transactionUrl?: string; publicAttribution?: string};
+type SavedCheckout = {version: 2; originPostId: string; creatorId: string; description: string; style: RealizeStyle; duration: number; resolution?: string; testVideo?: boolean; idempotencyKey: string; requestId: string; commissionId?: string; transactionSignature?: string; refundTransactionSignature?: string; transactionUrl?: string; publicAttribution?: string; nftPublicationConsent?: boolean};
 const CHECKOUT_KEY = "vox.realize.v1.checkout";
 const REALIZE_TEST_VIDEO_CAPABILITY_ID = "video:integration-test";
 const REALIZE_TEST_VIDEO_PROVIDER_ID = "provider:video:integration-test";
@@ -24,7 +24,7 @@ function loadSavedCheckout(): SavedCheckout | undefined {
     const raw = sessionStorage.getItem(CHECKOUT_KEY);
     if (!raw) return undefined;
     const value = JSON.parse(raw) as Partial<SavedCheckout>;
-    if (value.version !== 2 || typeof value.originPostId !== "string" || typeof value.creatorId !== "string" || typeof value.description !== "string" || !STYLE_OPTIONS.some((item) => item.value === value.style) || typeof value.duration !== "number" || value.testVideo !== undefined && typeof value.testVideo !== "boolean" || typeof value.idempotencyKey !== "string" || typeof value.requestId !== "string") return undefined;
+    if (value.version !== 2 || typeof value.originPostId !== "string" || typeof value.creatorId !== "string" || typeof value.description !== "string" || !STYLE_OPTIONS.some((item) => item.value === value.style) || typeof value.duration !== "number" || value.testVideo !== undefined && typeof value.testVideo !== "boolean" || typeof value.idempotencyKey !== "string" || typeof value.requestId !== "string" || value.nftPublicationConsent !== undefined && typeof value.nftPublicationConsent !== "boolean") return undefined;
     return value as SavedCheckout;
   } catch { return undefined; }
 }
@@ -172,6 +172,7 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
   const [finePrintOpen, setFinePrintOpen] = useState(false);
   const [publicConsent, setPublicConsent] = useState(false);
   const [publicAttribution, setPublicAttribution] = useState("");
+  const [nftPublicationConsent, setNftPublicationConsent] = useState(!!savedCheckout?.nftPublicationConsent);
   const [pendingSignature, setPendingSignature] = useState<string>();
   const [pendingRefundSignature, setPendingRefundSignature] = useState<string>();
   const [transactionUrl, setTransactionUrl] = useState<string>();
@@ -307,6 +308,7 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
     if (!saved || saved.originPostId !== post.post_id) { setRestoringCommission(false); return; }
     setPublicAttribution(saved.publicAttribution ?? "");
     setPublicConsent(!!saved.publicAttribution);
+    setNftPublicationConsent(!!saved.nftPublicationConsent);
     setCommissionId(saved.commissionId);
     setPendingSignature(saved.transactionSignature);
     setPendingRefundSignature(saved.refundTransactionSignature);
@@ -361,6 +363,7 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
     setFunding(undefined);
     setProvenance(undefined);
     setRightsReviewed(false);
+    setNftPublicationConsent(false);
     setPendingSignature(undefined);
     setPendingRefundSignature(undefined);
     setTransactionUrl(undefined);
@@ -393,6 +396,7 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
     setFunding(undefined);
     setProvenance(undefined);
     setRightsReviewed(false);
+    setNftPublicationConsent(false);
     setPendingSignature(undefined);
     const idempotencyKey = crypto.randomUUID();
     const pricingRequestId = `vox:pricing:${crypto.randomUUID()}`;
@@ -442,13 +446,13 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
     try {
       if (!connectedAddress) throw new Error("Connect a Solana wallet before accepting this quote.");
       if (networkMismatch || walletChainMismatch) throw new Error(`Switch your wallet to Solana ${networkName} before accepting this quote.`);
-      const body = {quote_id: quote.quote_id, canonical_quote_hash: quote.canonical_quote_hash, payer_wallet: connectedAddress, rights_reviewed: true, ...(publicConsent && publicAttribution.trim() ? {public_attribution: publicAttribution.trim()} : {})};
+      const body = {quote_id: quote.quote_id, canonical_quote_hash: quote.canonical_quote_hash, payer_wallet: connectedAddress, rights_reviewed: true, nft_publication_consent: nftPublicationConsent, ...(publicConsent && publicAttribution.trim() ? {public_attribution: publicAttribution.trim()} : {})};
       const path = `${commissionPath(commissionId)}/accept-quote`;
       const accepted = await api.acceptRealizeQuote(commissionId, body, await signRealizeRequest(identity, "POST", path, body));
       setFunding(accepted.funding);
       const updated = await refreshStatus(commissionId, identity);
       setCommissionStatus(updated);
-      saveCheckout({version: 2, originPostId: post.post_id, creatorId, description: description.trim(), style, duration, resolution, idempotencyKey: crypto.randomUUID(), requestId: quote.pricing_request_id, commissionId, ...(publicConsent && publicAttribution.trim() ? {publicAttribution: publicAttribution.trim()} : {})});
+      saveCheckout({version: 2, originPostId: post.post_id, creatorId, description: description.trim(), style, duration, resolution, idempotencyKey: crypto.randomUUID(), requestId: quote.pricing_request_id, commissionId, nftPublicationConsent, ...(publicConsent && publicAttribution.trim() ? {publicAttribution: publicAttribution.trim()} : {})});
     } catch (reason) { setError(checkoutError(reason)); }
     finally { setBusy(false); }
   }
@@ -660,6 +664,8 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
       {!currentTermsMatchQuote && <p className="quote-stale" role="alert">This price does not match the active usage terms. Please get an updated quote.</p>}
       {quoteError && <p className="quote-inline-error" role="alert">{quoteError}</p>}
       <label className="consent-row quote-consent"><input type="checkbox" checked={rightsReviewed} onChange={(event) => setRightsReviewed(event.target.checked)} disabled={!currentTermsMatchQuote || !!commissionStatus?.commission.accepted_quote_hash} /><span>I agree to the usage terms and this price.</span></label>
+      <label className="consent-row quote-consent"><input type="checkbox" checked={nftPublicationConsent} onChange={(event) => setNftPublicationConsent(event.target.checked)} disabled={!!commissionStatus?.commission.accepted_quote_hash} /><span>Publish my finished video as a public NFT.</span></label>
+      <p className="tiny muted">If selected, anyone can view the video and NFT metadata. Your connected wallet is visible on-chain, including its payment and ownership history. Your generation prompt is not included in the NFT metadata.</p>
       <button type="button" className="fine-print-link" aria-expanded={finePrintOpen} aria-controls="realize-fine-print" onClick={() => setFinePrintOpen((open) => !open)}>{finePrintOpen ? "Hide the fine print" : "Read the fine print"}</button>
       <div id="realize-fine-print" className="checkout-fineprint checkout-fineprint-content" hidden={!finePrintOpen}>
           <section className="fine-print-section">
