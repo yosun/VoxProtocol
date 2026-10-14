@@ -609,9 +609,9 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
     finally { setBusy(false); }
   }
 
-  const state = commissionStatus?.commission.state;
-  const isTerminal = state === "SETTLED" || state === "REFUNDED" || state === "EXPIRED";
-  const refundReady = state === "REFUND_PENDING" && funding?.mode === "escrow" && funding.progress?.status === "Refundable";
+  const commissionState = commissionStatus?.commission.state;
+  const isTerminal = commissionState === "SETTLED" || commissionState === "REFUNDED" || commissionState === "EXPIRED";
+  const refundReady = commissionStatus?.commission.state === "REFUND_PENDING" && funding?.mode === "escrow" && funding.progress?.status === "Refundable";
   const output = commissionStatus?.fulfillment_result?.outputs[0];
   const capabilitiesReady = !capabilityLoading && !capabilityError && !!selectedCapability && !!options;
   const publicCommissionerParty = rights?.policy_mode === "first_party" ? true : !!rights && rights.agreement.parties.some((party) => party.party_id === REALIZE_COMMISSIONER_ROLE_PARTY_ID && party.role === "commissioner");
