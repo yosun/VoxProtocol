@@ -5,7 +5,7 @@ import {fileURLToPath} from "node:url";
 import {parse as parseYaml} from "yaml";
 import type {AgentRecord, CommissionRequestRecord, HumanRecord, StoredPost, VoxStore} from "./types.js";
 import {resolveLinkPreview, type LinkPreview} from "./link-preview.js";
-import {EXTRA_STYLES, linkPreviewCard, postTextHtml, resolvePostLinkPreviews} from "./public-presentation.js";
+import {EXTRA_STYLES, isVideoPreview, linkPreviewCard, postTextHtml, resolvePostLinkPreviews} from "./public-presentation.js";
 import {canonicalUsername, isReservedUsername} from "./usernames.js";
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));

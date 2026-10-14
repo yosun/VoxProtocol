@@ -29,7 +29,7 @@ function safeHttpUrl(value: string | undefined): string | undefined {
 
 const PUBLIC_HTTP_URL_PATTERN = /https?:\/\/[^\s<>"'`]+/gi;
 
-function isVideoPreview(preview: LinkPreview): boolean {
+export function isVideoPreview(preview: LinkPreview): boolean {
   return !!preview.videoUrl && (!!preview.videoType?.startsWith("video/") || /\.(?:mp4|webm|ogg|mov)(?:$|[?#])/i.test(preview.videoUrl));
 }
 
