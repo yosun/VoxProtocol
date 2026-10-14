@@ -160,6 +160,43 @@ function removeVideoUrls(text: string, previews: LinkPreview[]): string {
   }).join("\n").trim();
 }
 
+interface PopuliRoomCallout {
+  username: string;
+  start: number;
+  end: number;
+}
+
+const RESERVED_POPULI_ROOM_NAMES = new Set(["v1", "search", "docs", "onboarding", "agents", "humans", "human", "posts", "post", "request", "requests", "assets", "robots", "sitemap", "llms", "openapi", "agent-quickstart", "favicon", "site", "index"]);
+
+function populiRoomCallout(text: string): PopuliRoomCallout | undefined {
+  const match = /\b(join\s+the\s+live\s+room)\s*:\s*(https?:\/\/[^\s<>"'`]+)/i.exec(text);
+  if (!match || match.index === undefined) return undefined;
+  const urlText = match[2]!.replace(/[.,!?;:]+$/, "").replace(/[)}\]]+$/, "");
+  let url: URL;
+  try { url = new URL(urlText); } catch { return undefined; }
+  if (url.hostname.toLowerCase() !== "populi.cam" || (url.protocol !== "https:" && url.protocol !== "http:")) return undefined;
+  let pathname: string;
+  try { pathname = decodeURIComponent(url.pathname); } catch { return undefined; }
+  const pathMatch = /^\/([a-z0-9_-]{1,15})(?:\/widget)?\/?$/i.exec(pathname);
+  if (!pathMatch) return undefined;
+  const username = pathMatch[1]!.toLowerCase();
+  if (RESERVED_POPULI_ROOM_NAMES.has(username)) return undefined;
+  const calloutStart = match.index + match[0].indexOf(match[1]!);
+  const urlStart = match.index + match[0].lastIndexOf(match[2]!);
+  return {username, start: calloutStart, end: urlStart + urlText.length};
+}
+
+function isPopuliRoomUrl(value: string, username: string): boolean {
+  try {
+    const clean = value.replace(/[.,!?;:]+$/, "").replace(/[)}\]]+$/, "");
+    const url = new URL(clean);
+    const pathname = decodeURIComponent(url.pathname).replace(/\/$/, "");
+    return url.hostname.toLowerCase() === "populi.cam" && new RegExp(`^/${username}(?:/widget)?$`, "i").test(pathname);
+  } catch {
+    return false;
+  }
+}
+
 function VideoPremiereModal({source, type, poster, title, onClose}: {source: string; type?: string | undefined; poster?: string | undefined; title: string; onClose: () => void}) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
@@ -200,7 +237,8 @@ function LinkPreviewCard({preview}: {preview: LinkPreview}) {
 }
 
 function PostContent({text, onVideoDetected}: {text: string; onVideoDetected?: (hasVideo: boolean) => void}) {
-  const urls = useMemo(() => extractHttpUrls(text), [text]);
+  const callout = useMemo(() => populiRoomCallout(text), [text]);
+  const urls = useMemo(() => extractHttpUrls(text).filter((url) => !callout || !isPopuliRoomUrl(url, callout.username)), [text, callout]);
   const fallbackPreviews = useMemo(() => Object.fromEntries(urls.map((url) => [url, fallbackLinkPreview(url)])), [urls]);
   const [previews, setPreviews] = useState<Record<string, LinkPreview>>(() => fallbackPreviews);
   useEffect(() => {
@@ -219,7 +257,11 @@ function PostContent({text, onVideoDetected}: {text: string; onVideoDetected?: (
     return () => { active = false; };
   }, [fallbackPreviews, onVideoDetected, urls]);
   const visibleText = removeVideoUrls(text, Object.values(previews));
-  return <><p className="post-text">{visibleText}</p>{urls.length > 0 && <div className="link-previews" aria-label="Shared links">{urls.map((url) => <LinkPreviewCard key={url} preview={previews[url] ?? fallbackLinkPreview(url)} />)}</div>}</>;
+  const calloutHref = callout ? `/${encodeURIComponent(callout.username)}/?livestream=true` : "";
+  const postText = callout
+    ? <>{removeVideoUrls(text.slice(0, callout.start), Object.values(previews))}<a className="post-live-room-cta" href={calloutHref}>Join the live room <span aria-hidden="true">↗</span></a>{removeVideoUrls(text.slice(callout.end), Object.values(previews))}</>
+    : visibleText;
+  return <><p className="post-text">{postText}</p>{urls.length > 0 && <div className="link-previews" aria-label="Shared links">{urls.map((url) => <LinkPreviewCard key={url} preview={previews[url] ?? fallbackLinkPreview(url)} />)}</div>}</>;
 }
 
 function VerificationDrawer({post, onClose}: {post: PostRecord; onClose: () => void}) {

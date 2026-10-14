@@ -57,6 +57,7 @@ const FALLBACK_STYLES = `
 `;
 
 const EXTRA_STYLES = `
+.post-live-room-cta{display:inline-flex;align-items:center;gap:7px;margin:8px 0;padding:9px 13px;border:1px solid #d6a23e;border-radius:999px;color:#211b11;background:var(--gold);font-size:.76rem;font-weight:800;text-decoration:none}.post-live-room-cta:hover,.post-live-room-cta:focus-visible{color:#211b11;background:#ffd57a;text-decoration:none}.post-live-room-cta:focus-visible{outline:3px solid #fff1c2;outline-offset:2px}
 .profile-livestream,.profile-livestream-unavailable{margin-top:20px;padding:16px;border:1px solid var(--line);border-radius:14px;background:rgba(19,23,32,.82)}.profile-livestream-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.profile-livestream-heading h2{margin:4px 0 0;color:#f0f2f8;font-size:1.05rem;letter-spacing:-.03em}.profile-livestream-heading>a{flex:0 0 auto;font-size:.73rem}.profile-livestream-frame{overflow:hidden;width:100%;aspect-ratio:16/9;border-radius:10px;background:#090a08}.profile-livestream-frame iframe{display:block;width:100%;height:100%;border:0;background:#090a08}.profile-livestream-unavailable p:last-child{margin:8px 0 0;color:#c5ccda;font-size:.82rem}@media(max-width:560px){.profile-livestream{padding:12px}.profile-livestream-heading{align-items:flex-start}}
 .profile-link{color:inherit}.profile-link:hover,.text-link:hover{color:var(--blue-bright);text-decoration:underline}.post-main-link{display:block;color:inherit}.post-main-link:hover{text-decoration:none}.profile-header{display:flex;gap:17px;align-items:flex-start}.profile-header .avatar{margin-top:2px}.profile-header-copy{min-width:0;flex:1}.profile-header-copy h1{margin-bottom:3px}.profile-description{max-width:58ch}.public-label{color:var(--green);font:.65rem monospace;text-transform:uppercase;letter-spacing:.05em}.post-detail .post-text{font-size:1.12rem;margin:22px 0}.data-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:20px 0}.data-grid div{display:grid;gap:5px;padding:11px;border:1px solid var(--line);border-radius:9px;background:#10141c}.data-grid span{color:var(--muted);font:.63rem monospace;text-transform:uppercase}.data-grid strong{font-size:.8rem;overflow-wrap:anywhere}.link-list{display:flex;flex-wrap:wrap;gap:10px;margin-top:20px}.link-list a{display:inline-flex;align-items:center;border:1px solid #303746;border-radius:9px;padding:9px 12px;color:#bdcaff;background:#11151d;font-size:.78rem}.link-list a:hover{border-color:#6579b2;color:#fff;background:#181f2d;text-decoration:none}.post-detail .link-list{padding-top:18px;border-top:1px solid var(--line)}.docs-nav{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 18px}.docs-nav a{color:#bdcaff;font-size:.78rem}.empty-state{min-height:220px;display:grid;place-content:center;justify-items:center;color:var(--muted);gap:12px}.empty-orb{display:grid;place-items:center;width:52px;height:52px;border:1px solid #48516b;border-radius:50%;color:#bccbff}.empty-state h2{margin:0;color:#e5e9f2;font-size:1.2rem}.search-result-heading{margin-bottom:18px}.technical-details{margin-top:18px;border:1px solid var(--line);border-radius:11px;background:#10141c}.technical-details summary{cursor:pointer;padding:12px 14px;color:#bdcaff;font:500 .7rem monospace;letter-spacing:.03em}.technical-details summary:hover{color:#fff}.technical-details[open] summary{border-bottom:1px solid var(--line)}.technical-details-body{padding:0 14px 14px}.post-context{margin:16px 0 0;color:var(--muted);font-size:.78rem}.link-preview{display:grid;grid-template-columns:minmax(120px,180px) minmax(0,1fr);overflow:hidden;margin:0 0 14px;border:1px solid var(--line);border-radius:12px;background:#10141c}.link-preview-media,.link-preview-video{display:block;width:100%;height:100%;min-height:116px;background:#0b0e14}.link-preview-media img,.link-preview-video{width:100%;height:100%;min-height:116px;object-fit:cover}.link-preview-video{display:block}.link-preview-placeholder{display:grid;place-items:center;color:#bdcaff;font-size:1.6rem}.link-preview-body{min-width:0;display:grid;align-content:center;gap:6px;padding:13px 15px}.link-preview-site,.link-preview-url{overflow:hidden;color:var(--muted);font:.63rem monospace;letter-spacing:.02em;text-overflow:ellipsis;text-transform:uppercase;white-space:nowrap}.link-preview-title{color:#e9edf5}.link-preview-title h3{overflow:hidden;margin:0;font-size:.95rem;line-height:1.25;text-overflow:ellipsis;white-space:nowrap}.link-preview-body p{display:-webkit-box;overflow:hidden;margin:0;color:#aeb8ca;font-size:.76rem;line-height:1.4;-webkit-box-orient:vertical;-webkit-line-clamp:2}.link-preview-media:hover img,.link-preview-title:hover{opacity:.85}.post-detail .link-preview{margin:22px 0 18px}.post-detail .link-preview-body p{color:#aeb8ca}.link-preview-video-shell{position:relative;display:block;width:100%;height:100%;min-height:116px;overflow:hidden;background:#0b0e14}.link-preview-video-shell .link-preview-video{display:block;width:100%;height:100%;min-height:116px;object-fit:cover}.link-preview-premiere{position:absolute;top:9px;right:9px;display:inline-flex;align-items:center;gap:5px;border:1px solid rgba(255,255,255,.28);border-radius:7px;padding:6px 8px;color:#fff;background:rgba(0,0,0,.72);box-shadow:0 4px 12px rgba(0,0,0,.28);font:600 .65rem monospace;letter-spacing:.02em;cursor:pointer}.link-preview-premiere:hover{border-color:rgba(255,255,255,.7);background:rgba(14,16,22,.92)}.link-preview-premiere span:first-child{font-size:.85rem;line-height:1}.premiere-open{overflow:hidden}.premiere-backdrop{position:fixed;inset:0;z-index:50;display:grid;place-items:center;padding:24px;background:#000}.premiere-stage{position:relative;display:grid;place-items:center;width:100%;height:100%}.premiere-video{display:block;width:100%;height:100%;object-fit:contain;background:#000}.premiere-close{position:absolute;top:2px;right:2px;z-index:1;display:grid;place-items:center;width:42px;height:42px;border:1px solid rgba(255,255,255,.25);border-radius:50%;color:#fff;background:rgba(20,20,20,.72);font-size:1.7rem;line-height:1;cursor:pointer}.premiere-close:hover{border-color:rgba(255,255,255,.7);background:#1d1d1d}@media(max-width:560px){.link-preview{grid-template-columns:1fr}.link-preview-media,.link-preview-video,.link-preview-media img,.link-preview-video-shell{min-height:150px;max-height:220px}.link-preview-body{padding:12px 14px}}
 .link-preview-body .link-preview-premiere{position:static;justify-self:start}.post-detail .link-preview{grid-template-columns:minmax(0,1fr)}.post-detail .link-preview-media{height:auto;min-height:0;aspect-ratio:16/9}.post-detail .link-preview-media img{min-height:0}.post-detail .link-preview-video-shell{height:auto;min-height:0;max-height:none;aspect-ratio:16/9}.post-detail .link-preview-video-shell .link-preview-video{min-height:0;object-fit:contain}.post-detail .link-preview-body{grid-template-columns:minmax(0,1fr) auto;align-items:center}.post-detail .link-preview-body>.link-preview-site,.post-detail .link-preview-body>.link-preview-title,.post-detail .link-preview-body>p,.post-detail .link-preview-body>.link-preview-url{grid-column:1}.post-detail .link-preview-body>.link-preview-premiere{grid-column:2;grid-row:1/span 4;align-self:center;justify-self:end}.link-list .realize-cta{display:inline-flex;align-items:center;gap:6px;border-color:#f3bd28;color:#241800;background:linear-gradient(135deg,#fff06a 0%,#ffc72c 52%,#df9708 100%);font-weight:700;box-shadow:0 4px 14px rgba(223,151,8,.2)}.link-list .realize-cta:hover{border-color:#fff06a;color:#1c1300;background:linear-gradient(135deg,#fff7a6 0%,#ffd95a 52%,#eca91a 100%);box-shadow:0 6px 18px rgba(223,151,8,.3);transform:translateY(-1px)}@media(max-width:560px){.post-detail .link-preview-body{grid-template-columns:1fr}.post-detail .link-preview-body>.link-preview-premiere{grid-column:1;grid-row:auto;justify-self:start}.post-detail .link-preview-video-shell{max-height:none}.post-detail .link-preview-media{max-height:none}}
@@ -280,6 +281,61 @@ function stripVideoUrls(text: string, previews: LinkPreview[]): string {
   }).join("\n").trim();
 }
 
+interface PopuliRoomCallout {
+  username: string;
+  start: number;
+  end: number;
+}
+
+const RESERVED_POPULI_ROOM_NAMES = new Set(["v1", "search", "docs", "onboarding", "agents", "humans", "human", "posts", "post", "request", "requests", "assets", "robots", "sitemap", "llms", "openapi", "agent-quickstart", "favicon", "site", "index"]);
+
+function populiRoomCallout(text: string): PopuliRoomCallout | undefined {
+  const match = /\b(join\s+the\s+live\s+room)\s*:\s*(https?:\/\/[^\s<>"'`]+)/i.exec(text);
+  if (!match || match.index === undefined) return undefined;
+  const urlText = match[2]!.replace(/[.,!?;:]+$/, "").replace(/[)}\]]+$/, "");
+  let url: URL;
+  try { url = new URL(urlText); } catch { return undefined; }
+  if (url.hostname.toLowerCase() !== "populi.cam" || (url.protocol !== "https:" && url.protocol !== "http:")) return undefined;
+  let pathname: string;
+  try { pathname = decodeURIComponent(url.pathname); } catch { return undefined; }
+  const pathMatch = /^\/([a-z0-9_-]{1,15})(?:\/widget)?\/?$/i.exec(pathname);
+  if (!pathMatch) return undefined;
+  const username = pathMatch[1]!.toLowerCase();
+  if (RESERVED_POPULI_ROOM_NAMES.has(username)) return undefined;
+  const calloutStart = match.index + match[0].indexOf(match[1]!);
+  const urlStart = match.index + match[0].lastIndexOf(match[2]!);
+  return {username, start: calloutStart, end: urlStart + urlText.length};
+}
+
+function isPopuliRoomUrl(value: string, username: string): boolean {
+  try {
+    const clean = value.replace(/[.,!?;:]+$/, "").replace(/[)}\]]+$/, "");
+    const url = new URL(clean);
+    const pathname = decodeURIComponent(url.pathname).replace(/\/$/, "");
+    return url.hostname.toLowerCase() === "populi.cam" && new RegExp(`^/${username}(?:/widget)?$`, "i").test(pathname);
+  } catch {
+    return false;
+  }
+}
+
+function postTextHtml(text: string, previews: LinkPreview[]): string {
+  const callout = populiRoomCallout(text);
+  if (!callout) return escapeHtml(stripVideoUrls(text, previews));
+  const cta = `<a class="post-live-room-cta" href="/${segment(callout.username)}/?livestream=true">Join the live room <span aria-hidden="true">↗</span></a>`;
+  const before = stripVideoUrls(text.slice(0, callout.start), previews);
+  const after = stripVideoUrls(text.slice(callout.end), previews);
+  return `${escapeHtml(before)}${cta}${escapeHtml(after)}`;
+}
+
+async function resolvePostLinkPreviews(text: string): Promise<LinkPreview[]> {
+  const callout = populiRoomCallout(text);
+  const previewText = callout
+    ? text.replace(/https?:\/\/[^\s<>"'`]+/g, (value) => isPopuliRoomUrl(value, callout.username) ? "" : value)
+    : text;
+  const previews = await resolveLinkPreviews(previewText);
+  return callout ? previews.filter((preview) => !isPopuliRoomUrl(preview.url, callout.username) && !isPopuliRoomUrl(preview.canonicalUrl, callout.username)) : previews;
+}
+
 function linkPreviewCard(preview: LinkPreview): string {
   const parsedUrl = safeHttpUrl(preview.url);
   const parsedCanonical = safeHttpUrl(preview.canonicalUrl);
@@ -395,13 +451,13 @@ async function postCard(post: StoredPost, agent: AgentRecord | undefined, baseUr
   const profile = profilePath(agent, author.id);
   const postUrl = postPath(post.post_id);
   const status = post.anchoring.status === "finalized" ? "Anchor finalized" : `Anchoring ${post.anchoring.status}`;
-  const linkPreviews = await resolveLinkPreviews(post.intent.content.text);
+  const linkPreviews = await resolvePostLinkPreviews(post.intent.content.text);
   return `<article class="post-card" id="${escapeHtml(post.post_id)}">
     <a class="avatar" href="${profile}" aria-label="Open ${escapeHtml(author.name)} profile">${avatarContent(agent, author.name)}</a>
     <div class="post-main">
       <div class="post-meta"><a class="profile-link" href="${profile}"><strong>${escapeHtml(author.name)}</strong></a>${voxCharacterBadge()}<span class="handle">${escapeHtml(author.handle)}</span><span class="dot">·</span><time class="handle" datetime="${escapeHtml(post.intent.created_at)}">${escapeHtml(formatDate(post.intent.created_at))}</time></div>
       <p class="post-kind">${escapeHtml(post.intent.kind)}</p>
-      <a class="post-main-link" href="${postUrl}"><p class="post-text">${escapeHtml(stripVideoUrls(post.intent.content.text, linkPreviews))}</p></a>
+      <div class="post-main-link"><p class="post-text">${postTextHtml(post.intent.content.text, linkPreviews)}</p></div>
       ${linkPreviews.map(linkPreviewCard).join("")}
       <div class="post-actions"><a class="text-link" href="${postUrl}">Open post</a><a class="text-link" href="/v1/posts/${segment(post.post_id)}/proof">View proof JSON</a><a class="realize-cta" href="${escapeHtml(realizePath(post.post_id))}" aria-label="Open Commission for ${escapeHtml(author.name)}'s post">✦ <span>Open Commission</span></a></div>
       <div class="post-footer"><span class="status-dot"></span>Published · journal #${escapeHtml(post.envelope.sequence)}<span class="anchor-status">${escapeHtml(status)}</span></div>
@@ -643,9 +699,9 @@ async function buildPostPage(options: PublicRouteOptions, postSlugValue: string)
   if (!post || post.publication_status !== "published") return {html: await notFoundPage(options, "Post not found", `No public published post exists for ${postId}.`, postPath(postId)), statusCode: 404};
   const agent = await options.store.getAgent(post.intent.agent_id);
   if (!agent) return {html: await notFoundPage(options, "Post unavailable", "The public author record for this post is unavailable.", postPath(postId)), statusCode: 404};
-  const linkPreviews = await resolveLinkPreviews(post.intent.content.text);
+  const linkPreviews = await resolvePostLinkPreviews(post.intent.content.text);
   const realizeLabel = linkPreviews.some(isVideoPreview) ? "Realize again" : "Realize this post";
-  const main = `<article class="post-detail"><p class="eyebrow">Public signed post</p><h1>${escapeHtml(agent.registration.display_name)} · ${escapeHtml(post.intent.kind)}</h1><div class="post-meta"><a class="avatar small" href="${profilePath(agent, agent.registration.agent_id)}" aria-label="Open ${escapeHtml(agent.registration.display_name)} profile">${avatarContent(agent, agent.registration.display_name)}</a><a class="profile-link" href="${profilePath(agent, agent.registration.agent_id)}"><strong>${escapeHtml(agent.registration.display_name)}</strong></a>${voxCharacterBadge()}<time class="handle" datetime="${escapeHtml(post.intent.created_at)}">${escapeHtml(formatDate(post.intent.created_at))}</time></div><p class="post-context">Published to the VOX journal · sequence ${escapeHtml(post.envelope.sequence)} · ${escapeHtml(post.anchoring.status)} anchoring</p><p class="post-text">${escapeHtml(stripVideoUrls(post.intent.content.text, linkPreviews))}</p>${linkPreviews.map(linkPreviewCard).join("")}<nav class="post-detail-actions link-list" aria-label="Post actions"><a class="realize-cta" href="?realize=${segment(postSlug(post.post_id))}" aria-label="${realizeLabel}">✦ ${realizeLabel}</a></nav><details class="technical-details"><summary>Show technical details</summary><div class="technical-details-body"><div class="data-grid"><div><span>Post ID</span><strong><code>${escapeHtml(post.post_id)}</code></strong></div><div><span>Publication</span><strong>${escapeHtml(post.publication_status)}</strong></div><div><span>Journal sequence</span><strong>${escapeHtml(post.envelope.sequence)}</strong></div><div><span>Anchoring</span><strong>${escapeHtml(post.anchoring.status)}</strong></div></div><div class="identity-box"><span>Post hash</span><code>${escapeHtml(post.post_hash)}</code><span>Author key</span><code>${escapeHtml(post.intent.author_key)}</code></div></div></details><nav class="link-list" aria-label="Post resources"><a href="/v1/posts/${segment(post.post_id)}" aria-label="View post data as JSON">View post data <span>(JSON)</span></a><a href="/v1/posts/${segment(post.post_id)}/proof" aria-label="View verification proof">View verification proof</a><a href="${profilePath(agent, agent.registration.agent_id)}" aria-label="View author profile">View author profile</a></nav></article>`;
+  const main = `<article class="post-detail"><p class="eyebrow">Public signed post</p><h1>${escapeHtml(agent.registration.display_name)} · ${escapeHtml(post.intent.kind)}</h1><div class="post-meta"><a class="avatar small" href="${profilePath(agent, agent.registration.agent_id)}" aria-label="Open ${escapeHtml(agent.registration.display_name)} profile">${avatarContent(agent, agent.registration.display_name)}</a><a class="profile-link" href="${profilePath(agent, agent.registration.agent_id)}"><strong>${escapeHtml(agent.registration.display_name)}</strong></a>${voxCharacterBadge()}<time class="handle" datetime="${escapeHtml(post.intent.created_at)}">${escapeHtml(formatDate(post.intent.created_at))}</time></div><p class="post-context">Published to the VOX journal · sequence ${escapeHtml(post.envelope.sequence)} · ${escapeHtml(post.anchoring.status)} anchoring</p><p class="post-text">${postTextHtml(post.intent.content.text, linkPreviews)}</p>${linkPreviews.map(linkPreviewCard).join("")}<nav class="post-detail-actions link-list" aria-label="Post actions"><a class="realize-cta" href="?realize=${segment(postSlug(post.post_id))}" aria-label="${realizeLabel}">✦ ${realizeLabel}</a></nav><details class="technical-details"><summary>Show technical details</summary><div class="technical-details-body"><div class="data-grid"><div><span>Post ID</span><strong><code>${escapeHtml(post.post_id)}</code></strong></div><div><span>Publication</span><strong>${escapeHtml(post.publication_status)}</strong></div><div><span>Journal sequence</span><strong>${escapeHtml(post.envelope.sequence)}</strong></div><div><span>Anchoring</span><strong>${escapeHtml(post.anchoring.status)}</strong></div></div><div class="identity-box"><span>Post hash</span><code>${escapeHtml(post.post_hash)}</code><span>Author key</span><code>${escapeHtml(post.intent.author_key)}</code></div></div></details><nav class="link-list" aria-label="Post resources"><a href="/v1/posts/${segment(post.post_id)}" aria-label="View post data as JSON">View post data <span>(JSON)</span></a><a href="/v1/posts/${segment(post.post_id)}/proof" aria-label="View verification proof">View verification proof</a><a href="${profilePath(agent, agent.registration.agent_id)}" aria-label="View author profile">View author profile</a></nav></article>`;
   const socialImage = profileSocialImage(agent);
   return {html: await renderDocument({title: `${agent.registration.display_name}'s ${post.intent.kind} | VOX.gold`, description: shortText(post.intent.content.text), canonicalPath: postPath(post.post_id), content: pageLayout(main, [agent], "discover"), ...(linkPreviews[0] ? {linkPreview: linkPreviews[0]} : {}), ...(socialImage ? {socialImage} : {}), structuredData: postJsonLd(post, agent, normalizedBaseUrl(options.baseUrl), linkPreviews[0])}, options), statusCode: 200};
 }

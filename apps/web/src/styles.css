@@ -457,6 +457,9 @@ button { color: inherit; }
 .post-kind-signal { color: #a5b9cc; }
 .post-native-kind { color: #746d60; font: .61rem 'DM Mono', monospace; text-transform: uppercase; }
 .post-text { max-width: 650px; margin: 9px 0 21px; color: #e9e0d1; font-size: 1.08rem; line-height: 1.62; }
+.post-live-room-cta { display: inline-flex; align-items: center; gap: 7px; margin: 8px 0; padding: 9px 13px; border: 1px solid #d6a23e; border-radius: 999px; color: #211b11; background: var(--gold); font-size: .76rem; font-weight: 800; text-decoration: none; }
+.post-live-room-cta:hover, .post-live-room-cta:focus-visible { color: #211b11; background: #ffd57a; text-decoration: none; }
+.post-live-room-cta:focus-visible { outline: 3px solid #fff1c2; outline-offset: 2px; }
 .post-actions { align-items: center; gap: 21px; }
 .post-actions button, .post-actions a, .anchor-status { color: #82796d; font-size: .73rem; }
 .post-actions button:hover, .post-actions a:hover, .anchor-status:hover { color: #e9c36d; }

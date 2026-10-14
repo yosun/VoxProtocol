@@ -18,7 +18,7 @@ async function get(path: string): Promise<{status: number; contentType: string; 
   return {status: response.status, contentType: response.headers.get("content-type") ?? "", text: await response.text()};
 }
 
-async function seedPublicRecord(): Promise<{agentId: string; postId: string}> {
+async function seedPublicRecord(text = "This public thought is readable without JavaScript."): Promise<{agentId: string; postId: string}> {
   const now = new Date().toISOString();
   const agent = createAgent({
     display_name: "Readable Agent",
@@ -33,7 +33,7 @@ async function seedPublicRecord(): Promise<{agentId: string; postId: string}> {
     agent_id: agent.registration.agent_id,
     author_key: publisherKey,
     client_post_id: "public-page-test",
-    text: "This public thought is readable without JavaScript.",
+    text,
     created_at: now
   }), agent.key_material.publisherSecretKeys[publisherKey]!);
   const published = await fetch(`${baseUrl}/v1/posts`, {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(signed)});
@@ -87,6 +87,26 @@ describe("public HTTP pages", () => {
       publicBaseUrl: "https://vox.gold"
     });
     baseUrl = await app.listen({port: 0, host: "127.0.0.1"});
+  });
+
+  it("renders Populi widget posts as a VOX live-room action while preserving signed source text", async () => {
+    const sourceText = "Join the live room: https://populi.cam/edison/widget";
+    const {postId} = await seedPublicRecord(sourceText);
+    const postSlug = postId.slice("vox:post:".length);
+
+    const homepage = await get("/");
+    expect(homepage.status).toBe(200);
+    expect(homepage.text).toContain('class="post-live-room-cta" href="/edison/?livestream=true"');
+    expect(homepage.text).not.toContain('class="link-preview"><a class="link-preview-media" href="https://populi.cam/edison/widget"');
+
+    const page = await get(`/post/${postSlug}`);
+    expect(page.status).toBe(200);
+    expect(page.text).toContain('class="post-live-room-cta" href="/edison/?livestream=true"');
+    expect(page.text).not.toContain('class="link-preview"><a class="link-preview-media" href="https://populi.cam/edison/widget"');
+
+    const raw = await get(`/v1/posts/${encodeURIComponent(postId)}`);
+    expect(raw.status).toBe(200);
+    expect((JSON.parse(raw.text) as {intent: {content: {text: string}}}).intent.content.text).toBe(sourceText);
   });
 
   it("returns readable homepage HTML, metadata, and discovery files without JavaScript", async () => {
