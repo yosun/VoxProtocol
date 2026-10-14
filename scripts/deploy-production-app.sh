@@ -56,11 +56,6 @@ deploy_service_candidate() {
   local -a extra_env_args=()
 
   if [[ "$service" == "$API_SERVICE" ]]; then
-    if [[ ! "$REALIZE_OPERATOR_HUMAN_IDS" =~ ^vox:human:[A-Za-z0-9_-]{43}(,vox:human:[A-Za-z0-9_-]{43})*$ ]]; then
-      echo "VOX_REALIZE_OPERATOR_HUMAN_IDS must contain at least one registered VOX human ID before releasing the Mainnet API." >&2
-      return 1
-    fi
-    ensure_realize_reconcile_index
     extra_env_args+=(--update-env-vars="^|^VOX_REALIZE_FIRST_PARTY_CREATOR_IDS=$FIRST_PARTY_CREATOR_IDS|VOX_REALIZE_OPERATOR_HUMAN_IDS=$REALIZE_OPERATOR_HUMAN_IDS")
   fi
 
@@ -156,7 +151,12 @@ ensure_realize_reconcile_index() {
         if (collectionGroup !== "vox_realize_commissions") return false;
         const fields = candidate.fields || [];
         const expected = [["commission.state", "ASCENDING"], ["updated_at", "ASCENDING"]];
-        return fields.length === expected.length && expected.every(([fieldPath, order], index) => fields[index]?.fieldPath === fieldPath && fields[index]?.order === order);
+        const explicitFields = fields.filter((field) => field.fieldPath !== "__name__");
+        const nameField = fields.find((field) => field.fieldPath === "__name__");
+        return explicitFields.length === expected.length &&
+          expected.every(([fieldPath, order], index) => explicitFields[index]?.fieldPath === fieldPath && explicitFields[index]?.order === order) &&
+          fields.length === expected.length + (nameField ? 1 : 0) &&
+          (!nameField || fields.at(-1) === nameField && nameField.order === expected.at(-1)?.[1]);
       });
       process.stdout.write(index?.state === "READY" ? "ready" : index?.state === "ERROR" ? "error" : "pending");
     ')"
@@ -174,6 +174,17 @@ ensure_realize_reconcile_index() {
     sleep 5
   done
 }
+
+# Validate API-only runtime configuration and provision the query index before
+# changing any production service or scheduled job. This keeps a missing
+# operator allowlist or a failed index build from leaving a partial release.
+if [[ "${VOX_DEPLOY_API:-false}" == "true" ]]; then
+  if [[ ! "$REALIZE_OPERATOR_HUMAN_IDS" =~ ^vox:human:[A-Za-z0-9_-]{43}(,vox:human:[A-Za-z0-9_-]{43})*$ ]]; then
+    echo "VOX_REALIZE_OPERATOR_HUMAN_IDS must contain at least one registered VOX human ID before releasing the Mainnet API." >&2
+    exit 1
+  fi
+  ensure_realize_reconcile_index
+fi
 
 # Promote shared dependencies before the API starts using the new contract:
 # completed orders can call settlement immediately, and the scheduled worker
