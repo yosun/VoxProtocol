@@ -4,25 +4,38 @@ import {execFileSync} from "node:child_process";
 
 const [base, head, ...explicitFiles] = process.argv.slice(2);
 if (!base || (base !== "--paths" && !head)) {
-  console.error("Usage: node scripts/production-deployment-scope.mjs <base-sha> <head-sha> | --paths <changed-path>... | --release-profile realize-refund-settlement");
+  console.error("Usage: node scripts/production-deployment-scope.mjs <base-sha> <head-sha> | --paths <changed-path>... | --release-profile realize-paid-order-recovery|realize-refund-settlement");
   process.exit(2);
 }
 
 if (base === "--release-profile") {
-  if (head !== "realize-refund-settlement" || explicitFiles.length > 0) {
+  const profiles = {
+    "realize-paid-order-recovery": {
+      deploy_api: "true",
+      deploy_hosting: "true",
+      run_e2e: "true",
+      deploy_settlement: "true",
+      deploy_reconcile: "true",
+      deploy_anchor: "true",
+      sensitive: "true",
+      changed_files: "0"
+    },
+    "realize-refund-settlement": {
+      deploy_api: "false",
+      deploy_hosting: "false",
+      run_e2e: "true",
+      deploy_settlement: "true",
+      deploy_reconcile: "true",
+      deploy_anchor: "false",
+      sensitive: "true",
+      changed_files: "0"
+    }
+  };
+  if (explicitFiles.length > 0 || !profiles[head]) {
     console.error("Unknown production release profile.");
     process.exit(2);
   }
-  const outputs = {
-    deploy_api: "false",
-    deploy_hosting: "false",
-    run_e2e: "true",
-    deploy_settlement: "true",
-    deploy_reconcile: "true",
-    deploy_anchor: "false",
-    sensitive: "true",
-    changed_files: "0"
-  };
+  const outputs = profiles[head];
   const lines = Object.entries(outputs).map(([key, value]) => `${key}=${value}`).join("\n") + "\n";
   if (process.env.GITHUB_OUTPUT) {
     const {appendFileSync} = await import("node:fs");

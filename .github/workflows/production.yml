@@ -9,6 +9,7 @@ on:
         description: Select a reviewed production release profile
         type: choice
         options:
+          - realize-paid-order-recovery
           - realize-refund-settlement
         required: true
 
@@ -46,7 +47,11 @@ jobs:
           VITE_SOLANA_CLUSTER: mainnet-beta
           VITE_SOLANA_RPC_URL: https://api.mainnet.solana.com
       - uses: actions/upload-artifact@v4
-        if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch && needs.scope.outputs.deploy_hosting == 'true'
+        if: >-
+          ((github.event_name == 'push' &&
+            github.ref_name == github.event.repository.default_branch) ||
+           github.event_name == 'workflow_dispatch') &&
+          needs.scope.outputs.deploy_hosting == 'true'
         with:
           name: vox-web-dist-${{ github.sha }}
           path: apps/web/dist
@@ -89,7 +94,8 @@ jobs:
       ((github.event_name == 'push' &&
         github.ref_name == github.event.repository.default_branch) ||
        (github.event_name == 'workflow_dispatch' &&
-        inputs.release_profile == 'realize-refund-settlement')) &&
+        (inputs.release_profile == 'realize-paid-order-recovery' ||
+         inputs.release_profile == 'realize-refund-settlement'))) &&
       (needs.scope.outputs.deploy_api == 'true' ||
        needs.scope.outputs.deploy_hosting == 'true' ||
        needs.scope.outputs.deploy_settlement == 'true' ||
