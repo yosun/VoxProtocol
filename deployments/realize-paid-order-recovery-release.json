@@ -1,0 +1,5 @@
+{
+  "release": "realize-paid-order-recovery",
+  "reason": "Deploy merged PR #9 after the protected release preflight fix",
+  "sourceCommit": "c073924e896d2bab0e550e5712c1e18a3233fd00"
+}
