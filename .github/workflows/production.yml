@@ -47,7 +47,11 @@ jobs:
           VITE_SOLANA_CLUSTER: mainnet-beta
           VITE_SOLANA_RPC_URL: https://api.mainnet.solana.com
       - uses: actions/upload-artifact@v4
-        if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch && needs.scope.outputs.deploy_hosting == 'true'
+        if: >-
+          ((github.event_name == 'push' &&
+            github.ref_name == github.event.repository.default_branch) ||
+           github.event_name == 'workflow_dispatch') &&
+          needs.scope.outputs.deploy_hosting == 'true'
         with:
           name: vox-web-dist-${{ github.sha }}
           path: apps/web/dist
