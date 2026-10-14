@@ -175,11 +175,18 @@ ensure_realize_reconcile_index() {
   done
 }
 
-if [[ "${VOX_DEPLOY_API:-false}" == "true" ]]; then
-  deploy_service_candidate "$API_SERVICE" api
-fi
+# Promote shared dependencies before the API starts using the new contract:
+# completed orders can call settlement immediately, and the scheduled worker
+# must send the corrected reconciliation authentication header.
 if [[ "${VOX_DEPLOY_SETTLEMENT:-false}" == "true" ]]; then
   deploy_service_candidate "$SETTLEMENT_SERVICE" settlement
+fi
+if [[ "${VOX_DEPLOY_RECONCILE:-false}" == "true" ]]; then
+  gcloud run jobs update "$RECONCILE_JOB" --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID"
+  echo "$RECONCILE_JOB image updated. No job execution was started."
+fi
+if [[ "${VOX_DEPLOY_API:-false}" == "true" ]]; then
+  deploy_service_candidate "$API_SERVICE" api
 fi
 if [[ "${VOX_DEPLOY_ANCHOR:-false}" == "true" ]]; then
   gcloud run deploy "$ANCHOR_SERVICE" \
@@ -190,11 +197,6 @@ if [[ "${VOX_DEPLOY_ANCHOR:-false}" == "true" ]]; then
   gcloud run services update-traffic "$ANCHOR_SERVICE" --to-revisions="${revision}=100" --region="$REGION" --project="$PROJECT_ID"
   echo "$ANCHOR_SERVICE is serving $revision (image $IMAGE). Previous revisions were retained."
 fi
-if [[ "${VOX_DEPLOY_RECONCILE:-false}" == "true" ]]; then
-  gcloud run jobs update "$RECONCILE_JOB" --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID"
-  echo "$RECONCILE_JOB image updated. No job execution was started."
-fi
-
 if [[ "${VOX_DEPLOY_HOSTING:-false}" == "true" ]]; then
   npx --yes firebase-tools@15.24.0 deploy \
     --only hosting \
