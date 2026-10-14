@@ -48,6 +48,7 @@ type MockState = {
   commission?: Record<string, any>;
   funding?: Record<string, string>;
   funded: boolean;
+  nftMediaIds?: string[];
   sourceBalance: bigint;
   fundCalls: Array<Record<string, any>>;
   rejectFunding: boolean;
@@ -308,6 +309,7 @@ async function installMocks(page: Page, sourceBalance = PAYER_USDC, rejectFundin
         fulfillment_result: state.funded ? {status: "completed", outputs: [{uri: "https://populi.example.test/v1/realize/artifacts?fulfillment_request_id=vox%3Afulfillment%3Ae2e&output_index=0", page_url: "https://populi.example.test/bob/e2e-render", sha256: "a".repeat(64), media_type: "video/mp4", byte_length: 1_024}], completed_at: new Date().toISOString()} : undefined,
         settlement_status: state.funded ? "settled" : "pending",
         settlement_response: state.funded ? {status: "settled", transaction_signatures: [new PublicKey(new Uint8Array(32).fill(9)).toBase58()]} : undefined,
+        ...(state.funded && state.nftMediaIds ? {nft_media_ids: state.nftMediaIds} : {}),
         provenance_record_id: state.funded ? PROVENANCE_ID : undefined
       });
     }
@@ -524,4 +526,71 @@ test("reloading an unverified payment restores the signature and prevents a seco
   await expect(dialog.getByRole("button", {name: "Check payment status"})).toBeVisible();
   await expect(dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true})).not.toBeVisible();
   expect(state.fundCalls).toHaveLength(fundingCalls);
+});
+
+
+test("mints a chosen completed output on Monad and keeps refreshing after settlement", async ({page}) => {
+  const state = await installMocks(page);
+  state.nftMediaIds = ["vox:media:nft-e2e-0", "vox:media:nft-e2e-1"];
+  await createWallet(page);
+  const recipient = "0x" + "2".repeat(40);
+  const contract = "0x" + "3".repeat(40);
+  const tx = "0x" + "4".repeat(64);
+  let mintState = "claimable";
+  let claims = 0;
+  let syncs = 0;
+  await page.addInitScript(({recipient}) => {
+    let chain = "0x1";
+    (window as any).__voxEvmCalls = [];
+    (window as any).ethereum = {async request({method, params}: {method: string; params: any[]}) {
+      (window as any).__voxEvmCalls.push({method, params});
+      if (method === "eth_requestAccounts") return [recipient];
+      if (method === "eth_chainId") return chain;
+      if (method === "wallet_switchEthereumChain") { chain = params[0].chainId; return null; }
+      if (method === "personal_sign") return "0x" + "1".repeat(130);
+      throw new Error("Unexpected wallet method " + method);
+    }};
+  }, {recipient});
+  const media = (index: number) => ({
+    media_id: state.nftMediaIds![index], source_kind: "realize_commission", source_id: COMMISSION_ID,
+    output_index: index, provider_id: PROVIDER_ID, media_uri: "https://media.example.test/completed.mp4",
+    media_type: "video/mp4", media_sha256: "a".repeat(64), metadata_hash: "b".repeat(64),
+    metadata_uri: "https://vox.example.test/metadata", created_at: NOW,
+    mints: [{mint_id: `mint:e2e:${index}`, chain: "monad:mainnet", state: index === 1 ? mintState : "claimable",
+      created_at: "2026-10-12T01:00:00.000Z", ...(index === 1 && mintState !== "claimable" ? {owner_wallet: recipient, transaction_id: tx, asset_address: contract, explorer_url: `https://monadscan.com/tx/${tx}`} : {}),
+      ...(index === 1 && mintState === "finalized" ? {token_id: "42"} : {})}]
+  });
+  await page.route("**/v1/nft/**", async (route) => {
+    const path = decodeURIComponent(new URL(route.request().url()).pathname);
+    if (path.endsWith("/claim")) {
+      claims += 1;
+      expect(path).toContain("mint:e2e:1");
+      expect(route.request().postDataJSON().wallet).toBe(recipient);
+      expect(route.request().headers()["x-vox-realize-signature"]).toBeTruthy();
+      mintState = "submitted";
+      return json(route, {state: mintState}, 202);
+    }
+    if (path.endsWith("/sync")) { syncs += 1; if (syncs >= 2) mintState = "finalized"; return json(route, media(1)); }
+    return json(route, media(path.endsWith("nft-e2e-1") ? 1 : 0));
+  });
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize post"}).click();
+  const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
+  await expect(dialog.getByRole("button", {name: "Mint on Monad"})).toHaveCount(0);
+  await dialog.getByRole("button", {name: "Pay 1.00 USDC"}).click();
+  await expect(dialog.getByRole("button", {name: "Mint on Monad"})).toHaveCount(2);
+  await dialog.getByRole("button", {name: "Mint on Monad"}).nth(1).click();
+  await expect(dialog.getByText("Minted · Token #42", {exact: true})).toBeVisible({timeout: 20_000});
+  await expect(dialog.getByRole("link", {name: "View your NFT ↗"})).toHaveAttribute("href", `https://monadscan.com/token/${contract}?a=42`);
+  expect(claims).toBe(1);
+  expect(syncs).toBeGreaterThanOrEqual(2);
+  const calls = await page.evaluate(() => (window as any).__voxEvmCalls);
+  expect(calls.some((call: any) => call.method === "wallet_switchEthereumChain" && call.params[0].chainId === "0x8f")).toBe(true);
+  const signedMessage = Buffer.from(calls.find((call: any) => call.method === "personal_sign").params[0].slice(2), "hex").toString("utf8");
+  expect(signedMessage).toContain("Created: 2026-10-12T01:00:00.000Z");
+  expect(signedMessage).toContain("Mint: mint:e2e:1");
 });

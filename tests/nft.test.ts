@@ -1,11 +1,13 @@
 import {afterEach, describe, expect, it} from "vitest";
 import nacl from "tweetnacl";
+import {secp256k1} from "@noble/curves/secp256k1";
+import {keccak_256} from "@noble/hashes/sha3.js";
 import {Keypair} from "@solana/web3.js";
 import {createHuman} from "@vox/identity";
 import {parseSecretKey, realizeClientRequestSigningPayload, signBytes, utf8} from "@vox/protocol";
 import {buildApp} from "../apps/api/src/app.js";
 import {MemoryStore} from "../apps/api/src/store.js";
-import {NftMintService, nftClaimMessage, type NftChainAdapter, type NftMediaInput, type NftPreparedTransaction} from "../apps/api/src/nft.js";
+import {EvmNftAdapter, NftMintService, nftClaimMessage, type NftChainAdapter, type NftMediaInput, type NftPreparedTransaction} from "../apps/api/src/nft.js";
 import type {NftChain, NftMediaRecord, NftMintRecord} from "../apps/api/src/types.js";
 
 let app: Awaited<ReturnType<typeof buildApp>> | undefined;
@@ -65,6 +67,21 @@ function input(ownerWallet?: string): NftMediaInput {
     byte_length: 1234,
     provenance_record_id: "vox:provenance:test"
   };
+}
+
+function evmWallet(seed: number) {
+  const key = new Uint8Array(32).fill(seed);
+  const address = `0x${Buffer.from(keccak_256(secp256k1.getPublicKey(key, false).slice(1)).slice(-20)).toString("hex")}`;
+  return {address, sign(message: string) {
+    const bytes = utf8(message);
+    const signature = secp256k1.sign(keccak_256(utf8(`\x19Ethereum Signed Message:\n${bytes.length}${message}`)), key);
+    return `0x${Buffer.from(signature.toCompactRawBytes()).toString("hex")}${(27 + signature.recovery!).toString(16)}`;
+  }};
+}
+
+function headers(human: ReturnType<typeof createHuman>, path: string, body: unknown) {
+  const issued_at = new Date().toISOString();
+  return {"x-vox-realize-human-id": human.registration.human_id, "x-vox-realize-timestamp": issued_at, "x-vox-realize-signature": signBytes(realizeClientRequestSigningPayload({method: "POST", path, principal_id: human.registration.human_id, issued_at, body}), parseSecretKey(human.key_material.identitySecretKey))};
 }
 
 describe("cross-chain NFT entitlements", () => {
@@ -139,6 +156,7 @@ describe("cross-chain NFT entitlements", () => {
     app = await buildApp({store, publicBaseUrl: "https://vox.example.test", nftService: service});
     const status = await app.inject(`/v1/nft/media/${encodeURIComponent(media.media_id)}`);
     expect(status.statusCode).toBe(200);
+    expect(status.headers["cache-control"]).toBe("no-store");
     expect(status.json().media_id).toBe(media.media_id);
     expect(status.json().mints).toHaveLength(3);
     const metadata = await app.inject(`/v1/nft/metadata/${encodeURIComponent(media.media_id)}`);
@@ -148,5 +166,73 @@ describe("cross-chain NFT entitlements", () => {
     const page = await app.inject(`/media/${encodeURIComponent(media.media_id)}`);
     expect(page.statusCode).toBe(200);
     expect(page.body).toContain(media.media_id);
+  });
+
+  it("claims a completed output on Monad immediately and never mints again on replay", async () => {
+    const store = new MemoryStore();
+    const human = createHuman({display_name: "Monad collector", handle: "@monad-collector", description: "test"});
+    await store.registerHuman(human.registration);
+    const monad = adapter("monad:mainnet");
+    const service = new NftMintService({publicBaseUrl: "https://vox.example.test", adapters: [monad]});
+    const media = await service.ensureMedia(store, {...input(), owner_id: human.registration.human_id});
+    const mint = (await store.listNftMintsForMedia(media.media_id))[0]!;
+    const wallet = evmWallet(11);
+    const path = `/v1/nft/mints/${encodeURIComponent(mint.mint_id)}/claim`;
+    const body = {wallet: wallet.address, signature: wallet.sign(nftClaimMessage(mint, wallet.address))};
+    app = await buildApp({store, nftService: service});
+    const first = await app.inject({method: "POST", url: path, payload: body, headers: headers(human, path, body)});
+    expect(first.statusCode).toBe(200);
+    expect(first.json().state).toBe("finalized");
+    const replay = await app.inject({method: "POST", url: path, payload: body, headers: headers(human, path, body)});
+    expect(replay.json().state).toBe("finalized");
+    expect(monad.prepared).toBe(1);
+    expect(monad.submitted).toBe(1);
+    const publicStatus = (await app.inject(`/v1/nft/media/${encodeURIComponent(media.media_id)}`)).json();
+    expect(publicStatus.mints[0].created_at).toBe(mint.created_at);
+  });
+
+  it("rejects another collector and an invalid destination proof; preserves uncertain transactions", async () => {
+    const store = new MemoryStore();
+    const human = createHuman({display_name: "Owner", handle: "@owner", description: "test"});
+    const other = createHuman({display_name: "Other", handle: "@other", description: "test"});
+    await store.registerHuman(human.registration);
+    await store.registerHuman(other.registration);
+    const service = new NftMintService({publicBaseUrl: "https://vox.example.test", adapters: [adapter("monad:mainnet")]});
+    const media = await service.ensureMedia(store, {...input(), owner_id: human.registration.human_id});
+    const mint = (await store.listNftMintsForMedia(media.media_id))[0]!;
+    const wallet = evmWallet(12);
+    const path = `/v1/nft/mints/${encodeURIComponent(mint.mint_id)}/claim`;
+    const body = {wallet: wallet.address, signature: wallet.sign(nftClaimMessage(mint, wallet.address))};
+    app = await buildApp({store, nftService: service});
+    expect((await app.inject({method: "POST", url: path, payload: body, headers: headers(other, path, body)})).statusCode).toBe(403);
+    const wrong = {...body, wallet: evmWallet(13).address};
+    expect((await app.inject({method: "POST", url: path, payload: wrong, headers: headers(human, path, wrong)})).statusCode).toBe(401);
+    const uncertain = {...mint, owner_wallet: wallet.address, state: "manual_review" as const, transaction_id: "saved-tx", signed_transaction: "saved-bytes", updated_at: new Date().toISOString()};
+    await store.updateNftMint(uncertain, mint.updated_at);
+    expect((await app.inject({method: "POST", url: path, payload: body, headers: headers(human, path, body)})).json().state).toBe("manual_review");
+    expect(await store.getNftMint(mint.mint_id)).toMatchObject({state: "manual_review", transaction_id: "saved-tx", signed_transaction: "saved-bytes"});
+    const syncPath = `/v1/nft/mints/${encodeURIComponent(mint.mint_id)}/sync`;
+    expect((await app.inject({method: "POST", url: syncPath, payload: {}, headers: headers(other, syncPath, {})})).statusCode).toBe(403);
+  });
+
+  it("serializes transactions for the same chain across processor instances", async () => {
+    const store = new MemoryStore();
+    expect(await store.claimNftChain("monad:mainnet", "worker-a", 300)).toBe(true);
+    expect(await store.claimNftChain("monad:mainnet", "worker-b", 300)).toBe(false);
+    await store.releaseNftChain("monad:mainnet", "worker-b");
+    expect(await store.claimNftChain("monad:mainnet", "worker-c", 300)).toBe(false);
+    await store.releaseNftChain("monad:mainnet", "worker-a");
+    expect(await store.claimNftChain("monad:mainnet", "worker-b", 300)).toBe(true);
+  });
+
+  it("does not report an EVM mint as finalized without the expected recipient Transfer", async () => {
+    const contract = `0x${"1".repeat(40)}`;
+    const tx = `0x${"a".repeat(64)}`;
+    const evm = new EvmNftAdapter({chain: "monad:mainnet", rpcUrl: "https://rpc.example.test", chainId: 143, contractAddress: contract, privateKey: new Uint8Array(32).fill(15), explorerBaseUrl: "https://monadscan.com", fetcher: (async () => new Response(JSON.stringify({result: {status: "0x1", to: contract, transactionHash: tx, logs: [], blockNumber: "0x1"}}), {status: 200})) as typeof fetch});
+    const store = new MemoryStore();
+    const service = new NftMintService({publicBaseUrl: "https://vox.example.test", adapters: [evm]});
+    const media = await service.ensureMedia(store, input());
+    const mint = (await store.listNftMintsForMedia(media.media_id))[0]!;
+    expect(await evm.reconcile({...mint, owner_wallet: evmWallet(16).address, transaction_id: tx})).toMatchObject({state: "manual_review"});
   });
 });

@@ -41,3 +41,37 @@ The command also needs the three testnet RPC URLs, deployed `VoxMediaNFT` contra
 5. Set `VOX_NFT_ENABLED=true`, `VOX_NFT_MAINNET_ENABLED=true`, and `VOX_CONFIRM_NFT_MAINNET=1` only after explicit approval to spend real funds, then deploy with `DEPLOYMENT_ENV=production` and the repository `.kiro/gcp-project.json` target.
 
 The application does not deploy contracts or submit Mainnet transactions as part of a normal build or test run.
+
+## Completed Realize outputs on Monad
+
+The Realize checkout presents each completed output separately. Choose **Mint on
+Monad**, connect an EVM wallet, and sign the entitlement-specific claim. The
+customer signature binds the receiving address; VOX's dedicated minter pays gas
+and submits the ERC-721 transaction. This flow does not mint ordinary posts or
+start another generation.
+
+The claim starts processing immediately. Signed bytes are stored before
+broadcast; processor instances share a per-chain Firestore lease so they do not
+prepare competing transactions with the same pending nonce. Repeated claims
+preserve submitted, finalized, and manual-review records and cannot change the
+receiving wallet. Lost responses recover from the existing record.
+
+`POST /v1/nft/mints/:mintId/sync` accepts an empty JSON object and the same signed
+human request headers as the claim endpoint. Only the entitlement's owner may
+refresh processing. The checkout keeps refreshing after the commission settles,
+while the five-minute background reconciler remains a fallback. Mutable status
+responses use `Cache-Control: no-store`; canonical metadata remains immutable.
+An EVM mint is finalized only after the configured confirmation count, a mint
+Transfer to the bound address, and an on-chain token URI matching VOX metadata.
+The result displays the token number, transaction, NFT explorer link, and VOX
+media page.
+
+Run `npx tsx scripts/test-nft-local.ts` after `npm run build:packages` to rehearse
+the browser → wallet proof → API → deployed ERC-721 → confirmed owner/metadata →
+page reload path. It requires Foundry (`forge`, `anvil`) and Playwright Chromium.
+It uses a disposable localhost chain with chain ID 10143, synthetic completed
+media, and test-only keys. It does not contact Monad Mainnet, pay a provider, or
+verify the production payment/generation/settlement path.
+
+A production release and an authorized mint of an existing completed output to
+a customer-controlled Monad wallet are still needed for live Mainnet evidence.

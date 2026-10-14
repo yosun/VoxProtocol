@@ -1,10 +1,11 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {base64UrlToBytes, canonicalBytes, computeFirstPartyRealizeRightsPolicyHash, computeRevenueRightsAgreementHash, concatBytes, REALIZE_COMMISSIONER_ROLE_PARTY_ID, ProvenanceRecordV1Schema, RealizeQuoteV1Schema, verifyBytes, verifyRealizeQuoteSignature, utf8} from "@vox/protocol";
 import {useConnectedWallet, useWalletStatus, useWallets} from "@solana/kit-plugin-wallet/react";
-import {ApiError, api, type AgentRecord, type NftMediaStatus, type PostRecord, type RealizeCapabilities, type RealizeCommissionStatus, type RealizeFunding, type RealizeProvenance, type RealizeQuote, type RealizeRightsAgreement} from "./api.js";
+import {ApiError, api, type AgentRecord, type PostRecord, type RealizeCapabilities, type RealizeCommissionStatus, type RealizeFunding, type RealizeProvenance, type RealizeQuote, type RealizeRightsAgreement} from "./api.js";
 import {getRealizeIdentity, signRealizeRequest, type RealizeIdentity} from "./realize-identity.js";
 import {checkSolanaTransaction, sendRealizeEscrowPayment, sendRealizeEscrowRefund, sendUsdcPayment, walletRejected} from "./solana-payment.js";
 import {configuredWalletCluster, solanaWalletClient, walletChainForCluster} from "./solana-wallet.js";
+import {RealizeNfts} from "./RealizeNfts.js";
 import {generationDescription, videoOptions, type VideoOptions} from "./realize-parameters.js";
 
 type RealizeStyle = "cinematic" | "portrait" | "documentary" | "ambient" | "special";
@@ -165,7 +166,6 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
   const [restoringCommission, setRestoringCommission] = useState(!!savedCheckout?.commissionId);
   const [funding, setFunding] = useState<RealizeFunding>();
   const [provenance, setProvenance] = useState<RealizeProvenance>();
-  const [nftMedia, setNftMedia] = useState<NftMediaStatus>();
   const [quoteContext, setQuoteContext] = useState<string>();
   const [health, setHealth] = useState<{instance_id: string; instance_public_key: string}>();
   const [rightsReviewed, setRightsReviewed] = useState(false);
@@ -241,7 +241,6 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
       setCommissionStatus(undefined);
       setFunding(undefined);
       setProvenance(undefined);
-      setNftMedia(undefined);
       setPendingSignature(undefined);
       setPendingRefundSignature(undefined);
       setTransactionUrl(undefined);
@@ -295,9 +294,6 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
       const trusted = health ?? await api.health();
       if (verifyProvenance(record, updated.quote, trusted)) setProvenance(record);
       else throw new Error("The provenance signature could not be verified against this VOX.gold issuer.");
-    }
-    if (updated.nft_media_ids?.[0]) {
-      try { setNftMedia(await api.nftMedia(updated.nft_media_ids[0])); } catch { /* NFT reconciliation can lag the media completion. */ }
     }
     if (updated.commission.accepted_quote_hash) setRightsReviewed(true);
     setTrackingError("");
@@ -364,7 +360,6 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
     setCommissionStatus(undefined);
     setFunding(undefined);
     setProvenance(undefined);
-    setNftMedia(undefined);
     setRightsReviewed(false);
     setPendingSignature(undefined);
     setPendingRefundSignature(undefined);
@@ -397,7 +392,6 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
     setCommissionStatus(undefined);
     setFunding(undefined);
     setProvenance(undefined);
-    setNftMedia(undefined);
     setRightsReviewed(false);
     setPendingSignature(undefined);
     const idempotencyKey = crypto.randomUUID();
@@ -615,9 +609,9 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
     finally { setBusy(false); }
   }
 
-  const state = commissionStatus?.commission.state;
-  const isTerminal = state === "SETTLED" || state === "REFUNDED" || state === "EXPIRED";
-  const refundReady = state === "REFUND_PENDING" && funding?.mode === "escrow" && funding.progress?.status === "Refundable";
+  const commissionState = commissionStatus?.commission.state;
+  const isTerminal = commissionState === "SETTLED" || commissionState === "REFUNDED" || commissionState === "EXPIRED";
+  const refundReady = commissionStatus?.commission.state === "REFUND_PENDING" && funding?.mode === "escrow" && funding.progress?.status === "Refundable";
   const output = commissionStatus?.fulfillment_result?.outputs[0];
   const capabilitiesReady = !capabilityLoading && !capabilityError && !!selectedCapability && !!options;
   const publicCommissionerParty = rights?.policy_mode === "first_party" ? true : !!rights && rights.agreement.parties.some((party) => party.party_id === REALIZE_COMMISSIONER_ROLE_PARTY_ID && party.role === "commissioner");
@@ -735,7 +729,7 @@ export function RealizeCheckout({post, posts, agents, onClose}: {post: PostRecor
       {commissionStatus.failure_reason && <p className="error-box">{commissionStatus.failure_reason}</p>}
       {output?.uri && <div className="artifact-card"><p className="eyebrow">Completed artifact</p>{output.media_type.startsWith("video/") ? <video className="commission-artifact" controls playsInline preload="metadata" aria-label="Completed commissioned creation"><source src={output.uri} type={output.media_type} /></video> : output.media_type.startsWith("image/") ? <img className="commission-artifact" src={output.uri} alt="Completed commissioned creation" /> : <a href={output.uri} target="_blank" rel="noreferrer">Open completed artifact ↗</a>}{output.page_url && <a className="secondary-button" href={output.page_url} target="_blank" rel="noreferrer">View and share on Populi ↗</a>}<code>{output.sha256}</code></div>}
       {provenance && <div className="provenance-status"><span>✓</span><div><strong>Signed provenance verified</strong><code>{provenance.provenance_record_id}</code><code>{provenance.outputs.map((item) => item.sha256).join(", ")}</code>{provenance.public_attribution && <span>Public credit: {provenance.public_attribution}</span>}</div></div>}
-      {nftMedia && <div className="nft-status-card" aria-label="NFT minting status"><div className="nft-status-heading"><div><p className="eyebrow">Ownership record</p><strong>One NFT per enabled chain</strong></div><a href={nftMedia.media_page_url ?? `/media/${encodeURIComponent(nftMedia.media_id)}`} target="_blank" rel="noreferrer">Open VOX media page ↗</a></div><p className="tiny muted">All three chain records reference the same canonical VOX media ID: <code>{nftMedia.media_id}</code>.</p><div className="nft-chain-statuses">{nftMedia.mints.map((mint) => <div className="nft-chain-status" key={mint.mint_id}><span>{mint.chain.replace(":", " · ")}</span><strong>{mint.state.replaceAll("_", " ")}</strong>{mint.explorer_url ? <a href={mint.explorer_url} target="_blank" rel="noreferrer">View chain record ↗</a> : mint.state === "claimable" ? <span className="tiny muted">Connect and sign a {mint.chain.split(":")[0]} wallet to claim.</span> : <span className="tiny muted">Automatic minting will retry independently.</span>}</div>)}</div></div>}
+      <RealizeNfts mediaIds={commissionStatus.nft_media_ids ?? []} identity={identity} />
       {commissionStatus.settlement_response?.transaction_signatures?.map((signature) => <p className="tiny" key={signature}><a href={`https://explorer.solana.com/tx/${encodeURIComponent(signature)}?cluster=${encodeURIComponent(networkName)}`} target="_blank" rel="noreferrer">View verified settlement transaction ↗</a></p>)}
       <p className="tiny muted">Commission ID {short(commissionStatus.commission.commission_id)} · Public provenance contains no payer wallet or billing details.</p>
     </section>}

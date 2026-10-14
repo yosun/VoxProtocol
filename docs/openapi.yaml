@@ -1970,6 +1970,45 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
 
+  /v1/nft/mints/{mintId}/sync:
+    post:
+      summary: Refresh one owned NFT transaction without creating a new entitlement
+      tags: [NFT]
+      parameters:
+        - name: mintId
+          in: path
+          required: true
+          schema: {type: string}
+        - name: X-Vox-Realize-Human-Id
+          in: header
+          required: true
+          schema: {type: string}
+        - name: X-Vox-Realize-Timestamp
+          in: header
+          required: true
+          schema: {type: string, format: date-time}
+        - name: X-Vox-Realize-Signature
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: false}
+      responses:
+        '200':
+          description: Updated canonical media record and NFT states
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NftMediaStatus'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Signed human does not own this entitlement
+        '404':
+          $ref: '#/components/responses/NotFound'
+
 components:
   securitySchemes:
     internalToken:
@@ -2045,9 +2084,10 @@ components:
     NftMintStatus:
       type: object
       additionalProperties: false
-      required: [mint_id, chain, state]
+      required: [mint_id, chain, state, created_at]
       properties:
         mint_id: {type: string}
+        created_at: {type: string, format: date-time}
         chain: {type: string, enum: [solana:devnet, solana:mainnet-beta, base:sepolia, base:mainnet, monad:testnet, monad:mainnet, arbitrum:mainnet, ethereum:mainnet, hyperevm:mainnet, robinhood:mainnet]}
         state: {type: string, enum: [queued, claimable, signing, signed, submitted, finalized, retryable_failure, manual_review]}
         owner_wallet: {type: string}
