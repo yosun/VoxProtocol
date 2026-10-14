@@ -68,14 +68,15 @@ async function main(): Promise<void> {
     if (bundle.format !== "vox-human-identity/v1" || !bundle.registration?.human_id || !bundle.registration.identity_public_key || !bundle.key_material?.identitySecretKey || !verifyHumanAccount(bundle.registration as never) || derivePublicKeyFromSecret(bundle.key_material.identitySecretKey) !== bundle.registration.identity_public_key) {
       throw new Error("The stored VOX Admin identity failed its registration or key-pair check.");
     }
+    const operatorHumanId = bundle.registration.human_id;
     secretKey = parseSecretKey(bundle.key_material.identitySecretKey);
 
     async function request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
       const issued_at = new Date().toISOString();
-      const signature = signBytes(realizeClientRequestSigningPayload({method, path, principal_id: bundle!.registration.human_id, issued_at, ...(body === undefined ? {} : {body})}), secretKey!);
+      const signature = signBytes(realizeClientRequestSigningPayload({method, path, principal_id: operatorHumanId, issued_at, ...(body === undefined ? {} : {body})}), secretKey!);
       const response = await fetch(`${API_ORIGIN}${path}`, {
         method,
-        headers: {"content-type": "application/json", "x-vox-internal-token": internalToken, "x-vox-realize-human-id": bundle.registration.human_id, "x-vox-realize-timestamp": issued_at, "x-vox-realize-signature": signature},
+        headers: {"content-type": "application/json", "x-vox-internal-token": internalToken, "x-vox-realize-human-id": operatorHumanId, "x-vox-realize-timestamp": issued_at, "x-vox-realize-signature": signature},
         ...(body === undefined ? {} : {body: JSON.stringify(body)}),
         signal: AbortSignal.timeout(30_000)
       });
