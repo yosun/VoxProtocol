@@ -54,30 +54,31 @@ const files = base === "--paths"
   : execFileSync("git", ["diff", "--name-only", "--diff-filter=ACMRTUXB", base, head], {encoding: "utf8"}).split(/\r?\n/);
 const changed = [...new Set(files.map((file) => file.trim().replaceAll("\\", "/")).filter(Boolean))].sort();
 
-const deployApi = changed.some((file) =>
+const fullRealizeRelease = changed.includes("deployments/realize-paid-order-recovery-release.json");
+const deployApi = fullRealizeRelease || changed.some((file) =>
   file.startsWith("apps/api/") ||
   file.startsWith("apps/web/") ||
   file.startsWith("packages/") ||
   file.startsWith("docs/") ||
   ["Dockerfile", "infrastructure/gcp/Dockerfile", "package.json", "package-lock.json", "tsconfig.base.json"].includes(file)
 );
-const deployHosting = changed.some((file) =>
+const deployHosting = fullRealizeRelease || changed.some((file) =>
   file.startsWith("apps/web/") ||
   file.startsWith("packages/") ||
   ["firebase.json", "package.json", "package-lock.json", "tsconfig.base.json"].includes(file)
 );
 const runE2e = deployHosting || changed.some((file) => file.startsWith("tests/e2e/") || file === "playwright.config.ts");
-const deploySettlement = changed.some((file) =>
+const deploySettlement = fullRealizeRelease || changed.some((file) =>
   file.startsWith("apps/settlement/") ||
   ["packages/protocol/", "packages/solana/"].some((prefix) => file.startsWith(prefix)) ||
   ["Dockerfile", "infrastructure/gcp/Dockerfile", "package.json", "package-lock.json", "tsconfig.base.json"].includes(file)
 );
-const deployReconcile = changed.some((file) =>
+const deployReconcile = fullRealizeRelease || changed.some((file) =>
   file.startsWith("apps/api/") ||
   file.startsWith("packages/") ||
   ["Dockerfile", "infrastructure/gcp/Dockerfile", "package.json", "package-lock.json", "tsconfig.base.json"].includes(file)
 );
-const deployAnchor = changed.some((file) =>
+const deployAnchor = fullRealizeRelease || changed.some((file) =>
   file.startsWith("workers/anchor/") ||
   ["packages/protocol/", "packages/merkle/", "packages/solana/"].some((prefix) => file.startsWith(prefix)) ||
   ["Dockerfile", "infrastructure/gcp/Dockerfile", "package.json", "package-lock.json", "tsconfig.base.json"].includes(file)
