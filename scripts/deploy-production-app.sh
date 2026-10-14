@@ -12,7 +12,7 @@ TAG="ci-${GITHUB_RUN_ID:-$(date +%s)}"
 FIRST_PARTY_CREATOR_IDS="${VOX_REALIZE_FIRST_PARTY_CREATOR_IDS:-vox:agent:A4KzQOc_iHZyTQOmSqqrmSlpjrpSMwigXmwzcXFCDiM,vox:agent:nERxpsSoi2oJWG9B6EuZSg9TkUDpTM6ASNOD0urMgAU}"
 REALIZE_OPERATOR_HUMAN_IDS="${VOX_REALIZE_OPERATOR_HUMAN_IDS:-}"
 
-for flag in VOX_DEPLOY_API VOX_DEPLOY_HOSTING VOX_DEPLOY_SETTLEMENT VOX_DEPLOY_RECONCILE VOX_DEPLOY_ANCHOR VOX_PRODUCTION_SENSITIVE_APPROVED; do
+for flag in VOX_DEPLOY_API VOX_DEPLOY_HOSTING VOX_DEPLOY_SETTLEMENT VOX_DEPLOY_RECONCILE VOX_DEPLOY_ANCHOR VOX_PRODUCTION_SENSITIVE_APPROVED VOX_PROVISION_REALIZE_RECONCILE_INDEX; do
   value="${!flag:-false}"
   case "$value" in true|false) ;; *) echo "$flag must be true or false." >&2; exit 2 ;; esac
 done
@@ -193,15 +193,18 @@ ensure_realize_reconcile_index() {
   done
 }
 
-# Validate API-only runtime configuration and provision the query index before
-# changing any production service or scheduled job. This keeps a missing
-# operator allowlist or a failed index build from leaving a partial release.
+# The production release identity intentionally has no Firestore index IAM. The
+# reconciliation index is managed by infrastructure/gcp/firestore.indexes.json
+# and was verified READY before this release. Index creation/listing remains
+# available only for an explicitly authorized admin provisioning run.
 if [[ "${VOX_DEPLOY_API:-false}" == "true" ]]; then
   if [[ ! "$REALIZE_OPERATOR_HUMAN_IDS" =~ ^vox:human:[A-Za-z0-9_-]{43}(,vox:human:[A-Za-z0-9_-]{43})*$ ]]; then
     echo "VOX_REALIZE_OPERATOR_HUMAN_IDS must contain at least one registered VOX human ID before releasing the Mainnet API." >&2
     exit 1
   fi
-  ensure_realize_reconcile_index
+  if [[ "${VOX_PROVISION_REALIZE_RECONCILE_INDEX:-false}" == "true" ]]; then
+    ensure_realize_reconcile_index
+  fi
 fi
 
 # Promote shared dependencies before the API starts using the new contract:
