@@ -1299,10 +1299,12 @@ function publicNftMedia(media: import("./types.js").NftMediaRecord, mints: impor
     provenance_record_id: media.provenance_record_id,
     metadata_uri: media.metadata_uri,
     metadata_hash: media.metadata_hash,
+    created_at: media.created_at,
     mints: mints.map((mint) => ({
       mint_id: mint.mint_id,
       chain: mint.chain,
       state: mint.state,
+      created_at: mint.created_at,
       ...(mint.owner_wallet ? {owner_wallet: mint.owner_wallet} : {}),
       ...(mint.transaction_id ? {transaction_id: mint.transaction_id} : {}),
       ...(mint.token_id ? {token_id: mint.token_id} : {}),
@@ -2454,7 +2456,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     const media = await context.store.getNftMedia((request.params as {mediaId: string}).mediaId);
     if (!media) throw new HttpError(404, "not_found", "VOX media record not found");
     if (media.source_kind === "realize_commission" && media.publication_consent !== true) throw new HttpError(404, "not_found", "VOX media record not found");
-    return reply.header("cache-control", "public, max-age=15, stale-while-revalidate=60").send(publicNftMedia(media, await context.store.listNftMintsForMedia(media.media_id)));
+    return reply.header("cache-control", "no-store").send(publicNftMedia(media, await context.store.listNftMintsForMedia(media.media_id)));
   });
 
   app.get("/v1/nft/metadata/:mediaId", async (request, reply) => {
@@ -2477,12 +2479,33 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     if (!verifyNftWalletProof(mint, body.wallet, body.signature)) throw new HttpError(401, "invalid_wallet_proof", `wallet signature does not prove control of the ${mint.chain} destination`);
     if (mint.owner_wallet && mint.owner_wallet.toLowerCase() !== body.wallet.toLowerCase()) throw new HttpError(409, "wallet_binding_conflict", "this entitlement is already bound to another wallet");
     if (mint.state === "finalized") return reply.send({mint_id: mint.mint_id, chain: mint.chain, state: mint.state, transaction_id: mint.transaction_id, explorer_url: mint.explorer_url});
+    if (mint.state !== "claimable") return reply.code(202).send({mint_id: mint.mint_id, chain: mint.chain, state: mint.state, owner_wallet: mint.owner_wallet});
     const {lease_owner: _leaseOwner, lease_expires_at: _leaseExpires, last_error: _lastError, next_attempt_at: _nextAttempt, ...withoutTransient} = mint;
     const updated = {...withoutTransient, owner_wallet: body.wallet, state: "queued" as const, updated_at: new Date().toISOString()};
     let saved;
     try { saved = await context.store.updateNftMint(updated, mint.updated_at); }
-    catch { saved = await context.store.getNftMint(mintId) ?? mint; }
+    catch {
+      saved = await context.store.getNftMint(mintId) ?? mint;
+      if (saved.owner_wallet?.toLowerCase() !== body.wallet.toLowerCase()) throw new HttpError(409, "wallet_binding_conflict", "this entitlement was concurrently bound to another wallet");
+    }
+    if (mint.chain.startsWith("monad:")) {
+      await context.nftService.processMint(context.store, mintId, `nft-claim:${request.id}`);
+      saved = await context.store.getNftMint(mintId) ?? saved;
+    }
     return reply.code(saved.state === "queued" ? 202 : 200).send({mint_id: saved.mint_id, chain: saved.chain, state: saved.state, ...(saved.owner_wallet ? {owner_wallet: saved.owner_wallet} : {})});
+  });
+
+  app.post("/v1/nft/mints/:mintId/sync", async (request, reply) => {
+    if (!context.nftService) throw new HttpError(404, "nft_not_enabled", "NFT minting is not enabled");
+    const mintId = (request.params as {mintId: string}).mintId;
+    const mint = await context.store.getNftMint(mintId);
+    if (!mint) throw new HttpError(404, "not_found", "NFT entitlement not found");
+    const body = parseBody(z.object({}).strict(), request.body);
+    await authorizeRealizeHuman(context, request.headers as Record<string, unknown>, mint.owner_id, "POST", `/v1/nft/mints/${encodeURIComponent(mintId)}/sync`, body);
+    await context.nftService.processMint(context.store, mintId, `nft-sync:${request.id}`);
+    const media = await context.store.getNftMedia(mint.media_id);
+    if (!media) throw new HttpError(404, "not_found", "VOX media record not found");
+    return reply.send(publicNftMedia(media, await context.store.listNftMintsForMedia(media.media_id)));
   });
 
   app.get("/v1/realize/provenance/:provenanceId", async (request, reply) => {

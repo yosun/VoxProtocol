@@ -1,5 +1,5 @@
 import {readFileSync} from "node:fs";
-import {createHash} from "node:crypto";
+import {createHash, randomUUID} from "node:crypto";
 import {secp256k1} from "@noble/curves/secp256k1";
 import {keccak_256} from "@noble/hashes/sha3.js";
 import nacl from "tweetnacl";
@@ -304,54 +304,69 @@ export class NftMintService {
 
   async processPending(store: VoxStore, limit = 30, workerId = "vox-nft-reconcile"): Promise<Array<{mint_id: string; state: NftMintRecord["state"]; error?: string}>> {
     const candidates = await store.listNftMintsForProcessing(Math.min(Math.max(limit, 1), 100));
+    return this.processCandidates(store, candidates, workerId);
+  }
+
+  async processMint(store: VoxStore, mintId: string, workerId: string): Promise<void> {
+    const mint = await store.getNftMint(mintId);
+    if (mint && PROCESSING_STATES.has(mint.state)) await this.processCandidates(store, [mint], workerId);
+  }
+
+  private async processCandidates(store: VoxStore, candidates: NftMintRecord[], workerId: string): Promise<Array<{mint_id: string; state: NftMintRecord["state"]; error?: string}>> {
     const outcomes: Array<{mint_id: string; state: NftMintRecord["state"]; error?: string}> = [];
     for (const candidate of candidates) {
-      const claimed = await store.claimNftMint(candidate.mint_id, workerId, 300);
-      if (!claimed) continue;
-      const adapter = this.adapters.find((item) => item.chain === claimed.chain);
-      if (!adapter) {
-        const failed = clearLease({...claimed, state: "retryable_failure", last_error: "configured NFT chain adapter is unavailable", next_attempt_at: nextAttempt(claimed.attempts), updated_at: new Date().toISOString()});
-        const saved = await store.updateNftMint(failed, claimed.updated_at).catch(() => failed);
-        outcomes.push({mint_id: saved.mint_id, state: saved.state, ...(saved.last_error ? {error: saved.last_error} : {})});
-        continue;
-      }
+      const chainLeaseOwner = `${workerId}:${randomUUID()}`;
+      if (!await store.claimNftChain(candidate.chain, chainLeaseOwner, 300)) continue;
       try {
-        let observation: NftChainObservation;
-        let currentForObservation = claimed;
-        if (claimed.state === "signed") {
-          observation = await adapter.submit(claimed);
-        } else if (claimed.state === "submitted") {
-          observation = await adapter.reconcile(claimed);
-        } else {
-          if (!claimed.owner_wallet) {
-            const claimable = clearLease({...claimed, state: "claimable", updated_at: new Date().toISOString()});
-            const saved = await store.updateNftMint(claimable, claimed.updated_at);
-            outcomes.push({mint_id: saved.mint_id, state: saved.state});
-            continue;
-          }
-          const media = await store.getNftMedia(claimed.media_id);
-          if (!media) throw new Error("canonical NFT media record is missing");
-          const prepared = await adapter.prepare({media, mint: claimed});
-          const signed = {...claimed, state: "signed" as const, transaction_id: prepared.transaction_id, ...(prepared.token_id ? {token_id: prepared.token_id} : {}), ...(prepared.asset_address ? {asset_address: prepared.asset_address} : {}), ...(prepared.explorer_url ? {explorer_url: prepared.explorer_url} : {}), signed_transaction: prepared.signed_transaction, ...(prepared.nonce ? {nonce: prepared.nonce} : {}), ...(prepared.blockhash ? {blockhash: prepared.blockhash} : {}), ...(prepared.last_valid_block_height === undefined ? {} : {last_valid_block_height: prepared.last_valid_block_height}), updated_at: new Date().toISOString()};
-          const stored = await store.updateNftMint(signed, claimed.updated_at);
-          observation = await adapter.submit(stored);
-          currentForObservation = stored;
+        const claimed = await store.claimNftMint(candidate.mint_id, workerId, 300);
+        if (!claimed) continue;
+        const adapter = this.adapters.find((item) => item.chain === claimed.chain);
+        if (!adapter) {
+          const failed = clearLease({...claimed, state: "retryable_failure", last_error: "configured NFT chain adapter is unavailable", next_attempt_at: nextAttempt(claimed.attempts), updated_at: new Date().toISOString()});
+          const saved = await store.updateNftMint(failed, claimed.updated_at).catch(() => failed);
+          outcomes.push({mint_id: saved.mint_id, state: saved.state, ...(saved.last_error ? {error: saved.last_error} : {})});
+          continue;
         }
-        const updated = this.applyObservation(currentForObservation, observation);
-        const saved = await store.updateNftMint(updated, currentForObservation.updated_at).catch(async () => await store.getNftMint(currentForObservation.mint_id) ?? updated);
-        outcomes.push({mint_id: saved.mint_id, state: saved.state, ...(saved.last_error ? {error: saved.last_error} : {})});
-      } catch (error) {
-        const latest = await store.getNftMint(claimed.mint_id) ?? claimed;
-        const uncertain = latest.state === "signed" || latest.state === "submitted";
-        const failed = clearLease({
-          ...latest,
-          state: uncertain ? "manual_review" : "retryable_failure",
-          last_error: errorText(error),
-          ...(uncertain ? {} : {next_attempt_at: nextAttempt(latest.attempts)}),
-          updated_at: new Date().toISOString()
-        });
-        const saved = await store.updateNftMint(failed, latest.updated_at).catch(() => failed);
-        outcomes.push({mint_id: saved.mint_id, state: saved.state, ...(saved.last_error ? {error: saved.last_error} : {})});
+        try {
+          let observation: NftChainObservation;
+          let currentForObservation = claimed;
+          if (claimed.state === "signed") {
+            observation = await adapter.submit(claimed);
+          } else if (claimed.state === "submitted") {
+            observation = await adapter.reconcile(claimed);
+          } else {
+            if (!claimed.owner_wallet) {
+              const claimable = clearLease({...claimed, state: "claimable", updated_at: new Date().toISOString()});
+              const saved = await store.updateNftMint(claimable, claimed.updated_at);
+              outcomes.push({mint_id: saved.mint_id, state: saved.state});
+              continue;
+            }
+            const media = await store.getNftMedia(claimed.media_id);
+            if (!media) throw new Error("canonical NFT media record is missing");
+            const prepared = await adapter.prepare({media, mint: claimed});
+            const signed = {...claimed, state: "signed" as const, transaction_id: prepared.transaction_id, ...(prepared.token_id ? {token_id: prepared.token_id} : {}), ...(prepared.asset_address ? {asset_address: prepared.asset_address} : {}), ...(prepared.explorer_url ? {explorer_url: prepared.explorer_url} : {}), signed_transaction: prepared.signed_transaction, ...(prepared.nonce ? {nonce: prepared.nonce} : {}), ...(prepared.blockhash ? {blockhash: prepared.blockhash} : {}), ...(prepared.last_valid_block_height === undefined ? {} : {last_valid_block_height: prepared.last_valid_block_height}), updated_at: new Date().toISOString()};
+            const stored = await store.updateNftMint(signed, claimed.updated_at);
+            observation = await adapter.submit(stored);
+            currentForObservation = stored;
+          }
+          const updated = this.applyObservation(currentForObservation, observation);
+          const saved = await store.updateNftMint(updated, currentForObservation.updated_at).catch(async () => await store.getNftMint(currentForObservation.mint_id) ?? updated);
+          outcomes.push({mint_id: saved.mint_id, state: saved.state, ...(saved.last_error ? {error: saved.last_error} : {})});
+        } catch (error) {
+          const latest = await store.getNftMint(claimed.mint_id) ?? claimed;
+          const uncertain = latest.state === "signed" || latest.state === "submitted";
+          const failed = clearLease({
+            ...latest,
+            state: uncertain ? "manual_review" : "retryable_failure",
+            last_error: errorText(error),
+            ...(uncertain ? {} : {next_attempt_at: nextAttempt(latest.attempts)}),
+            updated_at: new Date().toISOString()
+          });
+          const saved = await store.updateNftMint(failed, latest.updated_at).catch(() => failed);
+          outcomes.push({mint_id: saved.mint_id, state: saved.state, ...(saved.last_error ? {error: saved.last_error} : {})});
+        }
+      } finally {
+        await store.releaseNftChain(candidate.chain, chainLeaseOwner);
       }
     }
     return outcomes;
@@ -668,7 +683,7 @@ export class EvmNftAdapter implements NftChainAdapter {
     const digest = keccak_256(signingPayload);
     const signature = secp256k1.sign(digest, this.privateKey, {lowS: true});
     const signed = rlpList([
-      rlpBigint(BigInt(this.chainId)), rlpBigint(nonce), rlpBigint(priority), rlpBigint(maxFee), rlpBigint(gasLimit), rlpHex(this.contractAddress), rlpBigint(0n), rlpHex(data), {list: []}, rlpBigint(BigInt(signature.recovery ?? 0)), rlpHex(`0x${bytesToHex(signature.toCompactRawBytes().slice(0, 32))}`), rlpHex(`0x${bytesToHex(signature.toCompactRawBytes().slice(32))}`)
+      rlpBigint(BigInt(this.chainId)), rlpBigint(nonce), rlpBigint(priority), rlpBigint(maxFee), rlpBigint(gasLimit), rlpHex(this.contractAddress), rlpBigint(0n), rlpHex(data), {list: []}, rlpBigint(BigInt(signature.recovery ?? 0)), rlpBigint(BigInt(`0x${bytesToHex(signature.toCompactRawBytes().slice(0, 32))}`)), rlpBigint(BigInt(`0x${bytesToHex(signature.toCompactRawBytes().slice(32))}`))
     ]);
     const raw = Uint8Array.from([2, ...signed]);
     const transactionId = `0x${bytesToHex(keccak_256(raw))}`;
@@ -689,7 +704,7 @@ export class EvmNftAdapter implements NftChainAdapter {
   }
 
   async reconcile(mint: NftMintRecord): Promise<NftChainObservation> {
-    return this.observe(mint);
+    return this.submit(mint);
   }
 
   private async observe(mint: NftMintRecord): Promise<NftChainObservation> {
@@ -697,22 +712,33 @@ export class EvmNftAdapter implements NftChainAdapter {
     const receipt = await this.rpc("eth_getTransactionReceipt", [mint.transaction_id]);
     if (receipt === null) return {state: "submitted", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
     if (!receipt || typeof receipt !== "object") return {state: "manual_review", error: "EVM NFT receipt response is invalid", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
-    const receiptObject = receipt as {status?: unknown; blockNumber?: unknown; logs?: unknown};
+    const receiptObject = receipt as {status?: unknown; blockNumber?: unknown; logs?: unknown; to?: unknown; transactionHash?: unknown};
+    if (typeof receiptObject.to !== "string" || receiptObject.to.toLowerCase() !== this.contractAddress || typeof receiptObject.transactionHash !== "string" || receiptObject.transactionHash.toLowerCase() !== mint.transaction_id.toLowerCase()) return {state: "manual_review", error: "EVM NFT receipt does not match the configured contract and transaction", transaction_id: mint.transaction_id};
     if (receiptObject.status !== "0x1") return {state: "retryable_failure", error: "EVM NFT transaction reverted", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
-    const tokenId = this.receiptTokenId(receiptObject.logs);
+    const tokenId = this.receiptTokenId(receiptObject.logs, mint.owner_wallet);
+    if (!tokenId) return {state: "manual_review", error: "EVM NFT receipt has no mint Transfer to the bound owner wallet", transaction_id: mint.transaction_id};
     const blockNumber = parseRpcQuantity(receiptObject.blockNumber, "receipt block");
     const latest = parseRpcQuantity(await this.rpc("eth_blockNumber", []), "latest block");
     if (latest + 1n - blockNumber < BigInt(this.confirmations)) return {state: "submitted", transaction_id: mint.transaction_id, ...(mint.asset_address ? {asset_address: mint.asset_address} : {}), ...(tokenId ? {token_id: tokenId} : {}), ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
+    const uriData = `0x${bytesToHex(keccak_256(utf8("tokenURI(uint256)")).slice(0, 4))}${bytesToHex(pad32(bigintBytes(BigInt(tokenId))))}`;
+    const encodedUri = await this.rpc("eth_call", [{to: this.contractAddress, data: uriData}, "latest"]);
+    if (typeof encodedUri !== "string") return {state: "manual_review", error: "EVM NFT token URI is unavailable", transaction_id: mint.transaction_id};
+    const uriBytes = hexToBytes(encodedUri);
+    const offset = Number(BigInt(`0x${bytesToHex(uriBytes.slice(0, 32)) || "0"}`));
+    const length = Number(BigInt(`0x${bytesToHex(uriBytes.slice(offset, offset + 32)) || "0"}`));
+    if (offset !== 32 || !Number.isSafeInteger(length) || length < 1 || offset + 32 + length > uriBytes.length || new TextDecoder().decode(uriBytes.slice(offset + 32, offset + 32 + length)) !== mint.metadata_uri) return {state: "manual_review", error: "EVM NFT token URI does not match canonical VOX metadata", transaction_id: mint.transaction_id};
     return {state: "finalized", transaction_id: mint.transaction_id, ...(mint.asset_address ? {asset_address: mint.asset_address} : {}), ...(tokenId ? {token_id: tokenId} : {}), ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
   }
 
-  private receiptTokenId(rawLogs: unknown): string | undefined {
+  private receiptTokenId(rawLogs: unknown, ownerWallet: string | undefined): string | undefined {
+    if (!ownerWallet || !EVM_ADDRESS_PATTERN.test(ownerWallet)) return undefined;
     if (!Array.isArray(rawLogs)) return undefined;
     const transferTopic = `0x${bytesToHex(keccak_256(utf8("Transfer(address,address,uint256)")))}`;
     for (const rawLog of rawLogs) {
       if (!rawLog || typeof rawLog !== "object") continue;
       const log = rawLog as {address?: unknown; topics?: unknown};
       if (typeof log.address !== "string" || log.address.toLowerCase() !== this.contractAddress || !Array.isArray(log.topics) || log.topics.length < 4 || log.topics[0] !== transferTopic || log.topics[1] !== `0x${"0".repeat(64)}`) continue;
+      if (typeof log.topics[2] !== "string" || log.topics[2].toLowerCase() !== `0x${ownerWallet.slice(2).toLowerCase().padStart(64, "0")}`) continue;
       const tokenTopic = log.topics[3];
       if (typeof tokenTopic === "string" && /^0x[0-9a-f]+$/i.test(tokenTopic)) return BigInt(tokenTopic).toString();
     }
@@ -720,7 +746,7 @@ export class EvmNftAdapter implements NftChainAdapter {
   }
 
   private async rpc(method: string, params: unknown[]): Promise<unknown> {
-    const response = await this.fetcher(this.rpcUrl, {method: "POST", headers: {"content-type": "application/json"}, body: jsonString({jsonrpc: "2.0", id: 1, method, params})});
+    const response = await this.fetcher(this.rpcUrl, {method: "POST", headers: {"content-type": "application/json"}, body: jsonString({jsonrpc: "2.0", id: 1, method, params}), signal: AbortSignal.timeout(15_000)});
     if (!response.ok) throw new Error(`EVM RPC returned HTTP ${response.status}`);
     const payload = await response.json() as {result?: unknown; error?: {message?: string}};
     if (payload.error) throw new Error(payload.error.message ?? `EVM RPC ${method} failed`);

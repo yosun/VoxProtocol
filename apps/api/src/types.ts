@@ -565,6 +565,8 @@ export interface VoxStore {
   listNftMintsForMedia(mediaId: string): Promise<NftMintRecord[]>;
   listNftMintsForProcessing(limit: number, now?: string): Promise<NftMintRecord[]>;
   claimNftMint(mintId: string, ownerId: string, leaseSeconds: number): Promise<NftMintRecord | undefined>;
+  claimNftChain(chain: NftChain, ownerId: string, leaseSeconds: number): Promise<boolean>;
+  releaseNftChain(chain: NftChain, ownerId: string): Promise<void>;
   updateNftMint(record: NftMintRecord, expectedUpdatedAt: string): Promise<NftMintRecord>;
   createRealizeWebhookDelivery(delivery: RealizeWebhookDeliveryRecord): Promise<{delivery: RealizeWebhookDeliveryRecord; created: boolean; conflict: boolean}>;
   getRealizeWebhookDelivery(deliveryId: string): Promise<RealizeWebhookDeliveryRecord | undefined>;

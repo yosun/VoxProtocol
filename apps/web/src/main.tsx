@@ -180,8 +180,11 @@ function LinkPreviewCard({preview}: {preview: LinkPreview}) {
   const [premiereOpen, setPremiereOpen] = useState(false);
   const inlineVideo = useRef<HTMLVideoElement>(null);
   const hostname = (() => { try { return new URL(preview.canonicalUrl).hostname.replace(/^www\\./i, ""); } catch { return preview.siteName; } })();
+  const platformName = preview.siteName || hostname;
+  const premiereButton = video && <button type="button" className="link-preview-premiere" data-video-source={preview.videoUrl} data-video-type={preview.videoType} data-video-poster={preview.imageUrl} data-video-title={preview.title} onClick={openPremiere} aria-label={`Open ${preview.title} in premiere mode`}><span aria-hidden="true">⛶</span><span>Premiere</span></button>;
+  const videoAttribution = video && <div className="link-preview-attribution"><span className="link-preview-attribution-label">From {platformName}</span><a className="link-preview-source" href={preview.url} target="_blank" rel="nofollow noopener noreferrer" aria-label={`Watch ${preview.title} on ${platformName} (opens in a new tab)`}><span className="link-preview-source-label">Watch on {platformName}</span><span aria-hidden="true">↗</span></a></div>;
   const media = video
-    ? <div className="link-preview-video-shell"><video ref={inlineVideo} className="link-preview-video" controls preload="metadata" poster={preview.imageUrl} aria-label={`Preview of ${preview.title}`}><source src={preview.videoUrl} type={preview.videoType} /></video></div>
+    ? <div className="link-preview-video-shell"><video ref={inlineVideo} className="link-preview-video" controls preload="metadata" poster={preview.imageUrl} aria-label={`Preview of ${preview.title}`}><source src={preview.videoUrl} type={preview.videoType} /></video>{premiereButton}{videoAttribution}</div>
     : <a className={`link-preview-media${preview.imageUrl ? "" : " link-preview-placeholder"}`} href={preview.url} target="_blank" rel="nofollow noopener noreferrer" aria-label={`Open ${preview.title}`}>{preview.imageUrl ? <img src={preview.imageUrl} alt={preview.imageAlt ?? preview.title} loading="lazy" /> : <span>↗</span>}</a>;
   function openPremiere() {
     inlineVideo.current?.pause();
@@ -190,7 +193,7 @@ function LinkPreviewCard({preview}: {preview: LinkPreview}) {
   return <>
     <article className={`link-preview${preview.kind === "video" ? " link-preview-video-card" : ""}`}>
       {media}
-      <div className="link-preview-body"><span className="link-preview-site">{preview.kind === "video" ? "Video · " : ""}{preview.siteName || hostname}</span><a className="link-preview-title" href={preview.url} target="_blank" rel="nofollow noopener noreferrer"><h3>{preview.title}</h3></a><p>{preview.description}</p><span className="link-preview-url">{hostname}</span>{video && <a className="link-preview-watch" href={preview.url} target="_blank" rel="nofollow noopener noreferrer" aria-label={`Watch video: ${preview.title} (opens in a new tab)`}><span className="link-preview-watch-play" aria-hidden="true">▶</span><span>Watch video</span><span aria-hidden="true">↗</span></a>}{video && <button type="button" className="link-preview-premiere" data-video-source={preview.videoUrl} data-video-type={preview.videoType} data-video-poster={preview.imageUrl} data-video-title={preview.title} onClick={openPremiere} aria-label={`Open ${preview.title} in premiere mode`}><span aria-hidden="true">⛶</span><span>Premiere</span></button>}</div>
+      <div className="link-preview-body">{!video && <span className="link-preview-site">{preview.siteName || hostname}</span>}<a className="link-preview-title" href={preview.url} target="_blank" rel="nofollow noopener noreferrer"><h3>{preview.title}</h3></a><p>{preview.description}</p>{!video && <span className="link-preview-url">{hostname}</span>}</div>
     </article>
     {premiereOpen && <VideoPremiereModal source={preview.videoUrl!} type={preview.videoType} poster={preview.imageUrl} title={preview.title} onClose={() => setPremiereOpen(false)} />}
   </>;

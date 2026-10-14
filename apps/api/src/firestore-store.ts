@@ -1167,6 +1167,25 @@ export class FirestoreStore implements VoxStore {
     });
   }
 
+  async claimNftChain(chain: import("./types.js").NftChain, ownerId: string, leaseSeconds: number): Promise<boolean> {
+    const ref = this.db.collection("vox_nft_chain_leases").doc(nftDocId(chain));
+    return this.db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      const current = snapshot.data() as {expires_at?: string} | undefined;
+      if (current?.expires_at && Date.parse(current.expires_at) > Date.now()) return false;
+      transaction.set(ref, {owner: ownerId, expires_at: new Date(Date.now() + leaseSeconds * 1000).toISOString()});
+      return true;
+    });
+  }
+
+  async releaseNftChain(chain: import("./types.js").NftChain, ownerId: string): Promise<void> {
+    const ref = this.db.collection("vox_nft_chain_leases").doc(nftDocId(chain));
+    await this.db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      if (snapshot.data()?.owner === ownerId) transaction.delete(ref);
+    });
+  }
+
   async getNftMedia(mediaId: string): Promise<NftMediaRecord | undefined> {
     const snapshot = await this.nftMedia.doc(nftDocId(mediaId)).get();
     return snapshot.exists ? snapshot.data() as NftMediaRecord : undefined;
@@ -1225,6 +1244,8 @@ export class FirestoreStore implements VoxStore {
       const current = snapshot.data() as NftMintRecord;
       if (current.updated_at !== expectedUpdatedAt) throw new Error("NFT mint changed concurrently");
       if (current.media_id !== record.media_id || current.chain !== record.chain || current.owner_id !== record.owner_id || current.metadata_uri !== record.metadata_uri || current.metadata_hash !== record.metadata_hash) throw new Error("immutable NFT mint terms changed");
+      if (current.owner_wallet && current.owner_wallet.toLowerCase() !== record.owner_wallet?.toLowerCase()) throw new Error("NFT owner wallet binding is immutable");
+      if (current.state === "finalized" && record.state !== "finalized") throw new Error("finalized NFT state is immutable");
       transaction.set(ref, record);
       return record;
     });
