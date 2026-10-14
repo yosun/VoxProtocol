@@ -74,7 +74,9 @@ const deploySettlement = fullRealizeRelease || changed.some((file) =>
   ["Dockerfile", "infrastructure/gcp/Dockerfile", "package.json", "package-lock.json", "tsconfig.base.json"].includes(file)
 );
 const deployReconcile = fullRealizeRelease || changed.some((file) =>
-  file.startsWith("apps/api/") ||
+  // The reconciliation job does not serve public pages; skip its image update
+  // when only presentation code in the API container changes.
+  (file.startsWith("apps/api/") && file !== "apps/api/src/public-presentation.ts") ||
   file.startsWith("packages/") ||
   ["Dockerfile", "infrastructure/gcp/Dockerfile", "package.json", "package-lock.json", "tsconfig.base.json"].includes(file)
 );
