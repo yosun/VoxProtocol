@@ -120,30 +120,20 @@ deploy_service_candidate() {
 }
 
 ensure_realize_reconcile_index() {
-  local output timeout_seconds deadline state readiness
+  local output timeout_seconds deadline readiness
   timeout_seconds="${VOX_INDEX_READY_TIMEOUT_SECONDS:-900}"
   if [[ ! "$timeout_seconds" =~ ^[1-9][0-9]{0,4}$ ]]; then
     echo "VOX_INDEX_READY_TIMEOUT_SECONDS must be a positive integer no greater than 99999." >&2
     return 1
   fi
 
-  output="$(gcloud firestore indexes composite create \
-    --collection-group=vox_realize_commissions \
-    --database="(default)" \
-    --project="$PROJECT_ID" \
-    --async \
-    --field-config=field-path=commission.state,order=ascending \
-    --field-config=field-path=updated_at,order=ascending 2>&1)" || {
-    if [[ "$output" != *"already exists"* && "$output" != *"ALREADY_EXISTS"* ]]; then
-      echo "$output" >&2
+  index_readiness() {
+    local state
+    state="$(gcloud firestore indexes composite list --database="(default)" --project="$PROJECT_ID" --format=json)" || {
+      echo "Could not list Firestore composite indexes." >&2
       return 1
-    fi
-  }
-
-  deadline="$(( $(date +%s) + timeout_seconds ))"
-  while true; do
-    state="$(gcloud firestore indexes composite list --database="(default)" --project="$PROJECT_ID" --format=json)"
-    readiness="$(INDEX_STATE="$state" node --input-type=module -e '
+    }
+    INDEX_STATE="$state" node --input-type=module -e '
       const raw = JSON.parse(process.env.INDEX_STATE || "[]");
       const indexes = Array.isArray(raw) ? raw : raw.indexes || [];
       const index = indexes.find((candidate) => {
@@ -158,8 +148,36 @@ ensure_realize_reconcile_index() {
           fields.length === expected.length + (nameField ? 1 : 0) &&
           (!nameField || fields.at(-1) === nameField && nameField.order === expected.at(-1)?.[1]);
       });
-      process.stdout.write(index?.state === "READY" ? "ready" : index?.state === "ERROR" ? "error" : "pending");
-    ')"
+      process.stdout.write(!index ? "absent" : index.state === "READY" ? "ready" : index.state === "ERROR" ? "error" : "pending");
+    '
+  }
+
+  readiness="$(index_readiness)"
+  if [[ "$readiness" == "ready" ]]; then
+    return 0
+  fi
+  if [[ "$readiness" == "error" ]]; then
+    echo "The Realize reconciliation Firestore index entered an error state." >&2
+    return 1
+  fi
+  if [[ "$readiness" == "absent" ]]; then
+    output="$(gcloud firestore indexes composite create \
+      --collection-group=vox_realize_commissions \
+      --database="(default)" \
+      --project="$PROJECT_ID" \
+      --async \
+      --field-config=field-path=commission.state,order=ascending \
+      --field-config=field-path=updated_at,order=ascending 2>&1)" || {
+      if [[ "$output" != *"already exists"* && "$output" != *"ALREADY_EXISTS"* ]]; then
+        echo "$output" >&2
+        return 1
+      fi
+    }
+  fi
+
+  deadline="$(( $(date +%s) + timeout_seconds ))"
+  while true; do
+    readiness="$(index_readiness)"
     if [[ "$readiness" == "ready" ]]; then
       return 0
     fi
