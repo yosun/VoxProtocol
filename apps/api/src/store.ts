@@ -265,10 +265,16 @@ export class MemoryStore implements VoxStore {
       .map(clone);
   }
 
-  async listDirectMessages(conversationId: string, limit: number): Promise<DirectMessageRecord[]> {
+  async getDirectMessage(conversationId: string, messageId: string): Promise<DirectMessageRecord | undefined> {
+    const message = this.directMessages.get(messageId);
+    return message?.conversation_id === conversationId ? clone(message) : undefined;
+  }
+
+  async listDirectMessages(conversationId: string, limit: number, before?: {created_at: string; message_id: string}): Promise<DirectMessageRecord[]> {
     if (!this.directMessageConversations.has(conversationId)) return [];
     return [...this.directMessages.values()]
       .filter((message) => message.conversation_id === conversationId)
+      .filter((message) => !before || message.created_at < before.created_at || message.created_at === before.created_at && message.message_id < before.message_id)
       .sort((left, right) => left.created_at.localeCompare(right.created_at) || left.message_id.localeCompare(right.message_id))
       .slice(-limit)
       .map(clone);
@@ -1042,7 +1048,9 @@ export class MemoryStore implements VoxStore {
       if (!current) throw new Error("Realize commission not found");
       if (current.updated_at !== expectedUpdatedAt) throw new Error("Realize commission changed concurrently");
       if (current.commission.commissioner_id !== record.commission.commissioner_id || current.commission.creator_id !== record.commission.creator_id || current.commission.capability_id !== record.commission.capability_id || current.source_post_id !== record.source_post_id || !equalCanonical(current.commission.requested_generation_parameters, record.commission.requested_generation_parameters) || current.commission.rights_agreement_reference !== record.commission.rights_agreement_reference) throw new Error("immutable Realize commission terms cannot be changed");
+      if (current.fulfillment_request && (!record.fulfillment_request || !equalCanonical(current.fulfillment_request, record.fulfillment_request) || current.commission.fulfillment_request_id !== record.commission.fulfillment_request_id)) throw new Error("persisted Realize provider request and idempotency key are immutable");
       if (current.nft_media_ids && JSON.stringify(current.nft_media_ids) !== JSON.stringify(record.nft_media_ids)) throw new Error("Realize NFT media binding is immutable");
+      if (current.nft_publication_consent === true && (record.nft_publication_consent !== true || record.nft_publication_consent_at !== current.nft_publication_consent_at)) throw new Error("Realize NFT publication consent is immutable");
       if (current.commission.quote_id && current.commission.quote_id !== record.commission.quote_id) throw new Error("commission quote id is immutable after issuance");
       if (current.commission.accepted_quote_hash && current.commission.accepted_quote_hash !== record.commission.accepted_quote_hash) throw new Error("accepted quote hash is immutable");
       if (current.commission.accepted_quote_hash && Boolean(current.nft_publication_consent) !== Boolean(record.nft_publication_consent)) throw new Error("Realize NFT publication consent is immutable after quote acceptance");
@@ -1080,8 +1088,40 @@ export class MemoryStore implements VoxStore {
   }
 
   async listRealizeCommissions(limit: number): Promise<RealizeCommissionRecord[]> {
-    return [...this.realizeCommissions.values()].filter((record) => !["DRAFT", "FAILED", "SETTLED", "REFUNDED", "EXPIRED"].includes(record.commission.state))
-      .sort((left, right) => left.updated_at.localeCompare(right.updated_at)).slice(0, limit).map(clone);
+    const boundedLimit = Math.min(Math.max(Math.floor(limit), 1), 100);
+    const generationStates = new Set(["FUNDED", "GENERATING"]);
+    const deliveryStates = new Set(["COMPLETED", "REFUND_PENDING"]);
+    const paymentStates = new Set(["QUOTED", "AWAITING_PAYMENT"]);
+    // Keep most slots for paid generation while reserving room for delivery and quote-expiry work.
+    const deliveryReserve = boundedLimit > 2 ? Math.max(1, Math.floor(boundedLimit / 5)) : boundedLimit === 2 ? 1 : 0;
+    const paymentReserve = boundedLimit > 2 ? Math.max(1, Math.floor(boundedLimit / 5)) : 0;
+    const generationReserve = boundedLimit - deliveryReserve - paymentReserve;
+    const byAge = (left: RealizeCommissionRecord, right: RealizeCommissionRecord) => left.updated_at.localeCompare(right.updated_at) || left.commission.commission_id.localeCompare(right.commission.commission_id);
+    const group = (states: Set<string>) => [...this.realizeCommissions.values()].filter((record) => states.has(record.commission.state)).sort(byAge);
+    const generation = group(generationStates);
+    const selectedGeneration = generation.slice(0, generationReserve);
+    let remaining = boundedLimit - selectedGeneration.length;
+    const delivery = group(deliveryStates);
+    const deliveryLimit = Math.min(remaining - paymentReserve, deliveryReserve + (generationReserve - selectedGeneration.length));
+    const selectedDelivery = delivery.slice(0, deliveryLimit);
+    remaining -= selectedDelivery.length;
+    const payments = group(paymentStates);
+    const paymentLimit = Math.min(remaining, paymentReserve + (generationReserve - selectedGeneration.length) + (deliveryReserve - selectedDelivery.length));
+    const selectedPayments = payments.slice(0, paymentLimit);
+    remaining -= selectedPayments.length;
+    if (remaining > 0) {
+      const additionalDelivery = delivery.slice(selectedDelivery.length, selectedDelivery.length + remaining);
+      selectedDelivery.push(...additionalDelivery);
+      remaining -= additionalDelivery.length;
+    }
+    if (remaining > 0) {
+      const additionalGeneration = generation.slice(selectedGeneration.length, selectedGeneration.length + remaining);
+      selectedGeneration.push(...additionalGeneration);
+      remaining -= additionalGeneration.length;
+    }
+    if (remaining > 0) selectedPayments.push(...payments.slice(selectedPayments.length, selectedPayments.length + remaining));
+    const unique = new Map([...selectedGeneration, ...selectedDelivery, ...selectedPayments].map((record) => [record.commission.commission_id, record]));
+    return [...unique.values()].slice(0, boundedLimit).map(clone);
   }
 
   async listRealizeCommissionsForHuman(humanId: string, limit: number): Promise<RealizeCommissionRecord[]> {

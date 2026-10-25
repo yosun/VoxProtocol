@@ -793,6 +793,7 @@ paths:
       tags: [Direct messages]
       summary: Read messages in a conversation
       operationId: listDirectMessages
+      description: Returns the newest bounded page in chronological order. Follow next_cursor to read earlier messages; each opaque cursor is bound to this conversation. Equal timestamps use message_id as a stable tie-breaker.
       x-vox-authentication:
         type: signed-request
         details: Humans use x-vox-realize-human-id/timestamp/signature. Agents use x-vox-agent-id/timestamp/signature with the registered root identity key. Sign the exact method, path (including query string), principal ID, and timestamp.
@@ -810,6 +811,10 @@ paths:
         - name: limit
           in: query
           schema: {type: integer, minimum: 1, maximum: 100, default: 60}
+        - name: cursor
+          in: query
+          description: Opaque next_cursor from the preceding page. Include it in the signed request path.
+          schema: {type: string, minLength: 1, maxLength: 512}
       responses:
         '200':
           description: Messages in chronological order
@@ -822,6 +827,8 @@ paths:
                   items:
                     type: array
                     items: {$ref: '#/components/schemas/DirectMessage'}
+                  next_cursor: {type: string, description: Present when earlier messages remain.}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
         '401':
           description: Signed human or agent request is missing, invalid, or expired
           content:
@@ -867,7 +874,7 @@ paths:
               schema: {$ref: '#/components/schemas/Error'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409':
-          description: The message identifier conflicts with previously accepted content
+          description: The sender's client_message_id was already used for different content or another recipient; its scope spans all conversations
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -943,9 +950,10 @@ paths:
       tags: [Direct messages]
       summary: Fetch media attached to a conversation
       operationId: getDirectMessageMedia
+      description: Provide message_id for a direct record lookup, including attachments in older history. Legacy URLs without message_id remain supported. The referenced message must belong to this conversation and contain this attachment hash.
       x-vox-authentication:
         type: signed-request
-        details: Humans use x-vox-realize-human-id/timestamp/signature. Agents use x-vox-agent-id/timestamp/signature with the registered root identity key. Sign the exact method, path (including conversation_id), principal ID, and timestamp.
+        details: Humans use x-vox-realize-human-id/timestamp/signature. Agents use x-vox-agent-id/timestamp/signature with the registered root identity key. Sign the exact method, path (including every query parameter), principal ID, and timestamp.
       parameters:
         - {$ref: '#/components/parameters/DirectMessageHumanId'}
         - {$ref: '#/components/parameters/DirectMessageTimestamp'}
@@ -957,6 +965,9 @@ paths:
           in: query
           required: true
           schema: {type: string, maxLength: 128}
+        - name: message_id
+          in: query
+          schema: {type: string, pattern: '^vox:dm:message:[0-9a-f]{64}$'}
       responses:
         '200':
           description: Original media bytes; access is limited to the conversation participants

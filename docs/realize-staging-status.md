@@ -4,6 +4,63 @@ Verified 2026-10-12. This file contains public resource metadata only.
 The current production state is summarized first; later dated sections retain
 historical snapshots and may describe superseded deployment states.
 
+## Mainnet readiness preflight (2026-10-13, refreshed)
+
+- Current read-only discovery found production VOX routing 100% to
+  `vox-api-monad-nft-claim-20261013`, with
+  `VOX_REALIZE_MAINNET_ENABLED=true`. Populi routes 100% to
+  `cruelty-web-00149-hj4`, with `POPULI_REALIZE_ENABLED=true`. The preceding
+  provider preflight returned HTTP 200 for Bob and Luna capabilities and Bob's
+  short-form input schema. Bob's active payout configuration is version 6 and
+  Luna's version 1, both using Mainnet, `https://cruelty.cam`, the existing
+  treasury, and the approved 25/70/5 policy.
+- Mainnet genesis, classic SPL Token ownership, official USDC mint, and treasury
+  owner were verified through finalized public RPC reads. The treasury USDC
+  account exists with zero USDC; its owner has 8,506,560 lamports (0.00850656
+  SOL), above the settlement service's 0.005 SOL reserve before transaction
+  fees. No new treasury funding is required by that observed reserve check.
+- Production Firestore has 18 Realize commissions: 12 `QUOTED` and six
+  `AWAITING_PAYMENT`. None has a verified funding signature. This is evidence
+  of the observed records, not a live payment/render acceptance test.
+- The five-minute reconciliation schedule is enabled, but its deployed image
+  is still the older API digest and the job has been observed returning HTTP
+  401: it sends a bearer token while the API requires
+  `x-vox-internal-token`. The release branch fixes the header, and an integration
+  regression calls the actual API route with correct and incorrect tokens.
+- Settlement still routes 100% to `vox-realize-settlement-00001-25s`. An
+  authenticated read of a nonexistent payment intent's resolution returns
+  HTTP 404 on that live revision, and HTTP 200 with `kind: none` on the
+  no-traffic `refund-candidate` revision `vox-realize-settlement-00004-cuw`.
+  The updated settlement source still requires a protected production release.
+- Both live and candidate `/healthz` requests return a Google frontend 404
+  without reaching the application. Cloud Run reserves some paths ending in
+  `z`. The source now exposes `/health` and the protected deployment smoke
+  check uses it; `/healthz` remains a compatibility alias for local consumers.
+- The Admin human identity is stored in Secret Manager as
+  `vox-realize-admin-human-identity`, and the protected GitHub variable
+  `VOX_REALIZE_OPERATOR_HUMAN_IDS` is configured. The currently serving API
+  revision still has no operator allowlist in its runtime environment, so the
+  protected release must inject it before a failed Mainnet render can receive
+  its signed refund approval. Do not reuse the staging fixture identity or
+  silently grant access.
+- Quote allocations currently name treasury holds for provider, character
+  owner, and VOX. These are ledger liabilities, not completed external payouts.
+  Do not invent external payout destinations to complete a rehearsal.
+- The release branch now promotes settlement and updates the reconciliation
+  job before promoting the API, so new API work cannot arrive before its
+  dependencies. Its full test suite and mocked checkout E2E pass. The protected
+  release is still pending; complete it and verify scheduled recovery before an
+  authorized bounded Mainnet rehearsal. The customer then needs a Wallet
+  Standard wallet on Mainnet with the fresh quote's exact USDC amount and SOL
+  for fees. Simulate first; obtain approval for the exact payer, recipient, token,
+  amount, fee ceiling, cluster, and single provider render before signing.
+- Acceptance evidence must include the finalized payment transaction, the
+  persisted verified funding receipt, exactly one provider fulfillment request,
+  the delivered MP4's media type/length/hash, signed provenance, and the correct
+  treasury-held revenue ledger entries. Production refund recovery and real
+  browser-wallet signing remain unverified. No quote, payment, render,
+  settlement, payout, or refund was initiated by this preflight.
+
 ## Current approved Mainnet policy (2026-10-12)
 
 - Mainnet uses backend-managed transfers of standard Solana SPL USDC. It is not
@@ -16,14 +73,15 @@ historical snapshots and may describe superseded deployment states.
 - Bob and Luna are VOX first-party AI characters. The VOX first-party policy
   needs no separate creator-signed rights agreement or character-specific
   wallet. Customers still review and accept the quote before generation. Luna's
-  Mainnet first-party setup was authorized on 2026-10-12 and remains pending the
-  protected release and her payout configuration.
+  Mainnet first-party setup was authorized on 2026-10-12; her active payout
+  configuration is version 1 in the refreshed preflight above.
 - The existing GCP treasury is the only approved treasury identity. Do not
   invent recipient wallets. A share held in the treasury is a recorded
   allocation/liability until an authorized settlement pays its recipient.
-- Production Mainnet Realize is enabled on `vox-api-00091-biw`, with 100%
-  traffic, and Bob's active Firestore payout configuration is version 6. The
-  API retains its legacy `VOX_PAYMENT_MODE=mock` for other payment routes;
+- Production Mainnet Realize remains enabled on the current API deployment
+  recorded in the refreshed preflight above. Bob's active Firestore payout
+  configuration is version 6. The API retains its legacy
+  `VOX_PAYMENT_MODE=mock` for other payment routes;
   Mainnet Realize uses a separate direct classic SPL USDC path pinned to
   `solana:mainnet-beta`. No real customer payment was submitted.
 - The live minimum is 1 USDC and the ceiling is 10,000 USDC. A quote reaches

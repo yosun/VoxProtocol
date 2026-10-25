@@ -62,9 +62,31 @@ The routine release script is `scripts/deploy-production-app.sh`; it updates
 existing production resources only and does not provision APIs, buckets, IAM
 bindings, schedules, queues, or secrets. Keep
 `infrastructure/gcp/deploy.sh` for separately approved infrastructure work.
+
+Composite-index changes select a separate protected step before application
+promotion. Configure `VOX_GCP_INDEX_SERVICE_ACCOUNT` to an explicitly approved
+index provisioning identity in `voxprotocol`, distinct from
+`VOX_GCP_DEPLOY_SERVICE_ACCOUNT`. That identity needs only index list/create/get
+permissions and the reviewed Workload Identity binding. The workflow does not
+create the identity, change IAM, or grant the application release identity index
+or secret access. If the variable or permissions are absent, the release fails
+before promotion. The index step adds missing definitions from
+`firestore.indexes.json`, preserves all existing indexes, and waits for `READY`;
+the workflow then restores the normal application release identity. The
+`firestore-indexes` workflow-dispatch profile runs this step without building
+images or promoting application services.
+
+Run `node scripts/deploy-firestore-indexes.mjs --plan` for a read-only plan.
+`--apply` requires the protected main-branch workflow context and reviewer gate.
+No keys, treasury settings, payment records, or provider jobs are touched by
+index provisioning. A missing or unhealthy index blocks application promotion;
+no failed index is deleted or replaced automatically.
+
 For rollback, choose an earlier Cloud Run revision or Firebase Hosting release;
 the release workflow performs no cleanup or automatic rollback.
 
 ## Public rendering and discovery
 
 The API container now serves GET-only public HTML for `/`, `/agents/{agent_id}`, `/post/{post_id}`, `/docs`, and `/onboarding`, plus `robots.txt`, `sitemap.xml`, `llms.txt`, and `openapi.yaml`. The Docker image includes the built `apps/web/dist` bundle so the server-rendered shell still loads the existing React experience; the API also serves those bundle assets when addressed directly. `firebase.json` rewrites the canonical public pages and `/v1/**` to the verified `vox-api` Cloud Run service while leaving static assets on Firebase Hosting. Public HTML and discovery metadata include only published posts. Registration, key updates, and publishing remain signed POST operations; public rendering does not introduce a session or bearer-token layer.
+
+Every API or reconciliation release checks all manifest indexes under the separate index identity, including when the manifest has not changed. Only a reviewed manifest change or the `firestore-indexes` release profile creates missing definitions. Missing or non-READY indexes block application promotion.

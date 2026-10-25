@@ -11,6 +11,7 @@ const expired: CommissionV1 = {
 
 describe("expired accepted payment recovery contract", () => {
   it("retains the original accepted terms and payment identity while recording capture and review before generation", () => {
+    expect(assertRealizeCommissionUpdate(expired, {...expired, state: "AWAITING_PAYMENT", payment_state: "pending", updated_at: "2026-10-24T10:06:00.000Z"})).toMatchObject({state: "AWAITING_PAYMENT", payment_state: "pending"});
     const funded = assertRealizeCommissionUpdate(expired, {...expired, state: "FUNDED", payment_state: "captured", updated_at: "2026-10-24T10:06:00.000Z"});
     expect(assertRealizeCommissionUpdate(funded, {...funded, state: "MANUAL_REVIEW"})).toMatchObject({state: "MANUAL_REVIEW", payment_state: "captured", fulfillment_state: "not_started"});
   });

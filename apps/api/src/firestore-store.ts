@@ -150,6 +150,7 @@ export class FirestoreStore implements VoxStore {
   private readonly agents;
   private readonly humans;
   private readonly directMessageConversations;
+  private readonly directMessageIdempotency;
   private readonly usernames;
   private readonly posts;
   private readonly characterConversations;
@@ -188,6 +189,7 @@ export class FirestoreStore implements VoxStore {
     this.agents = this.db.collection("vox_agents");
     this.humans = this.db.collection("vox_humans");
     this.directMessageConversations = this.db.collection("vox_direct_message_conversations");
+    this.directMessageIdempotency = this.db.collection("vox_direct_message_idempotency");
     this.usernames = this.db.collection("vox_usernames");
     this.posts = this.db.collection("vox_posts");
     this.characterConversations = this.db.collection("vox_character_conversations");
@@ -339,25 +341,44 @@ export class FirestoreStore implements VoxStore {
       .sort((left, right) => right.updated_at.localeCompare(left.updated_at) || right.conversation_id.localeCompare(left.conversation_id));
   }
 
-  async listDirectMessages(conversationId: string, limit: number): Promise<DirectMessageRecord[]> {
-    const snapshot = await this.directMessageConversations.doc(conversationId).collection("messages").orderBy("created_at", "desc").limit(limit).get();
+  async getDirectMessage(conversationId: string, messageId: string): Promise<DirectMessageRecord | undefined> {
+    const snapshot = await this.directMessageConversations.doc(conversationId).collection("messages").doc(messageId).get();
+    const message = snapshot.exists ? snapshot.data() as DirectMessageRecord : undefined;
+    return message?.conversation_id === conversationId ? message : undefined;
+  }
+
+  async listDirectMessages(conversationId: string, limit: number, before?: {created_at: string; message_id: string}): Promise<DirectMessageRecord[]> {
+    let query = this.directMessageConversations.doc(conversationId).collection("messages").orderBy("created_at", "desc").orderBy("message_id", "desc");
+    if (before) query = query.startAfter(before.created_at, before.message_id);
+    const snapshot = await query.limit(limit).get();
     return snapshot.docs.map((document) => document.data() as DirectMessageRecord).reverse();
   }
 
   async createDirectMessage(conversation: DirectMessageConversationRecord, message: DirectMessageRecord): Promise<{message: DirectMessageRecord; created: boolean}> {
     const conversationRef = this.directMessageConversations.doc(conversation.conversation_id);
     const messageRef = conversationRef.collection("messages").doc(message.message_id);
+    const reservationRef = this.directMessageIdempotency.doc(idempotencyId(message.sender_id, message.client_message_id));
     return this.db.runTransaction(async (transaction) => {
-      const [conversationSnapshot, messageSnapshot] = await Promise.all([transaction.get(conversationRef), transaction.get(messageRef)]);
+      const [conversationSnapshot, messageSnapshot, reservationSnapshot] = await Promise.all([transaction.get(conversationRef), transaction.get(messageRef), transaction.get(reservationRef)]);
+      const reservation = reservationSnapshot.exists ? reservationSnapshot.data() as {conversation_id: string; message_id: string} : undefined;
+      if (reservation && (reservation.conversation_id !== message.conversation_id || reservation.message_id !== message.message_id)) throw new Error("client_message_id has already been used for a different message");
+      if (reservation && !messageSnapshot.exists) throw new Error("direct message idempotency reservation points to a missing message");
+      // Older deployments stored IDs only underneath each conversation. Use an
+      // indexed exact lookup before reserving a new global sender/client ID.
+      // Two matches are already a conflict; no history scan or truncation is used.
+      const legacy = !reservation ? await transaction.get(this.db.collectionGroup("messages").where("sender_id", "==", message.sender_id).where("client_message_id", "==", message.client_message_id).limit(2)) : undefined;
+      if (legacy && (legacy.size > 1 || legacy.docs.some((document) => document.ref.path !== messageRef.path))) throw new Error("client_message_id has already been used for a different message");
       if (messageSnapshot.exists) {
         const existing = messageSnapshot.data() as DirectMessageRecord;
         if (!canonicalEqual({...existing, signature: "", created_at: "", signed_at: ""}, {...message, signature: "", created_at: "", signed_at: ""})) throw new Error("direct message id conflicts with existing content");
+        if (!reservation) transaction.create(reservationRef, {sender_id: message.sender_id, client_message_id: message.client_message_id, conversation_id: message.conversation_id, message_id: message.message_id});
         return {message: existing, created: false};
       }
       const current = conversationSnapshot.exists ? conversationSnapshot.data() as DirectMessageConversationRecord : undefined;
       if (current && (current.participants[0] !== conversation.participants[0] || current.participants[1] !== conversation.participants[1])) throw new Error("direct message conversation participants conflict");
       const nextConversation = !current || conversation.updated_at >= current.updated_at ? conversation : current;
       transaction.create(messageRef, message);
+      transaction.create(reservationRef, {sender_id: message.sender_id, client_message_id: message.client_message_id, conversation_id: message.conversation_id, message_id: message.message_id});
       transaction.set(conversationRef, nextConversation);
       return {message, created: true};
     });
@@ -1137,7 +1158,9 @@ export class FirestoreStore implements VoxStore {
       const current = snapshot.data() as RealizeCommissionRecord;
       if (current.updated_at !== expectedUpdatedAt) throw new Error("Realize commission changed concurrently");
       if (current.commission.commissioner_id !== record.commission.commissioner_id || current.commission.creator_id !== record.commission.creator_id || current.commission.capability_id !== record.commission.capability_id || current.source_post_id !== record.source_post_id || !canonicalEqual(current.commission.requested_generation_parameters, record.commission.requested_generation_parameters) || current.commission.rights_agreement_reference !== record.commission.rights_agreement_reference) throw new Error("immutable Realize commission terms cannot be changed");
+      if (current.fulfillment_request && (!record.fulfillment_request || !canonicalEqual(current.fulfillment_request, record.fulfillment_request) || current.commission.fulfillment_request_id !== record.commission.fulfillment_request_id)) throw new Error("persisted Realize provider request and idempotency key are immutable");
       if (current.nft_media_ids && JSON.stringify(current.nft_media_ids) !== JSON.stringify(record.nft_media_ids)) throw new Error("Realize NFT media binding is immutable");
+      if (current.nft_publication_consent === true && (record.nft_publication_consent !== true || record.nft_publication_consent_at !== current.nft_publication_consent_at)) throw new Error("Realize NFT publication consent is immutable");
       if (current.commission.quote_id && current.commission.quote_id !== record.commission.quote_id) throw new Error("commission quote id is immutable after issuance");
       if (current.commission.accepted_quote_hash && current.commission.accepted_quote_hash !== record.commission.accepted_quote_hash) throw new Error("accepted quote hash is immutable");
       if (current.commission.accepted_quote_hash && Boolean(current.nft_publication_consent) !== Boolean(record.nft_publication_consent)) throw new Error("Realize NFT publication consent is immutable after quote acceptance");
@@ -1189,8 +1212,45 @@ export class FirestoreStore implements VoxStore {
   }
 
   async listRealizeCommissions(limit: number): Promise<RealizeCommissionRecord[]> {
-    const snapshot = await this.realizeCommissions.where("commission.state", "in", ["QUOTED", "AWAITING_PAYMENT", "FUNDED", "GENERATING", "COMPLETED", "REFUND_PENDING", "MANUAL_REVIEW"]).get();
-    return snapshot.docs.map((doc) => doc.data() as RealizeCommissionRecord).sort((left, right) => left.updated_at.localeCompare(right.updated_at)).slice(0, limit);
+    const boundedLimit = Math.min(Math.max(Math.floor(limit), 1), 100);
+    const generationStates = ["FUNDED", "GENERATING"];
+    const deliveryStates = ["COMPLETED", "REFUND_PENDING"];
+    const paymentStates = ["QUOTED", "AWAITING_PAYMENT"];
+    // Keep most slots for paid generation while reserving room for delivery and quote-expiry work.
+    const deliveryReserve = boundedLimit > 2 ? Math.max(1, Math.floor(boundedLimit / 5)) : boundedLimit === 2 ? 1 : 0;
+    const paymentReserve = boundedLimit > 2 ? Math.max(1, Math.floor(boundedLimit / 5)) : 0;
+    const generationReserve = boundedLimit - deliveryReserve - paymentReserve;
+    const queryStates = async (states: string[], queryLimit: number) => {
+      if (queryLimit <= 0) return [];
+      const snapshot = await this.realizeCommissions.where("commission.state", "in", states).orderBy("updated_at", "asc").limit(queryLimit).get();
+      return snapshot.docs.map((doc) => doc.data() as RealizeCommissionRecord);
+    };
+    const generation = await queryStates(generationStates, generationReserve);
+    let remaining = boundedLimit - generation.length;
+    const deliveryLimit = Math.min(remaining - paymentReserve, deliveryReserve + (generationReserve - generation.length));
+    const delivery = await queryStates(deliveryStates, deliveryLimit);
+    remaining -= delivery.length;
+    const paymentLimit = Math.min(remaining, paymentReserve + (generationReserve - generation.length) + (deliveryReserve - delivery.length));
+    const payments = await queryStates(paymentStates, paymentLimit);
+    remaining -= payments.length;
+    if (remaining > 0) {
+      const additionalDelivery = await queryStates(deliveryStates, delivery.length + remaining);
+      const additional = additionalDelivery.slice(delivery.length);
+      delivery.push(...additional);
+      remaining -= additional.length;
+    }
+    if (remaining > 0) {
+      const additionalGeneration = await queryStates(generationStates, generation.length + remaining);
+      const additional = additionalGeneration.slice(generation.length);
+      generation.push(...additional);
+      remaining -= additional.length;
+    }
+    if (remaining > 0) {
+      const additionalPayments = await queryStates(paymentStates, payments.length + remaining);
+      payments.push(...additionalPayments.slice(payments.length));
+    }
+    const unique = new Map([...generation, ...delivery, ...payments].map((record) => [record.commission.commission_id, record]));
+    return [...unique.values()].slice(0, boundedLimit);
   }
 
   async listRealizeCommissionsForHuman(humanId: string, limit: number): Promise<RealizeCommissionRecord[]> {

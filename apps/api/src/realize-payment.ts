@@ -11,6 +11,8 @@ export interface RealizePaymentVerification {
   finalized: boolean;
   matched: boolean;
   reason?: string;
+  /** Finalized Solana transaction block time, in Unix seconds. */
+  block_time?: number;
 }
 
 export interface MainnetSplUsdcFundingAuthorization {
@@ -153,7 +155,7 @@ export class MainnetSplUsdcRealizePaymentRail implements RealizePaymentRail<Main
       payer_address: payerWallet,
       payment_reference: funding.payment_reference
     });
-    return {finalized: result.finalized, matched: result.matched && result.network_matches !== false, ...(!result.matched || result.network_matches === false ? {reason: result.reason ?? "Finalized transaction does not match the Mainnet quote-bound USDC payment intent."} : {})};
+    return {finalized: result.finalized, matched: result.matched && result.network_matches !== false, ...(result.block_time === undefined ? {} : {block_time: result.block_time}), ...(!result.matched || result.network_matches === false ? {reason: result.reason ?? "Finalized transaction does not match the Mainnet quote-bound USDC payment intent."} : {})};
   }
 }
 

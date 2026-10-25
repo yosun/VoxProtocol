@@ -14,6 +14,17 @@ afterEach(() => {
 });
 
 describe("Populi Realize HTTP client", () => {
+  it("preserves only a schema-verified missing-job error for safe submission recovery", async () => {
+    process.env.VOX_TEST_POPULI_API_TOKEN = "test-token";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({protocol_version: "realize/1", code: "COMMISSION_NOT_FOUND", message: "Fulfillment request was not found.", retryable: false}), {status: 404}))
+      .mockResolvedValueOnce(new Response(JSON.stringify({code: "COMMISSION_NOT_FOUND"}), {status: 404}));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new HttpPopuliRealizeClient();
+    await expect(client.getFulfillment(configuration, "job:test")).rejects.toMatchObject({status: 404, code: "COMMISSION_NOT_FOUND"});
+    await expect(client.getFulfillment(configuration, "job:test")).rejects.toMatchObject({status: 404, code: undefined});
+  });
+
   it("loads a configured schema and its creator query while refusing other origins or creators", async () => {
     process.env.VOX_TEST_POPULI_API_TOKEN = "test-token";
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({type: "object", properties: {concept: {type: "string"}}}), {status: 200}));
@@ -54,5 +65,8 @@ describe("Populi Realize HTTP client", () => {
     const init = fetchMock.mock.calls[0]?.[1];
     expect(new Headers(init?.headers).get("idempotency-key")).toBe(request.idempotency_key);
     expect(new Headers(init?.headers).get("authorization")).toBe("Bearer test-token");
+    expect(JSON.parse(init!.body as string)).toEqual(request);
+    await new HttpPopuliRealizeClient().requestFulfillment(configuration, request);
+    expect(fetchMock.mock.calls[1]?.[1]?.body).toBe(init!.body);
   });
 });

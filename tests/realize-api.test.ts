@@ -4,7 +4,7 @@ import {readFileSync} from "node:fs";
 import {buildApp} from "../apps/api/src/app.js";
 import {MemoryStore} from "../apps/api/src/store.js";
 import {createAgent, createHuman} from "@vox/identity";
-import {parseSecretKey, realizeClientRequestSigningPayload, signBytes} from "@vox/protocol";
+import {parseSecretKey, ProviderFulfillmentRequestV1Schema, realizeClientRequestSigningPayload, signBytes} from "@vox/protocol";
 import {RealizeProviderHttpError, type PopuliRealizeClient, type RealizeCreatorPayoutConfigurationV1} from "../apps/api/src/realize-engine.js";
 import type {RealizeCommissionRecord} from "../apps/api/src/types.js";
 
@@ -25,7 +25,35 @@ async function setup() {
   const configuration = {creator_id: creator.registration.agent_id, version: 1, rights_agreement_reference: "rights:staging-pinned"} as RealizeCreatorPayoutConfigurationV1;
   await store.createRealizePayoutConfiguration(configuration);
   const now = new Date().toISOString();
-  const record = {commission: {protocol_version: "realize/1", commission_id: quote.commission_id, commissioner_id: human.registration.human_id, creator_id: creator.registration.agent_id, capability_id: "video:short-form", requested_generation_parameters: quote.requested_generation_parameters, rights_agreement_reference: quote.rights_agreement_reference, state: "GENERATING", payment_state: "captured", fulfillment_state: "queued", quote_id: quote.quote_id, accepted_quote_hash: quote.canonical_quote_hash, fulfillment_request_id: "fulfillment:staging", created_at: now, updated_at: now}, fulfillment_request: {generation_provider_id: "provider:video:example"}, fulfillment_deadline_at: new Date(Date.now() + 600_000).toISOString(), settlement_status: "not_started", created_at: now, updated_at: now} as RealizeCommissionRecord;
+  const fulfillmentRequest = ProviderFulfillmentRequestV1Schema.parse({
+    protocol_version: "realize/1",
+    fulfillment_request_id: "fulfillment:staging",
+    commission_id: quote.commission_id,
+    quote_id: quote.quote_id,
+    accepted_quote_hash: quote.canonical_quote_hash,
+    generation_provider_id: "provider:video:example",
+    requested_generation_parameters: quote.requested_generation_parameters,
+    output_media_types: ["video/mp4"],
+    provider_quote_id: "provider-quote:staging",
+    callback_uri: "https://vox.example.test/v1/realize/webhooks/populi",
+    idempotency_key: "fulfillment:staging",
+    created_at: now,
+    funding_authorization: {
+      protocol_version: "realize/1",
+      authorization_id: "funding-authorization:staging",
+      payment_intent_id: "payment-intent:staging",
+      commission_id: quote.commission_id,
+      accepted_quote_hash: quote.canonical_quote_hash,
+      asset: "USDC",
+      total_amount_usdc_atomic: quote.total_amount_usdc_atomic,
+      provider_amount_usdc_atomic: quote.provider_cost_usdc_atomic ?? quote.provider_base_price_usdc_atomic,
+      network_id: "solana:devnet",
+      payment_reference: "payment:staging",
+      verified_by: "instance:staging",
+      verified_at: now
+    }
+  });
+  const record = {commission: {protocol_version: "realize/1", commission_id: quote.commission_id, commissioner_id: human.registration.human_id, creator_id: creator.registration.agent_id, capability_id: "video:short-form", requested_generation_parameters: quote.requested_generation_parameters, rights_agreement_reference: quote.rights_agreement_reference, state: "GENERATING", payment_state: "captured", fulfillment_state: "queued", quote_id: quote.quote_id, accepted_quote_hash: quote.canonical_quote_hash, fulfillment_request_id: "fulfillment:staging", created_at: now, updated_at: now}, fulfillment_request: fulfillmentRequest, fulfillment_deadline_at: new Date(Date.now() + 600_000).toISOString(), settlement_status: "not_started", created_at: now, updated_at: now} as RealizeCommissionRecord;
   await store.createRealizeCommission(record, "test-key");
   const getFulfillment = vi.fn(async () => ({protocol_version: "realize/1" as const, fulfillment_request_id: "fulfillment:staging", commission_id: quote.commission_id, generation_provider_id: "provider:video:example", status: "generating" as const, outputs: []}));
   const requestFulfillment = vi.fn();
@@ -57,13 +85,13 @@ describe("Realize API checkout integration", () => {
     expect(getFulfillment).toHaveBeenCalledOnce();
   });
 
-  it("rotates blocked commissions so later paid work is eventually reconciled", async () => {
+  it("keeps manual-review records out of the active paid reconciliation slots", async () => {
     const {store, record, getFulfillment} = await setup();
     await store.createRealizeCommission({...record, commission: {...record.commission, commission_id: "old:manual-review", state: "MANUAL_REVIEW"}, fulfillment_request: undefined, updated_at: "2026-01-01T00:00:00.000Z"});
     const run = () => app!.inject({method: "POST", url: "/v1/internal/realize/reconcile", headers: {"x-vox-internal-token": "test-only-reconcile-token"}, payload: {limit: 1}});
     const first = await run();
-    expect(first.json().commissions[0]).toEqual({commission_id: "old:manual-review", state: "MANUAL_REVIEW"});
-    expect(getFulfillment).not.toHaveBeenCalled();
+    expect(first.json().commissions[0]).toEqual({commission_id: record.commission.commission_id, state: "GENERATING"});
+    expect(getFulfillment).toHaveBeenCalledOnce();
     const second = await run();
     expect(second.json().commissions[0]).toEqual({commission_id: record.commission.commission_id, state: "GENERATING"});
     expect(getFulfillment).toHaveBeenCalledOnce();
@@ -98,6 +126,21 @@ describe("Realize API checkout integration", () => {
     expect((await request(path)).status).toBe(200);
     expect(getFulfillment).toHaveBeenCalledOnce();
     expect(requestFulfillment).not.toHaveBeenCalled();
+  });
+
+  it("holds an unbound legacy provider request instead of resubmitting it", async () => {
+    const {record, store, request, getFulfillment, requestFulfillment} = await setup();
+    const storedRequest = record.fulfillment_request!;
+    getFulfillment.mockRejectedValueOnce(new RealizeProviderHttpError(404, 5_000, "COMMISSION_NOT_FOUND"));
+    requestFulfillment.mockResolvedValueOnce({protocol_version: "realize/1", fulfillment_request_id: storedRequest.fulfillment_request_id, commission_id: record.commission.commission_id, generation_provider_id: "provider:video:example", status: "queued", outputs: []});
+    const response = await request(`/v1/realize/commissions/${encodeURIComponent(record.commission.commission_id)}`);
+    expect(response.status).toBe(200);
+    expect(getFulfillment).toHaveBeenCalledOnce();
+    expect(requestFulfillment).not.toHaveBeenCalled();
+    expect(response.body.commission.state).toBe("MANUAL_REVIEW");
+    expect(storedRequest.idempotency_key).toBe(storedRequest.fulfillment_request_id);
+    const persisted = await store.getRealizeCommission(record.commission.commission_id);
+    await expect(store.updateRealizeCommission({...persisted!, fulfillment_request: {...storedRequest, idempotency_key: "different-request"}}, persisted!.updated_at)).rejects.toThrow("persisted Realize provider request and idempotency key are immutable");
   });
 
   it("keeps provider failure pending before deadline and never resubmits a generation job", async () => {

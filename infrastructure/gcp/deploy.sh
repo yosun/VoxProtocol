@@ -346,7 +346,8 @@ for ((index = 0; index < INDEX_COUNT; index += 1)); do
     field_config="$(INDEX_INDEX="$index" FIELD_INDEX="$field" node -e 'const f=require("./infrastructure/gcp/firestore.indexes.json").indexes[Number(process.env.INDEX_INDEX)].fields[Number(process.env.FIELD_INDEX)]; process.stdout.write(f.order ? `field-path=${f.fieldPath},order=${f.order.toLowerCase()}` : `field-path=${f.fieldPath},array-config=${f.arrayConfig.toLowerCase()}`)')"
     field_args+=(--field-config="$field_config")
   done
-  INDEX_OUTPUT="$(gcloud firestore indexes composite create --collection-group="$collection_group" --database="(default)" --project="$PROJECT_ID" "${field_args[@]}" 2>&1)" || {
+  query_scope="$(INDEX_INDEX="$index" node -e 'const c=require("./infrastructure/gcp/firestore.indexes.json").indexes[Number(process.env.INDEX_INDEX)]; if (!["COLLECTION", "COLLECTION_GROUP"].includes(c.queryScope)) process.exit(2); process.stdout.write(c.queryScope === "COLLECTION_GROUP" ? "collection-group" : "collection")')"
+  INDEX_OUTPUT="$(gcloud firestore indexes composite create --collection-group="$collection_group" --query-scope="$query_scope" --database="(default)" --project="$PROJECT_ID" "${field_args[@]}" 2>&1)" || {
     if [[ "$INDEX_OUTPUT" != *"already exists"* && "$INDEX_OUTPUT" != *"ALREADY_EXISTS"* ]]; then
       echo "$INDEX_OUTPUT" >&2
       exit 1
@@ -357,7 +358,7 @@ INDEX_READY_TIMEOUT_SECONDS="${VOX_INDEX_READY_TIMEOUT_SECONDS:-900}"
 INDEX_DEADLINE="$(( $(date +%s) + INDEX_READY_TIMEOUT_SECONDS ))"
 while true; do
   INDEX_STATE="$(gcloud firestore indexes composite list --database="(default)" --project="$PROJECT_ID" --format=json)"
-  INDEX_READINESS="$(INDEX_STATE="$INDEX_STATE" node -e 'const wanted=require("./infrastructure/gcp/firestore.indexes.json").indexes; const raw=JSON.parse(process.env.INDEX_STATE || "[]"); const actual=Array.isArray(raw) ? raw : raw.indexes || []; const ready=actual.filter((index) => index.state === "READY"); const matches=(expected) => ready.some((index) => { const collectionGroup=index.collectionGroup || index.name?.match(/collectionGroups\/([^/]+)/)?.[1]; return collectionGroup === expected.collectionGroup && expected.fields.every((field) => index.fields.some((candidate) => candidate.fieldPath === field.fieldPath && (field.order ? candidate.order === field.order : candidate.arrayConfig === field.arrayConfig))); }); process.stdout.write(wanted.every(matches) ? "ready" : "pending");')"
+  INDEX_READINESS="$(INDEX_STATE="$INDEX_STATE" node --input-type=module -e 'import {readFileSync} from "node:fs"; import {missingReadyIndexes} from "./scripts/check-firestore-indexes.mjs"; const wanted=JSON.parse(readFileSync("./infrastructure/gcp/firestore.indexes.json", "utf8")).indexes; const raw=JSON.parse(process.env.INDEX_STATE || "[]"); const actual=Array.isArray(raw) ? raw : raw.indexes || []; process.stdout.write(missingReadyIndexes(wanted, actual).length === 0 ? "ready" : "pending");')"
   if [[ "$INDEX_READINESS" == "ready" ]]; then
     break
   fi

@@ -263,6 +263,7 @@ a { color: var(--blue-bright); text-decoration: none; }
 .post-detail .link-preview-attribution { right: 16px; bottom: 52px; }
 .post-detail .link-preview-attribution-label { display: block; }
 .post-detail .link-preview-source { min-height: 34px; padding-inline: 12px; font-size: .72rem; }
+.post-detail .link-preview-video-card .link-preview-body { grid-template-columns: minmax(0, 1fr); align-items: start; }
 .post-detail .link-preview { grid-template-columns: minmax(0, 1fr); }
 .post-detail .link-preview-media { height: auto; min-height: 0; aspect-ratio: 16 / 9; }
 .post-detail .link-preview-media img { min-height: 0; }

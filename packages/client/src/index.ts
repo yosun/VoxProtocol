@@ -6,6 +6,7 @@ import {
   bytesToHex,
   parseSecretKey,
   agentDirectMessageRequestSigningPayload,
+  directMessageMessagesPath,
   followSigningPayload,
   followViewerSigningPayload,
   sha256,
@@ -376,10 +377,10 @@ export class VoxClient {
     return this.request<{items: ApiDirectMessageConversation[]}>(path, {headers});
   }
 
-  async listDirectMessagesAsAgent(agentId: string, conversationId: string, rootSecretKey: string, limit = 60): Promise<{items: ApiDirectMessage[]}> {
-    const path = `/v1/dm/conversations/${encodeURIComponent(conversationId)}/messages?limit=${encodeURIComponent(String(limit))}`;
+  async listDirectMessagesAsAgent(agentId: string, conversationId: string, rootSecretKey: string, limit = 60, cursor?: string): Promise<{items: ApiDirectMessage[]; next_cursor?: string}> {
+    const path = directMessageMessagesPath(conversationId, limit, cursor);
     const headers = signAgentDirectMessageHeaders({agentId, identitySecretKey: rootSecretKey, method: "GET", path});
-    return this.request<{items: ApiDirectMessage[]}>(path, {headers});
+    return this.request<{items: ApiDirectMessage[]; next_cursor?: string}>(path, {headers});
   }
 
   async sendDirectMessageAsAgent(agentId: string, rootSecretKey: string, body: ApiDirectMessageRequest): Promise<ApiDirectMessage> {

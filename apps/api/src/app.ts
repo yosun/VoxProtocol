@@ -41,6 +41,7 @@ import {
   bytesToBase64Url,
   bytesToHex,
   canonicalBytes,
+  canonicalize,
   canTransitionRealizeCommission,
   computeRevenueRightsAgreementHash,
   computeRealizeQuoteHash,
@@ -92,6 +93,7 @@ import type {AgentProfileRecord, AnchorBatchRecord, AnchorClaimPatch, AvatarAsse
 import { verifyProofBundle, type ProofBundle } from "./verifier.js";
 import { AsyncMutex } from "./mutex.js";
 import {ConversationConflict, registerConversationRoutes, validateConversationPost} from "./conversations.js";
+import {decodeDirectMessageCursor, encodeDirectMessageCursor} from "./direct-message-pagination.js";
 import { createAnchorTaskDispatcherFromEnv, type AnchorTaskDispatcher } from "./tasks.js";
 import { registerPublicRoutes, defaultDocsDir, defaultWebDistDir } from "./public.js";
 import { canonicalUsername, isReservedUsername } from "./usernames.js";
@@ -252,9 +254,9 @@ function bytesToBase64UrlSafe(value: Uint8Array): string {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
-function parseBody<T>(schema: {safeParse(value: unknown): {success: true; data: T} | {success: false; error: {issues: Array<{path: (string | number)[]; message: string}>}}}, body: unknown): T {
+function parseBody<T>(schema: {safeParse(value: unknown): {success: true; data: T} | {success: false; error: {issues: Array<{path: PropertyKey[]; message: string}>}}}, body: unknown): T {
   const parsed = schema.safeParse(body);
-  if (!parsed.success) throw new HttpError(400, "invalid_request", parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; "));
+  if (!parsed.success) throw new HttpError(400, "invalid_request", parsed.error.issues.map((issue) => `${issue.path.map(String).join(".")}: ${issue.message}`).join("; "));
   return parsed.data;
 }
 
@@ -839,6 +841,110 @@ async function markRealizeManualReview(context: AppContext, input: RealizeCommis
   }
 }
 
+type MainnetFundingAttempt = {record: RealizeCommissionRecord; status: "pending" | "captured" | "manual_review"};
+
+/** Persist the wallet signature before consulting RPC so a lost API response can
+ * be retried by the payer or recovered by the scheduled reconciler. */
+async function verifyAndRecordMainnetFunding(
+  context: AppContext,
+  input: RealizeCommissionRecord,
+  signature: string
+): Promise<MainnetFundingAttempt> {
+  let current = await context.store.getRealizeCommission(input.commission.commission_id) ?? input;
+  const commissionId = current.commission.commission_id;
+  if (current.funding_signature) {
+    if (current.funding_signature !== signature) throw new HttpError(409, "payment_replayed", "commission already has a different funding transaction");
+    return {record: current, status: current.commission.state === "MANUAL_REVIEW" ? "manual_review" : "captured"};
+  }
+  if (!["AWAITING_PAYMENT", "EXPIRED"].includes(current.commission.state) || !current.payment_intent || !current.commission.quote_id) throw new HttpError(409, "payment_required", "commission is not awaiting its quote-bound payment");
+  const quote = await context.store.getRealizeQuote(current.commission.quote_id);
+  const configuration = quote?.payout_configuration_version ? await context.store.getRealizePayoutConfiguration(current.commission.creator_id, quote.payout_configuration_version) : undefined;
+  if (!quote || !configuration || !quote.usdc_mint || quote.network_id !== "solana:mainnet-beta") throw new HttpError(409, "quote_invalid", "accepted Mainnet quote settlement binding is unavailable");
+  assertRealizeQuoteConfiguration(context, quote, configuration);
+  const funding = current.direct_funding;
+  const rail = paymentRailForNetwork(context, quote.network_id, quote.usdc_mint);
+  if (!rail || !funding || funding.mode !== "direct" || funding.payer_wallet !== current.payer_wallet || funding.accepted_quote_hash !== quote.canonical_quote_hash) throw new HttpError(503, "payment_authorization_missing", "backend-authorized Mainnet funding is unavailable");
+  const expectedIntentId = `vox:payment-intent:${createHash("sha256").update(`${commissionId}\u0000${quote.canonical_quote_hash}`).digest("hex")}`;
+  if (quote.commission_id !== commissionId || current.commission.accepted_quote_hash !== quote.canonical_quote_hash || current.commission.payment_intent_id !== expectedIntentId || funding.commission_id !== commissionId || funding.quote_id !== quote.quote_id || funding.network_id !== quote.network_id || funding.usdc_mint !== quote.usdc_mint || funding.amount_usdc_atomic !== quote.total_amount_usdc_atomic || funding.expires_at !== quote.expires_at || current.payment_intent.payment_intent_id !== expectedIntentId || current.payment_intent.commission_id !== commissionId || current.payment_intent.quote_id !== quote.quote_id || current.payment_intent.payer_id !== current.commission.commissioner_id || current.payment_intent.amount_usdc_atomic !== quote.total_amount_usdc_atomic || current.payment_intent.network_id !== quote.network_id || current.payment_intent.accepted_quote_hash !== quote.canonical_quote_hash || current.payment_intent.expires_at !== quote.expires_at) throw new HttpError(409, "payment_intent_mismatch", "funding authorization does not match the accepted quote-bound payment intent");
+  if (funding.payment_reference !== `vox:realize:payment:${current.payment_intent.payment_intent_id}:${quote.canonical_quote_hash}`) throw new HttpError(409, "payment_intent_mismatch", "Mainnet payment memo does not match the unique payment intent");
+  if (funding.destination_token_account !== configuration.funding_destination_token_account || funding.network_id !== "solana:mainnet-beta") throw new HttpError(409, "treasury_configuration_mismatch", "Mainnet payment destination differs from the pinned treasury account");
+  if (funding.payer_wallet !== current.payer_wallet) throw new HttpError(409, "payment_intent_mismatch", "submitted payer does not match the accepted payment intent");
+  if (current.funding_submission_signature && current.funding_submission_signature !== signature) throw new HttpError(409, "payment_submission_conflict", "a different payment signature is already being reconciled for this order");
+
+  if (!current.funding_submission_signature || current.commission.state === "EXPIRED") {
+    const submitted = updatedRealizeCommission(current, current.commission.state === "EXPIRED" ? {state: "AWAITING_PAYMENT", payment_state: "pending"} : {}, {
+      funding_submission_signature: signature,
+      ...(current.commission.state === "EXPIRED" ? {failure_reason: "a payer submitted a Mainnet payment signature after the order expired; verifying its finalized chain time before resolution"} : {})
+    });
+    try { current = await context.store.updateRealizeCommission(submitted, current.updated_at); }
+    catch (error) {
+      const latest = await context.store.getRealizeCommission(commissionId);
+      if (!latest || latest.funding_submission_signature !== signature) throw error;
+      current = latest;
+    }
+  }
+
+  const verification = await rail.verifyFunding(funding, signature, current.payer_wallet!);
+  if (!verification.finalized) return {record: current, status: "pending"};
+  if (!verification.matched) {
+    // A finalized nonmatching transaction cannot have funded this quote. Release
+    // the signature reservation so the customer can submit the correct payment.
+    const latest = await context.store.getRealizeCommission(commissionId) ?? current;
+    if (latest.funding_submission_signature === signature && !latest.funding_signature) {
+      const {funding_submission_signature: _rejectedSignature, ...withoutSubmission} = latest;
+      try { current = await context.store.updateRealizeCommission(updatedRealizeCommission(withoutSubmission, {}, {failure_reason: verification.reason ?? "finalized payment did not match the quote-bound Mainnet transfer"}), latest.updated_at); }
+      catch { current = await context.store.getRealizeCommission(commissionId) ?? latest; }
+    }
+    throw new HttpError(402, "payment_unverified", verification.reason ?? "funding transaction does not match the accepted quote");
+  }
+  if (!await context.store.reserveRealizePaymentSignature(signature, commissionId)) {
+    const latest = await context.store.getRealizeCommission(commissionId) ?? current;
+    if (latest.funding_submission_signature === signature && !latest.funding_signature) {
+      const {funding_submission_signature: _replayedSignature, ...withoutSubmission} = latest;
+      try { await context.store.updateRealizeCommission(updatedRealizeCommission(withoutSubmission, {}, {failure_reason: "finalized payment signature is already reserved to a different Realize commission"}), latest.updated_at); }
+      catch { /* A competing update retains the durable review record. */ }
+    }
+    throw new HttpError(409, "payment_replayed", "this finalized transaction signature has already funded another Realize commission");
+  }
+
+  const latest = await context.store.getRealizeCommission(commissionId) ?? current;
+  if (latest.funding_signature) {
+    if (latest.funding_signature !== signature) throw new HttpError(409, "payment_replayed", "commission already has a different funding transaction");
+    return {record: latest, status: latest.commission.state === "MANUAL_REVIEW" ? "manual_review" : "captured"};
+  }
+  if (latest.funding_submission_signature !== signature) throw new HttpError(409, "payment_submission_conflict", "payment submission changed during verification");
+  const expiresAt = Date.parse(current.payment_intent!.expires_at);
+  const hasBlockTime = Number.isSafeInteger(verification.block_time) && verification.block_time! >= 0 && verification.block_time! <= Math.floor((Number.MAX_SAFE_INTEGER - 999) / 1_000);
+  // RPC blockTime has one-second precision. Only accept a transfer when the
+  // entire reported second is within the quote window; if it overlaps expiry,
+  // hold the captured funds for human resolution.
+  const blockSecondStart = hasBlockTime ? verification.block_time! * 1_000 : Number.NaN;
+  const blockSecondEnd = hasBlockTime ? blockSecondStart + 999 : Number.NaN;
+  const timely = hasBlockTime && blockSecondEnd <= expiresAt;
+  const timingStatus: NonNullable<RealizeCommissionRecord["funding_timing_status"]> = !hasBlockTime ? "unavailable" : timely ? "within_quote_window" : blockSecondStart > expiresAt ? "after_quote_expiry" : "ambiguous_at_expiry";
+  const capturedIntent = PaymentIntentV1Schema.parse({...latest.payment_intent!, status: "captured"});
+  const fundedAt = new Date().toISOString();
+  const reasonCode = timingStatus === "after_quote_expiry" ? "late_payment_after_quote_expiry" : timingStatus === "ambiguous_at_expiry" ? "funding_time_ambiguous_at_expiry" : timingStatus === "unavailable" ? "funding_time_unavailable" : undefined;
+  const event = reasonCode ? resolutionEvent({commissionId, action: "manual_review_required", actorType: "system", actorId: "vox-api", evidenceHash: signature, reasonCode}) : undefined;
+  const captured = updatedRealizeCommission(latest, timely ? {state: "FUNDED", payment_state: "captured"} : {state: "MANUAL_REVIEW", payment_state: "captured"}, {
+    payment_intent: capturedIntent,
+    funding_signature: signature,
+    funding_network_id: quote.network_id,
+    funding_verified_at: fundedAt,
+    funded_at: fundedAt,
+    ...(hasBlockTime ? {funding_block_time: verification.block_time} : {}),
+    funding_timing_status: timingStatus,
+    ...(reasonCode ? {resolution_outcome: "manual_review", resolution_reason: reasonCode, failure_reason: timingStatus === "after_quote_expiry" ? "exact finalized Mainnet funds arrived after the accepted quote expired; generation is held for operator resolution" : timingStatus === "ambiguous_at_expiry" ? "the finalized transaction block time overlaps quote expiry at RPC's one-second precision; generation is held for operator resolution" : "exact finalized Mainnet funds were received but the RPC did not provide a block time; generation is held for operator resolution", resolution_events: appendResolutionEvent(latest, event!)} : {})
+  });
+  try { current = await context.store.updateRealizeCommission(captured, latest.updated_at); }
+  catch (error) {
+    const saved = await context.store.getRealizeCommission(commissionId);
+    if (saved?.funding_signature === signature) current = saved;
+    else throw error;
+  }
+  return {record: current, status: reasonCode ? "manual_review" : "captured"};
+}
+
 function settlementResolutionIsRefundable(resolution: RealizePaymentIntentResolutionV1): boolean {
   return resolution.kind === "settlement" && resolution.state === "refundable" && resolution.settled_amount_usdc_atomic === "0" && Boolean(resolution.batch_statuses?.length) && resolution.batch_statuses!.every((status) => status === "failed");
 }
@@ -1077,7 +1183,7 @@ async function handleRealizeFulfillmentResult(context: AppContext, record: Reali
   if (result.status !== "completed") {
     const pastDeadline = Boolean(current.fulfillment_deadline_at && Date.parse(current.fulfillment_deadline_at) <= Date.now());
     if (source === "provider_status" && pastDeadline) return markRealizeManualReview(context, current, "provider status remains nonterminal after the generation deadline", "provider_status_ambiguous_after_deadline", payloadHash);
-    const updated = updatedRealizeCommission(current, {fulfillment_state: result.status === "generating" ? "generating" : "queued"}, {fulfillment_result: result});
+    const updated = updatedRealizeCommission(current, {fulfillment_state: result.status === "generating" ? "generating" : "queued"}, {fulfillment_result: result, failure_reason: ""});
     try { return await context.store.updateRealizeCommission(updated, current.updated_at); }
     catch { return await context.store.getRealizeCommission(current.commission.commission_id) ?? current; }
   }
@@ -1086,11 +1192,15 @@ async function handleRealizeFulfillmentResult(context: AppContext, record: Reali
 
 async function startRealizeFulfillment(context: AppContext, input: RealizeCommissionRecord): Promise<RealizeCommissionRecord> {
   let current = await context.store.getRealizeCommission(input.commission.commission_id) ?? input;
+  // A concurrent retry may have already advanced this same captured payment.
+  // Let reconciliation continue from the durable current state instead of
+  // turning an idempotent payment retry into an HTTP failure.
+  if (current.funding_signature === input.funding_signature && current.commission.state !== "FUNDED") return current;
   if (current.commission.state !== "FUNDED" || current.commission.payment_state !== "captured" || !current.funding_signature || !current.commission.quote_id || !current.payment_intent) throw new HttpError(409, "payment_unverified", "generation requires a verified finalized payment");
   if (!current.rights_reviewed_at) throw new HttpError(409, "rights_acceptance_required", "generation requires the commissioner to accept the displayed rights terms");
   const quote = await context.store.getRealizeQuote(current.commission.quote_id);
   if (!quote) throw new Error("accepted Realize quote not found before generation");
-  if (Date.parse(quote.expires_at) <= Date.now()) return markRealizeManualReview(context, current, "The captured payment requires review because its provider quote has expired.", "payment_verified_after_quote_expiry", current.funding_signature);
+  if (Date.parse(quote.expires_at) <= Date.now() && current.funding_timing_status !== "within_quote_window") return markRealizeManualReview(context, current, "The captured payment requires review because its provider quote has expired.", "payment_verified_after_quote_expiry", current.funding_signature);
   const configuration = quote.payout_configuration_version ? await context.store.getRealizePayoutConfiguration(current.commission.creator_id, quote.payout_configuration_version) : undefined;
   if (!configuration) throw new Error("pinned payout configuration not found before generation");
   assertRealizeQuoteConfiguration(context, quote, configuration);
@@ -1138,7 +1248,12 @@ async function startRealizeFulfillment(context: AppContext, input: RealizeCommis
   });
   const startedAt = new Date();
   const started = updatedRealizeCommission(current, {state: "GENERATING", fulfillment_state: "queued", fulfillment_request_id: request.fulfillment_request_id}, {fulfillment_request: request, fulfillment_deadline_at: new Date(startedAt.getTime() + envNumber("VOX_REALIZE_GENERATION_TIMEOUT_SECONDS", 1800) * 1_000).toISOString(), failure_reason: ""});
-  current = await context.store.updateRealizeCommission(started, current.updated_at);
+  try { current = await context.store.updateRealizeCommission(started, current.updated_at); }
+  catch {
+    const latest = await context.store.getRealizeCommission(current.commission.commission_id);
+    if (latest?.fulfillment_request?.fulfillment_request_id === request.fulfillment_request_id) return latest;
+    throw new HttpError(409, "fulfillment_start_race", "another request changed the funded commission before provider submission");
+  }
   try {
     const result = await context.populiRealizeClient.requestFulfillment(configuration, request);
     return handleRealizeFulfillmentResult(context, current, result, "create_response");
@@ -1149,13 +1264,89 @@ async function startRealizeFulfillment(context: AppContext, input: RealizeCommis
   }
 }
 
+async function recoverMissingRealizeFulfillment(context: AppContext, input: RealizeCommissionRecord): Promise<RealizeCommissionRecord> {
+  let current = await context.store.getRealizeCommission(input.commission.commission_id) ?? input;
+  const eligible = (record: RealizeCommissionRecord) => record.commission.state === "GENERATING" && record.commission.payment_state === "captured" && !record.resolution_outcome && !record.failure_evidence && !record.refund_approval && !record.refund_response && !record.settlement_instruction && !record.fulfillment_completion_claimed;
+  if (!eligible(current)) return current;
+  // A previously observed job disappearing is an integrity problem, not
+  // permission to create a fresh provider job under a missing ledger entry.
+  if (current.fulfillment_result) return markRealizeManualReview(context, current, "provider no longer reports a previously acknowledged job", "provider_record_missing_after_acceptance");
+  const quote = current.commission.quote_id ? await context.store.getRealizeQuote(current.commission.quote_id) : undefined;
+  const configuration = quote?.payout_configuration_version ? await context.store.getRealizePayoutConfiguration(current.commission.creator_id, quote.payout_configuration_version) : undefined;
+  if (!quote || !configuration) return markRealizeManualReview(context, current, "pinned submission configuration is unavailable", "provider_submission_binding_unavailable");
+  if (Date.parse(quote.expires_at) <= Date.now() || !current.fulfillment_deadline_at || Date.parse(current.fulfillment_deadline_at) <= Date.now()) return markRealizeManualReview(context, current, "provider job is missing after its authorized submission window", "provider_submission_window_expired");
+  const attempts = current.fulfillment_submission_recovery_attempts ?? 0;
+  if (!Number.isInteger(attempts) || attempts < 0 || attempts >= 3) return markRealizeManualReview(context, current, "provider submission recovery limit reached; no new job or refund was authorized", "provider_submission_recovery_exhausted");
+  try {
+    assertRealizeQuoteConfiguration(context, quote, configuration);
+    const request = ProviderFulfillmentRequestV1Schema.parse(current.fulfillment_request);
+    const intent = current.payment_intent;
+    const funding = current.escrow_funding ?? current.direct_funding;
+    const authorization = request.funding_authorization;
+    const expectedId = `vox:fulfillment:${createHash("sha256").update(`${current.commission.commission_id}\u0000${quote.canonical_quote_hash}`).digest("hex")}`;
+    const expectedIntentId = `vox:payment-intent:${createHash("sha256").update(`${current.commission.commission_id}\u0000${quote.canonical_quote_hash}`).digest("hex")}`;
+    const expectedAuthorizationId = `vox:funding-authorization:${createHash("sha256").update(`${current.commission.commission_id}\u0000${quote.canonical_quote_hash}\u0000${current.funding_signature}`).digest("hex")}`;
+    const parametersMatch = generationParametersHash(request.requested_generation_parameters) === generationParametersHash(quote.requested_generation_parameters) && generationParametersHash(request.requested_generation_parameters) === generationParametersHash(current.commission.requested_generation_parameters);
+    const paymentMatches = intent && current.funding_signature && current.funding_verified_at && current.funded_at && current.rights_reviewed_at && current.payer_wallet &&
+      current.funding_network_id === quote.network_id && intent.status === "captured" && intent.payment_intent_id === expectedIntentId && current.commission.payment_intent_id === expectedIntentId &&
+      intent.commission_id === current.commission.commission_id && intent.quote_id === quote.quote_id && intent.accepted_quote_hash === quote.canonical_quote_hash &&
+      intent.amount_usdc_atomic === quote.total_amount_usdc_atomic && intent.network_id === quote.network_id && current.commission.accepted_quote_hash === quote.canonical_quote_hash;
+    const fundingMatches = funding && intent && funding.commission_id === current.commission.commission_id && funding.quote_id === quote.quote_id &&
+      funding.accepted_quote_hash === quote.canonical_quote_hash && funding.amount_usdc_atomic === intent.amount_usdc_atomic && funding.network_id === quote.network_id && funding.usdc_mint === quote.usdc_mint &&
+      funding.payer_wallet === current.payer_wallet && (funding.mode !== "direct" || funding.destination_token_account === configuration.funding_destination_token_account);
+    const requestMatches = request.fulfillment_request_id === expectedId && current.commission.fulfillment_request_id === expectedId && request.idempotency_key === expectedId &&
+      request.commission_id === current.commission.commission_id && request.quote_id === quote.quote_id && request.accepted_quote_hash === quote.canonical_quote_hash &&
+      request.generation_provider_id === quote.generation_provider_id && request.provider_quote_id === quote.provider_price_quote_id && parametersMatch &&
+      canonicalize(request.output_media_types) === canonicalize(quote.output_media_types ?? ["video/mp4"]) && Date.parse(request.created_at) >= Date.parse(quote.issued_at) && Date.parse(request.created_at) <= Date.parse(quote.expires_at);
+    const authorizationMatches = intent && authorization.authorization_id === expectedAuthorizationId && authorization.commission_id === current.commission.commission_id &&
+      authorization.payment_intent_id === expectedIntentId && authorization.accepted_quote_hash === quote.canonical_quote_hash && authorization.total_amount_usdc_atomic === intent.amount_usdc_atomic &&
+      authorization.provider_amount_usdc_atomic === (quote.provider_cost_usdc_atomic ?? quote.provider_base_price_usdc_atomic) && authorization.network_id === quote.network_id &&
+      authorization.payment_reference === `vox:realize:payment:${expectedIntentId}:${quote.canonical_quote_hash}` && authorization.verified_by === context.instanceId && authorization.verified_at === current.funded_at;
+    if (!paymentMatches || !fundingMatches || !requestMatches || !authorizationMatches) throw new Error("persisted provider submission does not match the verified accepted payment");
+    await activeRealizeRightsAgreement(context, configuration, current.commission.commissioner_id, current.commission.commission_id);
+    const latest = await context.store.getRealizeCommission(current.commission.commission_id);
+    if (!latest || latest.updated_at !== current.updated_at || !eligible(latest)) return latest ?? current;
+    if (Date.parse(quote.expires_at) <= Date.now()) return markRealizeManualReview(context, latest, "provider quote expired before recovery could submit", "provider_submission_window_expired");
+    current = await context.store.updateRealizeCommission(updatedRealizeCommission(latest, {}, {fulfillment_submission_recovery_attempts: attempts + 1, provider_poll_not_before: new Date(Date.now() + 30_000).toISOString()}), latest.updated_at);
+    // Populi durably binds this exact canonical body/idempotency key, provider
+    // quote and funding authorization to one job. Never rebuild its timestamps.
+    if (Date.parse(quote.expires_at) <= Date.now() || current.fulfillment_deadline_at && Date.parse(current.fulfillment_deadline_at) <= Date.now()) return markRealizeManualReview(context, current, "provider submission window expired while recovery was being recorded", "provider_submission_window_expired");
+    const result = await context.populiRealizeClient.requestFulfillment(configuration, request);
+    return handleRealizeFulfillmentResult(context, current, result, "create_response");
+  } catch (error) {
+    const latest = await context.store.getRealizeCommission(current.commission.commission_id) ?? current;
+    if (!eligible(latest) || latest.updated_at !== current.updated_at) return latest;
+    if (error instanceof RealizeProviderHttpError && [409, 410].includes(error.status)) return markRealizeManualReview(context, latest, "provider submission could not be recovered under its original authorization", "provider_submission_rejected");
+    if ((latest.fulfillment_submission_recovery_attempts ?? 0) === attempts) return markRealizeManualReview(context, latest, "persisted provider submission cannot be safely retried", "provider_submission_binding_invalid");
+    // A lost response is ambiguous. Keep the captured payment and original
+    // request for another GET lookup; never fabricate terminal failure evidence.
+    const delay = error instanceof RealizeProviderHttpError && [429, 503].includes(error.status) ? error.retryAfterMs : 5_000;
+    return context.store.updateRealizeCommission(updatedRealizeCommission(latest, {}, {failure_reason: errorMessage(error), provider_poll_not_before: new Date(Date.now() + delay).toISOString()}), latest.updated_at);
+  }
+}
+
 async function reconcileRealizeCommission(context: AppContext, record: RealizeCommissionRecord): Promise<RealizeCommissionRecord> {
   let current = await context.store.getRealizeCommission(record.commission.commission_id) ?? record;
   if (["QUOTED", "AWAITING_PAYMENT"].includes(current.commission.state) && current.commission.quote_id) {
     const quote = await context.store.getRealizeQuote(current.commission.quote_id);
-    if (quote && Date.parse(quote.expires_at) <= Date.now()) {
+    if (quote && Date.parse(quote.expires_at) <= Date.now() && !current.funding_submission_signature) {
       const updated = updatedRealizeCommission(current, {state: "EXPIRED", ...(current.commission.state === "AWAITING_PAYMENT" ? {payment_state: "failed" as const} : {})});
       return context.store.updateRealizeCommission(updated, current.updated_at);
+    }
+  }
+  if (current.commission.state === "AWAITING_PAYMENT" && current.direct_funding && current.funding_submission_signature && !current.funding_signature) {
+    try {
+      const attempt = await verifyAndRecordMainnetFunding(context, current, current.funding_submission_signature);
+      current = attempt.record;
+      if (current.commission.state === "FUNDED") return startRealizeFulfillment(context, current);
+      return current;
+    } catch (error) {
+      // Keep the original signature durable across temporary RPC or storage
+      // failures. The next scheduled pass retries this same transfer.
+      const latest = await context.store.getRealizeCommission(current.commission.commission_id) ?? current;
+      if (latest.funding_submission_signature !== current.funding_submission_signature || latest.funding_signature) return latest;
+      try { return await context.store.updateRealizeCommission(updatedRealizeCommission(latest, {}, {failure_reason: `Mainnet funding reconciliation will retry: ${errorMessage(error)}`}), latest.updated_at); }
+      catch { return await context.store.getRealizeCommission(current.commission.commission_id) ?? latest; }
     }
   }
   if (current.commission.state === "FUNDED") return startRealizeFulfillment(context, current);
@@ -1176,6 +1367,7 @@ async function reconcileRealizeCommission(context: AppContext, record: RealizeCo
       const result = await context.populiRealizeClient.getFulfillment(configuration, fulfillmentRequestId);
       return handleRealizeFulfillmentResult(context, current, result, "provider_status");
     } catch (error) {
+      if (error instanceof RealizeProviderHttpError && error.status === 404 && error.code === "COMMISSION_NOT_FOUND") return recoverMissingRealizeFulfillment(context, current);
       if (error instanceof RealizeProviderHttpError && [429, 503].includes(error.status)) {
         const latest = await context.store.getRealizeCommission(current.commission.commission_id) ?? current;
         if (latest.fulfillment_deadline_at && Date.parse(latest.fulfillment_deadline_at) <= Date.now()) return markRealizeManualReview(context, latest, "provider status could not be reconciled after the generation deadline", "provider_status_ambiguous_after_deadline");
@@ -1258,7 +1450,7 @@ function publicNftMedia(media: import("./types.js").NftMediaRecord, mints: impor
   return {
     media_id: media.media_id,
     source_kind: media.source_kind,
-    source_id: media.source_id,
+    ...(media.source_kind === "realize_commission" ? {} : {source_id: media.source_id}),
     output_index: media.output_index,
     ...(media.source_post_id ? {source_post_id: media.source_post_id} : {}),
     ...(media.creator_id ? {creator_id: media.creator_id} : {}),
@@ -1695,14 +1887,18 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   });
 
   app.get("/v1/dm/conversations/:id/messages", async (request, reply) => {
-    const query = z.object({limit: z.coerce.number().int().min(1).max(100).default(60)}).strict().safeParse(request.query);
-    if (!query.success) throw new HttpError(400, "invalid_request", "limit must be between 1 and 100");
+    const query = z.object({limit: z.coerce.number().int().min(1).max(100).default(60), cursor: z.string().min(1).max(512).optional()}).strict().safeParse(request.query);
+    if (!query.success) throw new HttpError(400, "invalid_request", "limit must be between 1 and 100 and cursor must be a bounded string");
     const {id} = request.params as {id: string};
     const path = request.raw.url ?? `/v1/dm/conversations/${encodeURIComponent(id)}/messages`;
     const principalId = await authorizeDirectMessagePrincipal(context, request.headers as Record<string, unknown>, "GET", path);
     const conversation = await context.store.getDirectMessageConversation(id);
     if (!conversation || !conversation.participants.includes(principalId)) throw new HttpError(404, "conversation_not_found", "conversation not found");
-    return reply.send({items: await context.store.listDirectMessages(id, query.data.limit)});
+    const before = decodeDirectMessageCursor(query.data.cursor, id);
+    const candidates = await context.store.listDirectMessages(id, query.data.limit + 1, before);
+    const items = candidates.slice(-query.data.limit);
+    const oldest = items[0];
+    return reply.send({items, ...(candidates.length > query.data.limit && oldest ? {next_cursor: encodeDirectMessageCursor(id, oldest)} : {})});
   });
 
   app.post("/v1/dm/messages", async (request, reply) => {
@@ -1786,13 +1982,27 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
 
   app.get("/v1/dm/media/:hash", async (request, reply) => {
     const {hash} = request.params as {hash: string};
-    const query = z.object({conversation_id: z.string().min(1).max(128)}).strict().safeParse(request.query);
+    const query = z.object({conversation_id: z.string().min(1).max(128), message_id: z.string().regex(/^vox:dm:message:[0-9a-f]{64}$/).optional()}).strict().safeParse(request.query);
     if (!/^[0-9a-f]{64}$/.test(hash) || !query.success) throw new HttpError(400, "invalid_dm_media", "a media hash and conversation id are required");
     const path = request.raw.url ?? `/v1/dm/media/${hash}?conversation_id=${encodeURIComponent(query.data.conversation_id)}`;
     const principalId = await authorizeDirectMessagePrincipal(context, request.headers as Record<string, unknown>, "GET", path);
     const conversation = await context.store.getDirectMessageConversation(query.data.conversation_id);
     if (!conversation || !conversation.participants.includes(principalId)) throw new HttpError(404, "dm_media_not_found", "media not found");
-    const sharedInConversation = (await context.store.listDirectMessages(conversation.conversation_id, 1000)).some((message) => message.attachments.some((attachment) => attachment.asset_hash === hash));
+    let sharedInConversation = false;
+    if (query.data.message_id) {
+      const message = await context.store.getDirectMessage(conversation.conversation_id, query.data.message_id);
+      sharedInConversation = message?.attachments.some((attachment) => attachment.asset_hash === hash) ?? false;
+    } else {
+      // Retain older clients' URLs without limiting reads to the latest 1,000
+      // messages. Current clients provide message_id for a single record read.
+      let before: {created_at: string; message_id: string} | undefined;
+      while (!sharedInConversation) {
+        const page = await context.store.listDirectMessages(conversation.conversation_id, 1000, before);
+        sharedInConversation = page.some((message) => message.attachments.some((attachment) => attachment.asset_hash === hash));
+        if (page.length < 1000 || sharedInConversation) break;
+        before = page[0];
+      }
+    }
     if (!sharedInConversation) throw new HttpError(404, "dm_media_not_found", "media not found");
     const media = await context.directMessageMediaStore.get(hash);
     if (!media) throw new HttpError(404, "dm_media_not_found", "media not found");
@@ -2548,7 +2758,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     if (current.commission.state === "AWAITING_PAYMENT" && current.payment_intent && current.commission.accepted_quote_hash === quote.canonical_quote_hash) {
       if (current.payer_wallet !== body.payer_wallet) throw new HttpError(409, "quote_acceptance_conflict", "this quote was already accepted for another payer wallet");
       if ((current.public_attribution ?? "") !== (body.public_attribution ?? "")) throw new HttpError(409, "quote_acceptance_conflict", "this quote was already accepted with different public attribution consent");
-      if (Boolean(current.nft_publication_consent) !== (body.nft_publication_consent ?? false)) throw new HttpError(409, "quote_acceptance_conflict", "this quote was already accepted with different public NFT consent");
+      if ((current.nft_publication_consent === true) !== (body.nft_publication_consent === true)) throw new HttpError(409, "quote_acceptance_conflict", "this quote was already accepted with different NFT publication consent");
       const funding = await realizeFundingResponse(context, current);
       if (!funding) throw new HttpError(503, "payment_authorization_missing", "the backend payment authorization is unavailable; contact VOX support before funding");
       return reply.send({commission: current.commission, payment_intent: current.payment_intent, funding});
@@ -2570,7 +2780,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       created_at: new Date().toISOString()
     });
     const reviewedAt = new Date().toISOString();
-    const updated = updatedRealizeCommission(current, {state: "AWAITING_PAYMENT", payment_state: "pending", quote_id: quote.quote_id, accepted_quote_hash: quote.canonical_quote_hash, payment_intent_id: paymentIntent.payment_intent_id}, {payment_intent: paymentIntent, payer_wallet: body.payer_wallet, rights_reviewed_at: reviewedAt, ...(body.public_attribution ? {public_attribution: body.public_attribution} : {}), ...(body.nft_publication_consent ? {nft_publication_consent: true, nft_publication_consent_at: reviewedAt} : {})});
+    const updated = updatedRealizeCommission(current, {state: "AWAITING_PAYMENT", payment_state: "pending", quote_id: quote.quote_id, accepted_quote_hash: quote.canonical_quote_hash, payment_intent_id: paymentIntent.payment_intent_id}, {payment_intent: paymentIntent, payer_wallet: body.payer_wallet, rights_reviewed_at: reviewedAt, ...(body.public_attribution ? {public_attribution: body.public_attribution} : {}), ...(body.nft_publication_consent === true ? {nft_publication_consent: true, nft_publication_consent_at: reviewedAt} : {})});
     const fundingAuthorization = await rail.prepareFunding({quote, commission: updated.commission, payerWallet: body.payer_wallet, authorizedIssuerPublicKey: context.instancePublicKey});
     if (fundingAuthorization.mode === "direct" && fundingAuthorization.destination_token_account !== configuration.funding_destination_token_account) throw new HttpError(409, "treasury_configuration_mismatch", "Mainnet payment destination differs from the pinned server treasury configuration");
     const stored = await context.store.updateRealizeCommission({...updated, ...(fundingAuthorization.mode === "escrow" ? {escrow_funding: fundingAuthorization} : {direct_funding: fundingAuthorization})}, current.updated_at);
@@ -2580,14 +2790,23 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   app.post("/v1/realize/commissions/:commissionId/fund", async (request, reply) => {
     const body = parseBody(FundRealizeCommissionRequestSchema, request.body);
     const commissionId = (request.params as {commissionId: string}).commissionId;
-    const current = await context.store.getRealizeCommission(commissionId);
+    let current = await context.store.getRealizeCommission(commissionId);
     if (!current) throw new HttpError(404, "commission_not_found", "commission not found");
     await authorizeRealizeHuman(context, request.headers as Record<string, unknown>, current.commission.commissioner_id, "POST", `/v1/realize/commissions/${encodeURIComponent(commissionId)}/fund`, body);
     if (current.funding_signature) {
       if (current.funding_signature !== body.transaction_signature || current.payer_wallet !== body.payer_wallet) throw new HttpError(409, "payment_replayed", "commission already has a different funding transaction");
+      if (current.commission.state === "FUNDED") current = await startRealizeFulfillment(context, current);
       return reply.send(current.commission);
     }
-    if (!["AWAITING_PAYMENT", "EXPIRED"].includes(current.commission.state) || !current.payment_intent || !current.commission.quote_id) throw new HttpError(409, "payment_required", "commission has no accepted quote-bound payment to reconcile");
+    if (current.direct_funding) {
+      if (body.payer_wallet !== current.payer_wallet) throw new HttpError(409, "payment_intent_mismatch", "payer wallet differs from the accepted funding authorization");
+      const attempt = await verifyAndRecordMainnetFunding(context, current, body.transaction_signature);
+      current = attempt.record;
+      if (attempt.status === "pending") throw new HttpError(409, "payment_pending", "Mainnet payment signature is saved and will be checked again until its finalized status is known");
+      if (current.commission.state === "FUNDED") current = await startRealizeFulfillment(context, current);
+      return reply.code(202).send(current.commission);
+    }
+    if (current.commission.state !== "AWAITING_PAYMENT" || !current.payment_intent || !current.commission.quote_id) throw new HttpError(409, "payment_required", "commission is not awaiting its quote-bound payment");
     const quote = await context.store.getRealizeQuote(current.commission.quote_id);
     const configuration = quote?.payout_configuration_version ? await context.store.getRealizePayoutConfiguration(current.commission.creator_id, quote.payout_configuration_version) : undefined;
     if (!quote || !configuration || !quote.usdc_mint || !quote.network_id) throw new HttpError(409, "quote_invalid", "accepted quote settlement binding is unavailable");
@@ -2598,8 +2817,6 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     const rail = paymentRailForNetwork(context, quote.network_id, quote.usdc_mint);
     if (!rail || !funding || funding.payer_wallet !== body.payer_wallet || funding.accepted_quote_hash !== quote.canonical_quote_hash || current.payer_wallet !== body.payer_wallet) throw new HttpError(503, "payment_authorization_missing", "backend-authorized payment funding is unavailable");
     if (funding.commission_id !== commissionId || funding.quote_id !== quote.quote_id || funding.network_id !== quote.network_id || funding.usdc_mint !== quote.usdc_mint || funding.amount_usdc_atomic !== quote.total_amount_usdc_atomic || current.payment_intent.payment_intent_id !== `vox:payment-intent:${createHash("sha256").update(`${commissionId}\u0000${quote.canonical_quote_hash}`).digest("hex")}` || current.payment_intent.amount_usdc_atomic !== quote.total_amount_usdc_atomic || current.payment_intent.network_id !== quote.network_id || current.payment_intent.accepted_quote_hash !== quote.canonical_quote_hash) throw new HttpError(409, "payment_intent_mismatch", "funding authorization does not match the accepted quote-bound payment intent");
-    if (funding.mode === "direct" && funding.payment_reference !== `vox:realize:payment:${current.payment_intent.payment_intent_id}:${quote.canonical_quote_hash}`) throw new HttpError(409, "payment_intent_mismatch", "Mainnet payment memo does not match the unique payment intent");
-    if (funding.mode === "direct" && (funding.destination_token_account !== configuration.funding_destination_token_account || funding.network_id !== "solana:mainnet-beta")) throw new HttpError(409, "treasury_configuration_mismatch", "Mainnet payment destination differs from the pinned treasury account");
     const verification = await rail.verifyFunding(funding, body.transaction_signature, body.payer_wallet);
     if (!verification.finalized) throw new HttpError(409, "payment_pending", verification.reason ?? "funding transaction is awaiting final confirmation");
     if (!verification.matched) throw new HttpError(402, "payment_unverified", verification.reason ?? "funding transaction does not match the accepted quote");
@@ -2661,7 +2878,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     let current = await context.store.getRealizeCommission(commissionId);
     if (!current) throw new HttpError(404, "commission_not_found", "commission not found");
     await authorizeRealizeHuman(context, request.headers as Record<string, unknown>, current.commission.commissioner_id, "GET", `/v1/realize/commissions/${encodeURIComponent(commissionId)}`);
-    if (["FUNDED", "GENERATING"].includes(current.commission.state)) current = await reconcileRealizeCommission(context, current);
+    if (["FUNDED", "GENERATING"].includes(current.commission.state) || current.commission.state === "AWAITING_PAYMENT" && current.direct_funding && current.funding_submission_signature && !current.funding_signature) current = await reconcileRealizeCommission(context, current);
     if (current.commission.state === "AWAITING_PAYMENT" && current.escrow_funding && !current.funding_signature && context.devnetRealizeEscrowClient) {
       const recoveredSignature = await context.devnetRealizeEscrowClient.findFundingSignature(current.escrow_funding).catch(() => undefined);
       if (recoveredSignature) {
@@ -2855,6 +3072,31 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     return reply.send({commission: saved.commission, no_render_failure_armed: true, provider_job_submitted: false});
   });
 
+  app.get("/v1/internal/realize/commissions/:commissionId/refund-preview", async (request, reply) => {
+    requireRealizeAdmin(context, request.headers as Record<string, unknown>);
+    const commissionId = (request.params as {commissionId: string}).commissionId;
+    const path = `/v1/internal/realize/commissions/${encodeURIComponent(commissionId)}/refund-preview`;
+    const operatorId = await authorizeRealizeHuman(context, request.headers as Record<string, unknown>, undefined, "GET", path);
+    const allowed = configuredRealizeOperatorIds();
+    if (allowed.length === 0) throw new HttpError(503, "realize_operator_auth_unconfigured", "Mainnet refund approvals require an allowlisted VOX operator identity");
+    if (!allowed.includes(operatorId)) throw new HttpError(403, "realize_operator_forbidden", "VOX human identity is not authorized to approve Mainnet refunds");
+    const current = await context.store.getRealizeCommission(commissionId);
+    if (!current) throw new HttpError(404, "commission_not_found", "commission not found");
+    const quote = current.commission.quote_id ? await context.store.getRealizeQuote(current.commission.quote_id) : undefined;
+    if (!quote || quote.network_id !== "solana:mainnet-beta") throw new HttpError(409, "refund_approval_unavailable", "preview is available only for quote-bound Mainnet commissions");
+    if (!current.payment_intent || current.payment_intent.status !== "captured" || !current.commission.accepted_quote_hash || !current.payer_wallet || !current.funding_signature || !current.direct_funding || !["captured", "refund_pending"].includes(current.commission.payment_state)) throw new HttpError(409, "refund_binding_missing", "Mainnet refund is missing its original captured payment binding");
+    if (!["REFUND_PENDING", "MANUAL_REVIEW"].includes(current.commission.state) || current.resolution_outcome === "fulfilled" || current.resolution_outcome === "refunded") throw new HttpError(409, "refund_unavailable", "commission has no unresolved refundable failure");
+    return reply.send({
+      commission: {commission_id: commissionId, state: current.commission.state, payment_state: current.commission.payment_state, fulfillment_state: current.commission.fulfillment_state, resolution_outcome: current.resolution_outcome, resolution_reason: current.resolution_reason, funding_timing_status: current.funding_timing_status},
+      quote: {quote_id: quote.quote_id, network_id: quote.network_id, usdc_mint: quote.usdc_mint, canonical_quote_hash: quote.canonical_quote_hash, total_amount_usdc_atomic: quote.total_amount_usdc_atomic},
+      payment: {payment_intent_id: current.payment_intent.payment_intent_id, payer_wallet: current.payer_wallet, funding_signature: current.funding_signature, amount_usdc_atomic: current.payment_intent.amount_usdc_atomic},
+      ...(current.failure_evidence ? {failure_evidence: current.failure_evidence} : {}),
+      settlement_status: current.settlement_status,
+      ...(current.settlement_response ? {settlement: {status: current.settlement_response.status, settled_amount_usdc_atomic: current.settlement_response.settled_amount_usdc_atomic, held_amount_usdc_atomic: current.settlement_response.held_amount_usdc_atomic, transaction_signatures: current.settlement_response.transaction_signatures}} : {}),
+      refund_approval_exists: Boolean(current.refund_approval)
+    });
+  });
+
   app.post("/v1/internal/realize/commissions/:commissionId/refund-approval", async (request, reply) => {
     const body = parseBody(ApproveRealizeRefundRequestSchema, request.body);
     const commissionId = (request.params as {commissionId: string}).commissionId;
@@ -2869,10 +3111,10 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     if (!["REFUND_PENDING", "MANUAL_REVIEW"].includes(current.commission.state)) throw new HttpError(409, "refund_unavailable", "commission has no confirmed refundable failure");
     if (current.resolution_outcome === "fulfilled" || current.resolution_outcome === "refunded") throw new HttpError(409, "resolution_final", "commission already has a final resolution");
     const settlementFailureConfirmed = current.settlement_status === "failed" && current.settlement_response?.status === "failed" && current.settlement_response.settled_amount_usdc_atomic === "0";
-    // No provider call can precede its durable fulfillment_request. A verified
-    // late payment with no such request can be refunded by the exact operator gate.
-    const expiredBeforeGeneration = mainnet && current.resolution_events?.some((event) => event.action === "manual_review_required" && event.reason_code === "payment_verified_after_quote_expiry") && Date.parse(quote.expires_at) <= Date.now() && !current.fulfillment_request && !current.commission.fulfillment_request_id && !current.fulfillment_result;
-    if (!current.failure_evidence && !settlementFailureConfirmed && !expiredBeforeGeneration) throw new HttpError(409, "failure_unconfirmed", "a confirmed failure or verified expired payment with no provider request is required before refund approval");
+    const noProviderRequest = !current.fulfillment_request && !current.commission.fulfillment_request_id && !current.fulfillment_result;
+    const unsafeTimingReasons = ["late_payment_after_quote_expiry", "funding_time_ambiguous_at_expiry", "funding_time_unavailable", "payment_verified_after_quote_expiry"];
+    const unsafeFundingTimingConfirmed = current.funding_signature && noProviderRequest && current.resolution_events?.some((event) => event.action === "manual_review_required" && unsafeTimingReasons.includes(event.reason_code ?? ""));
+    if (!current.failure_evidence && !settlementFailureConfirmed && !unsafeFundingTimingConfirmed) throw new HttpError(409, "failure_unconfirmed", "a signed provider failure, unsafe finalized payment timing with no provider request, or reconciled settlement failure is required before refund approval");
     const expected = {
       payer_wallet: current.payer_wallet,
       funding_signature: current.funding_signature,

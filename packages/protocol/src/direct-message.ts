@@ -2,6 +2,17 @@ import {canonicalBytes} from "./canonical.js";
 import {concatBytes, utf8} from "./encoding.js";
 import {signBytes} from "./realize-crypto.js";
 
+export interface DirectMessageHistoryPosition {created_at: string; message_id: string}
+
+/** Cursor bytes are opaque; include them verbatim in the authenticated path. */
+export function directMessageMessagesPath(conversationId: string, limit = 60, cursor?: string): string {
+  return `/v1/dm/conversations/${encodeURIComponent(conversationId)}/messages?limit=${encodeURIComponent(String(limit))}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+}
+
+export function directMessageMediaPath(hash: string, conversationId: string, messageId?: string): string {
+  return `/v1/dm/media/${encodeURIComponent(hash)}?conversation_id=${encodeURIComponent(conversationId)}${messageId ? `&message_id=${encodeURIComponent(messageId)}` : ""}`;
+}
+
 export interface AgentDirectMessageRequestSigningInput {
   method: "GET" | "POST";
   path: string;

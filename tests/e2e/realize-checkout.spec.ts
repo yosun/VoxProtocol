@@ -55,6 +55,7 @@ type MockState = {
   sentPayment?: {payer: string; destination: string; amount: string; memo: string};
   publicProvenance?: Record<string, any>;
   publicAttribution?: string;
+  nftPublicationConsent?: boolean;
   capabilityFailures?: number;
   supportedResolutions: string[];
 };
@@ -289,6 +290,7 @@ async function installMocks(page: Page, sourceBalance = PAYER_USDC, rejectFundin
       const body = request.postDataJSON() as Record<string, any>;
       expect(body.canonical_quote_hash).toBe(state.quote?.canonical_quote_hash);
       state.publicAttribution = body.public_attribution;
+      state.nftPublicationConsent = body.nft_publication_consent;
       state.commission = makeCommission(state.commission ?? {}, {state: "AWAITING_PAYMENT", payment_state: "pending", quote_id: state.quote?.quote_id, accepted_quote_hash: state.quote?.canonical_quote_hash, payment_intent_id: "payment-intent:e2e"});
       state.funding = {mode: "direct", custody_model: "backend_managed", usdc_mint: USDC_MINT.toBase58(), network_id: "solana:mainnet-beta", destination_token_account: DESTINATION.toBase58(), destination_owner: TREASURY_OWNER.toBase58(), amount_usdc_atomic: TOTAL_USDC, payment_reference: "vox:realize:payment:e2e", payer_wallet: PAYER.toBase58()};
       return json(route, {commission: state.commission, payment_intent: {payment_intent_id: "payment-intent:e2e", amount_usdc_atomic: TOTAL_USDC, expires_at: new Date(Date.now() + 5 * 60_000).toISOString(), status: "pending"}, funding: state.funding});
@@ -366,6 +368,7 @@ test("commissioner reviews rights, pays from the backend quote, and sees mocked 
   expect(state.fundCalls).toHaveLength(1);
   expect(state.fundCalls[0]).toMatchObject({payer_wallet: PAYER.toBase58()});
   expect(state.publicProvenance).toBeDefined();
+  expect(state.nftPublicationConsent).toBe(false);
   expect(JSON.stringify(state.publicProvenance)).not.toContain(PAYER.toBase58());
   expect(state.publicProvenance).not.toHaveProperty("commissioner_id");
   expect(state.publicProvenance).not.toHaveProperty("billing");
@@ -380,6 +383,38 @@ test("commissioner reviews rights, pays from the backend quote, and sees mocked 
   expect(transfer!.data[0]).toBe(12); // SPL Token TransferChecked.
   expect(transfer!.data.readBigUInt64LE(1).toString()).toBe(TOTAL_USDC);
   expect(transaction.instructions.some((instruction) => instruction.programId.toBase58() === "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr" && instruction.data.toString("utf8") === "vox:realize:payment:e2e")).toBe(true);
+});
+
+test("retains separate NFT publication consent when acceptance succeeds but status fails", async ({page}) => {
+  const state = await installMocks(page);
+  let failAcceptedStatus = true;
+  await page.route(`http://localhost:8787/v1/realize/commissions/${encodeURIComponent(COMMISSION_ID)}`, async (route) => {
+    if (failAcceptedStatus && route.request().method() === "GET" && state.commission?.accepted_quote_hash) {
+      return json(route, {code: "temporarily_unavailable", error: "Status temporarily unavailable"}, 503);
+    }
+    return route.fallback();
+  });
+  await createWallet(page);
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).click();
+
+  const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.getByRole("checkbox", {name: "Publish my finished video as a public NFT."}).check();
+  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
+
+  await expect(dialog.getByRole("alert")).toContainText("Status temporarily unavailable");
+  expect(state.nftPublicationConsent).toBe(true);
+  expect(JSON.parse((await page.evaluate(() => sessionStorage.getItem("vox.realize.v1.checkout")))!)).toMatchObject({commissionId: COMMISSION_ID, nftPublicationConsent: true});
+  failAcceptedStatus = false;
+  await page.reload();
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  const restoredConsent = page.getByRole("dialog", {name: "Realize commission checkout"}).getByLabel("Publish my finished video as a public NFT.");
+  await expect(restoredConsent).toBeChecked();
+  await expect(restoredConsent).toBeDisabled();
+  expect(state.fundCalls).toHaveLength(0);
 });
 
 test("integration-test checkout requests only the fixed prerecorded Bob clip and the test provider", async ({page}) => {

@@ -3,6 +3,7 @@ import type {
   AgentLivestreamV1,
   AgentRegistrationV1,
   CharacterConversationRecord,
+  DirectMessageHistoryPosition,
   AnchorObligation,
   AnchorReceiptV1,
   BatchManifestV1,
@@ -92,6 +93,8 @@ export interface DirectMessageRecord {
   bid_amount_usdc_atomic?: string;
   signature: string;
 }
+
+export type {DirectMessageHistoryPosition} from "@vox/protocol";
 
 export interface DirectMessageConversationRecord {
   conversation_id: string;
@@ -363,13 +366,13 @@ export type NftMintState = "queued" | "claimable" | "signing" | "signed" | "subm
 export interface NftMediaRecord {
   media_id: string;
   source_kind: "realize_commission" | "realization";
+  /** Realize commission media is public only after explicit commissioner consent. */
+  publication_consent?: boolean;
   source_id: string;
   output_index: number;
   source_post_id?: string;
   creator_id?: string;
   owner_id: string;
-  /** Realize media is public only after the commissioner explicitly opts in. */
-  publication_consent?: boolean;
   provider_id: string;
   source_content?: string;
   request_parameters: Record<string, unknown>;
@@ -426,14 +429,20 @@ export interface RealizeCommissionRecord {
   rights_reviewed_at?: string;
   /** Public credit is kept private until the commissioner explicitly opts in. */
   public_attribution?: string;
-  /** Public NFT publication is opt-in and fixed when the quote is accepted. */
+  /** Public Realize NFT media is created only after explicit commissioner consent. */
   nft_publication_consent?: boolean;
   nft_publication_consent_at?: string;
+  /** Signature submitted by the payer, persisted before RPC verification for safe retries. */
+  funding_submission_signature?: string;
   funding_signature?: string;
   funding_network_id?: string;
   funding_verified_at?: string;
+  funding_block_time?: number;
+  funding_timing_status?: "within_quote_window" | "after_quote_expiry" | "ambiguous_at_expiry" | "unavailable";
   funded_at?: string;
   fulfillment_request?: ProviderFulfillmentRequestV1;
+  /** Exact-body retries after a typed missing-job lookup; never a new billable attempt. */
+  fulfillment_submission_recovery_attempts?: number;
   fulfillment_result?: FulfillmentResultV1;
   /** CAS-protected claim prevents a failure/refund transition racing artifact finalization. */
   fulfillment_completion_claimed?: boolean;
@@ -567,7 +576,8 @@ export interface VoxStore {
   getHuman(humanId: string): Promise<HumanRecord | undefined>;
   getDirectMessageConversation(conversationId: string): Promise<DirectMessageConversationRecord | undefined>;
   listDirectMessageConversations(principalId: string, limit: number): Promise<DirectMessageConversationRecord[]>;
-  listDirectMessages(conversationId: string, limit: number): Promise<DirectMessageRecord[]>;
+  listDirectMessages(conversationId: string, limit: number, before?: DirectMessageHistoryPosition): Promise<DirectMessageRecord[]>;
+  getDirectMessage(conversationId: string, messageId: string): Promise<DirectMessageRecord | undefined>;
   createDirectMessage(conversation: DirectMessageConversationRecord, message: DirectMessageRecord): Promise<{message: DirectMessageRecord; created: boolean}>;
   updateAgentProfile(agentId: string, update: AgentProfileUpdateV1, profileHash: string, profile: AgentProfileRecord): Promise<AgentRecord>;
   getAgentByUsername(username: string): Promise<AgentRecord | undefined>;

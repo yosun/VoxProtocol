@@ -2,6 +2,7 @@ import React, {useEffect, useMemo, useRef, useState} from "react";
 import {api, type AgentRecord, type DirectMessageAttachment, type DirectMessageConversationRecord, type DirectMessageRecord, type HumanRecord, type PostRecord} from "./api.js";
 import {getHumanAccountIdentity, registerHumanAccount, type HumanAccountIdentity} from "./human-account.js";
 import {signRealizeRequest} from "./realize-identity.js";
+import {directMessageMediaPath, directMessageMessagesPath} from "@vox/protocol";
 
 const MAX_TEXT_LENGTH = 280;
 const MAX_ATTACHMENTS = 4;
@@ -78,8 +79,9 @@ async function conversationIdFor(firstId: string, secondId: string): Promise<str
   return `vox:dm:${bytesToHex(digest)}`;
 }
 
-function mediaReadPath(hash: string, conversationId: string): string {
-  return `/v1/dm/media/${encodeURIComponent(hash)}?conversation_id=${encodeURIComponent(conversationId)}`;
+function mergeMessages(current: DirectMessageRecord[], incoming: DirectMessageRecord[]): DirectMessageRecord[] {
+  return [...new Map([...current, ...incoming].map((message) => [message.message_id, message])).values()]
+    .sort((left, right) => left.created_at.localeCompare(right.created_at) || left.message_id.localeCompare(right.message_id));
 }
 
 function DirectMessageInspiration({postId}: {postId: string}) {
@@ -96,7 +98,7 @@ function DirectMessageInspiration({postId}: {postId: string}) {
   return <div className="dm-inspiration-card"><a className="dm-inspiration-link" href={`/post/${encodeURIComponent(slug)}`} target="_blank" rel="noreferrer">{post ? "Inspired by this VOX post" : "Open inspiration post"} ↗</a>{videoUrl && <video src={videoUrl} controls playsInline preload="metadata" aria-label="Shared inspiration video" />}{post && <p>{post.intent.content.text}</p>}</div>;
 }
 
-function ProtectedAttachment({attachment, conversationId, identity}: {attachment: DirectMessageAttachment; conversationId: string; identity: HumanAccountIdentity}) {
+function ProtectedAttachment({attachment, conversationId, messageId, identity}: {attachment: DirectMessageAttachment; conversationId: string; messageId: string; identity: HumanAccountIdentity}) {
   const element = useRef<HTMLDivElement | null>(null);
   const [source, setSource] = useState("");
   const [failed, setFailed] = useState(false);
@@ -109,9 +111,9 @@ function ProtectedAttachment({attachment, conversationId, identity}: {attachment
       if (loading || source || failed) return;
       loading = true;
       try {
-        const path = mediaReadPath(attachment.asset_hash, conversationId);
+        const path = directMessageMediaPath(attachment.asset_hash, conversationId, messageId);
         const headers = await signRealizeRequest(identity, "GET", path);
-        const blob = await api.directMessageMedia(attachment.asset_hash, conversationId, headers);
+        const blob = await api.directMessageMedia(attachment.asset_hash, conversationId, headers, messageId);
         if (active) {
           objectUrl = URL.createObjectURL(blob);
           setSource(objectUrl);
@@ -128,13 +130,9 @@ function ProtectedAttachment({attachment, conversationId, identity}: {attachment
       return () => { active = false; observer.disconnect(); if (objectUrl) URL.revokeObjectURL(objectUrl); };
     }
     return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl); };
-  }, [attachment.asset_hash, conversationId, identity]);
+  }, [attachment.asset_hash, conversationId, messageId, identity]);
 
   return <div ref={element} className="dm-protected-attachment">{failed ? <div className="dm-media-loading">Media couldn’t be loaded.</div> : !source ? <div className="dm-media-loading">Loading {attachment.kind}…</div> : attachment.kind === "image" ? <a href={source} target="_blank" rel="noreferrer"><img src={source} alt={attachment.file_name} loading="lazy" /></a> : attachment.kind === "video" ? <video src={source} controls playsInline preload="metadata" aria-label={attachment.file_name} /> : <audio src={source} controls preload="metadata" aria-label={attachment.file_name} />}</div>;
-}
-
-function messageListPath(conversationId: string, limit = 60): string {
-  return `/v1/dm/conversations/${encodeURIComponent(conversationId)}/messages?limit=${encodeURIComponent(String(limit))}`;
 }
 
 export function DirectMessages({onOpenAccount, onClose, initialRecipient = ""}: {onOpenAccount: () => void; onClose: () => void; initialRecipient?: string}) {
@@ -144,7 +142,10 @@ export function DirectMessages({onOpenAccount, onClose, initialRecipient = ""}: 
   const [people, setPeople] = useState<Record<string, HumanRecord | AgentRecord>>({});
   const [selected, setSelected] = useState<ChatSelection>();
   const [messages, setMessages] = useState<DirectMessageRecord[]>([]);
+  const visibleMessages = useRef<DirectMessageRecord[]>([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [olderCursor, setOlderCursor] = useState<string>();
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [text, setText] = useState("");
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [recipientInput, setRecipientInput] = useState(initialRecipient);
@@ -155,14 +156,18 @@ export function DirectMessages({onOpenAccount, onClose, initialRecipient = ""}: 
   const [error, setError] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
   const messageEnd = useRef<HTMLDivElement>(null);
+  const messageList = useRef<HTMLDivElement>(null);
+  const scrollLatest = useRef(true);
   const mediaRecorder = useRef<MediaRecorder | undefined>(undefined);
   const audioStream = useRef<MediaStream | undefined>(undefined);
   const audioChunks = useRef<BlobPart[]>([]);
   const pendingUrls = useRef(new Set<string>());
   const activeConversationId = useRef<string | undefined>(undefined);
+  const selectionGeneration = useRef(0);
   const sendAttempt = useRef<{key: string; clientMessageId: string; createdAt: string} | undefined>(undefined);
 
   const selectedId = selected?.conversation.conversation_id;
+  visibleMessages.current = messages;
   const pendingBytes = useMemo(() => pending.reduce((total, item) => total + item.file.size, 0), [pending]);
 
   async function loadConversations(account: HumanAccountIdentity) {
@@ -181,12 +186,44 @@ export function DirectMessages({onOpenAccount, onClose, initialRecipient = ""}: 
     return result.items;
   }
 
-  async function loadMessages(account: HumanAccountIdentity, conversationId: string) {
+  async function loadMessages(account: HumanAccountIdentity, conversationId: string, cursor?: string) {
     const limit = 60;
-    const path = messageListPath(conversationId, limit);
+    const path = directMessageMessagesPath(conversationId, limit, cursor);
     const headers = await signRealizeRequest(account, "GET", path);
-    const result = await api.dmMessages(conversationId, limit, headers);
-    return result.items;
+    return api.dmMessages(conversationId, limit, headers, cursor);
+  }
+
+  async function loadRecentMessages(account: HumanAccountIdentity, conversationId: string, generation: number) {
+    const knownIds = new Set(visibleMessages.current.filter((message) => message.conversation_id === conversationId).map((message) => message.message_id));
+    let page = await loadMessages(account, conversationId);
+    let items = page.items;
+    const visited = new Set<string>();
+    // More than one page may arrive between polls. Follow older cursors until
+    // reconnecting to displayed history so a busy conversation cannot lose a gap.
+    while (knownIds.size && page.next_cursor && !items.some((message) => knownIds.has(message.message_id))) {
+      if (visited.has(page.next_cursor)) throw new Error("Message history cursor repeated. Please reopen this conversation.");
+      visited.add(page.next_cursor);
+      if (activeConversationId.current !== conversationId || selectionGeneration.current !== generation) return {items: []};
+      page = await loadMessages(account, conversationId, page.next_cursor);
+      items = mergeMessages(items, page.items);
+    }
+    return {items};
+  }
+
+  async function loadEarlier() {
+    if (!identity || !selectedId || !olderCursor || loadingEarlier) return;
+    const conversationId = selectedId;
+    const generation = selectionGeneration.current;
+    setLoadingEarlier(true);
+    try {
+      const page = await loadMessages(identity, conversationId, olderCursor);
+      if (activeConversationId.current !== conversationId || selectionGeneration.current !== generation) return;
+      scrollLatest.current = false;
+      setMessages((current) => mergeMessages(current, page.items));
+      setOlderCursor(page.next_cursor);
+    } catch (reason) {
+      if (activeConversationId.current === conversationId && selectionGeneration.current === generation) setError(reason instanceof Error ? reason.message : "Couldn’t load earlier messages.");
+    } finally { if (activeConversationId.current === conversationId && selectionGeneration.current === generation) setLoadingEarlier(false); }
   }
 
   useEffect(() => {
@@ -216,34 +253,48 @@ export function DirectMessages({onOpenAccount, onClose, initialRecipient = ""}: 
 
   useEffect(() => {
     let active = true;
+    const generation = ++selectionGeneration.current;
     activeConversationId.current = selectedId;
+    setOlderCursor(undefined);
+    setLoadingEarlier(false);
+    setMessages([]);
     if (!identity || !selected?.existing) {
       setMessages([]);
       setLoadingMessages(false);
-      return;
+      return () => { active = false; ++selectionGeneration.current; };
     }
     setLoadingMessages(true);
     setError("");
-    void loadMessages(identity, selected.conversation.conversation_id).then((items) => {
-      if (active && activeConversationId.current === selected.conversation.conversation_id) setMessages(items);
+    void loadMessages(identity, selected.conversation.conversation_id).then((page) => {
+      if (active && selectionGeneration.current === generation && activeConversationId.current === selected.conversation.conversation_id) {
+        scrollLatest.current = true;
+        setMessages(page.items);
+        setOlderCursor(page.next_cursor);
+      }
     }).catch((reason) => {
       if (active) setError(reason instanceof Error ? reason.message : "Couldn’t load this conversation.");
     }).finally(() => { if (active) setLoadingMessages(false); });
-    return () => { active = false; };
+    return () => { active = false; ++selectionGeneration.current; };
   }, [identity, selectedId, selected?.existing]);
 
   useEffect(() => {
     if (!identity || !selectedId || !selected?.existing) return;
+    const generation = selectionGeneration.current;
     const interval = window.setInterval(() => {
-      void Promise.all([loadMessages(identity, selectedId), loadConversations(identity)]).then(([items]) => {
-        if (activeConversationId.current === selectedId) setMessages(items);
+      void Promise.all([loadRecentMessages(identity, selectedId, generation), loadConversations(identity)]).then(([page]) => {
+        if (activeConversationId.current === selectedId && selectionGeneration.current === generation) {
+          const list = messageList.current;
+          scrollLatest.current = !list || list.scrollHeight - list.scrollTop - list.clientHeight < 140;
+          setMessages((current) => mergeMessages(current, page.items));
+        }
       }).catch(() => undefined);
     }, 12_000);
     return () => window.clearInterval(interval);
   }, [identity, selectedId, selected?.existing]);
 
   useEffect(() => {
-    messageEnd.current?.scrollIntoView({behavior: "smooth", block: "end"});
+    if (scrollLatest.current) messageEnd.current?.scrollIntoView({behavior: "smooth", block: "end"});
+    scrollLatest.current = false;
   }, [messages, selectedId]);
 
   useEffect(() => () => {
@@ -361,7 +412,8 @@ export function DirectMessages({onOpenAccount, onClose, initialRecipient = ""}: 
       const headers = await signRealizeRequest(identity, "POST", "/v1/dm/messages", body);
       const sent = await api.sendDirectMessage(body, headers);
       sendAttempt.current = undefined;
-      setMessages((current) => [...current.filter((message) => message.message_id !== sent.message_id), sent].slice(-60));
+      scrollLatest.current = true;
+      setMessages((current) => mergeMessages(current, [sent]));
       const nextConversation: DirectMessageConversationRecord = {
         conversation_id: sent.conversation_id,
         participants: selected.conversation.participants,
@@ -444,9 +496,10 @@ export function DirectMessages({onOpenAccount, onClose, initialRecipient = ""}: 
       <section className="dm-chat" aria-label={selected ? `Conversation with ${selected.peer.registration.display_name}` : "Select a conversation"}>
         {selected ? <>
           <header className="dm-chat-header"><button type="button" className="dm-mobile-inbox" onClick={() => { clearDraft(); setSelected(undefined); }} disabled={sending} aria-label="Back to conversations">←</button><span className="dm-avatar large">{initials(selected.peer.registration.display_name)}</span><div><strong>{selected.peer.registration.display_name}</strong><span>{"agent_id" in selected.peer.registration ? "VOX character · " : ""}{displayHandle(selected.peer)}</span></div><a href={profilePath(selected.peer)} target="_blank" rel="noreferrer" aria-label="Open public VOX profile">↗</a></header>
-          <div className="dm-message-list" aria-live="polite">
+          <div className="dm-message-list" ref={messageList} aria-live="polite">
+            {olderCursor && !loadingMessages && <button type="button" className="secondary-button dm-load-earlier" disabled={loadingEarlier} onClick={() => void loadEarlier()}>{loadingEarlier ? "Loading earlier messages…" : "Load earlier messages"}</button>}
             {loadingMessages ? <div className="dm-chat-empty"><div className="spinner" /><span>Loading conversation…</span></div> : messages.length === 0 ? <div className="dm-chat-empty"><span className="empty-orb">✦</span><strong>Start the conversation</strong><span>Write a short note, share a photo, or send a voice message.</span></div> : messages.map((message) => <article className={`dm-message${message.sender_id === identity.humanId ? " mine" : ""}`} key={message.message_id}><div className="dm-bubble">{message.text && <p>{message.text}</p>}{message.source_post_id && <DirectMessageInspiration postId={message.source_post_id} />}{message.bid_amount_usdc_atomic && <span className="dm-bid-chip">{message.sender_id.startsWith("vox:agent:") ? "Character bid" : "Bid"} · {formatAtomicUsdc(message.bid_amount_usdc_atomic)} USDC</span>}{message.attachments.length > 0 && <div className="dm-message-media">{message.attachments.map((attachment) => {
-              return <ProtectedAttachment key={attachment.asset_hash} attachment={attachment} conversationId={selected.conversation.conversation_id} identity={identity} />;
+              return <ProtectedAttachment key={attachment.asset_hash} attachment={attachment} conversationId={selected.conversation.conversation_id} messageId={message.message_id} identity={identity} />;
             })}</div>}<span className="dm-message-time">{messageTime(message.created_at)}</span></div></article>)}
             <div ref={messageEnd} />
           </div>

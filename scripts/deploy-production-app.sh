@@ -232,7 +232,7 @@ deploy_service_candidate() {
     VOX_SMOKE_API_URL="$url" node scripts/smoke-production.mjs --api-only
   elif [[ "$candidate_url" == "settlement" ]]; then
     VOX_SMOKE_API_URL="$url" node --input-type=module -e '
-      const response = await fetch(`${process.env.VOX_SMOKE_API_URL}/healthz`, {signal: AbortSignal.timeout(15000)});
+      const response = await fetch(`${process.env.VOX_SMOKE_API_URL}/health`, {signal: AbortSignal.timeout(15000)});
       if (!response.ok) throw new Error(`Settlement candidate health returned HTTP ${response.status}`);
       const health = await response.json();
       if (health.status !== "ok" || health.service !== "vox-realize-settlement" || health.network !== "solana:mainnet-beta") throw new Error("Settlement candidate is not reporting production Mainnet health");
@@ -261,19 +261,33 @@ deploy_service_candidate() {
   echo "$service is serving $revision (image $IMAGE). Previous revisions were retained."
 }
 
-if [[ "${VOX_DEPLOY_INDEXES:-false}" == "true" ]]; then
-  node scripts/deploy-firestore-indexes.mjs --apply
-fi
-
-if [[ "${VOX_DEPLOY_API:-false}" == "true" || "${VOX_DEPLOY_RECONCILE:-false}" == "true" ]]; then
-  node scripts/check-firestore-indexes.mjs
+# The workflow provisions indexes with a separate approved identity, then
+# restores the application deploy identity before calling this script. Do not
+# add index IAM or Secret Manager access to the application release identity.
+if [[ ( "${VOX_DEPLOY_INDEXES:-false}" == "true" || "${VOX_DEPLOY_API:-false}" == "true" || "${VOX_DEPLOY_RECONCILE:-false}" == "true" ) && "${VOX_INDEXES_READY:-false}" != "true" ]]; then
+  echo "Required indexes must finish the protected index step before application promotion." >&2
+  exit 2
 fi
 
 if [[ "${VOX_DEPLOY_API:-false}" == "true" ]]; then
-  deploy_service_candidate "$API_SERVICE" api
+  if [[ ! "$REALIZE_OPERATOR_HUMAN_IDS" =~ ^vox:human:[A-Za-z0-9_-]{43}(,vox:human:[A-Za-z0-9_-]{43})*$ ]]; then
+    echo "VOX_REALIZE_OPERATOR_HUMAN_IDS must contain at least one registered VOX human ID before releasing the Mainnet API." >&2
+    exit 1
+  fi
 fi
+
+# Promote shared dependencies before the API starts using the new contract:
+# completed orders can call settlement immediately, and the scheduled worker
+# must send the corrected reconciliation authentication header.
 if [[ "${VOX_DEPLOY_SETTLEMENT:-false}" == "true" ]]; then
   deploy_service_candidate "$SETTLEMENT_SERVICE" settlement
+fi
+if [[ "${VOX_DEPLOY_RECONCILE:-false}" == "true" ]]; then
+  gcloud run jobs update "$RECONCILE_JOB" --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID"
+  echo "$RECONCILE_JOB image updated. No job execution was started."
+fi
+if [[ "${VOX_DEPLOY_API:-false}" == "true" ]]; then
+  deploy_service_candidate "$API_SERVICE" api
 fi
 if [[ "${VOX_DEPLOY_ANCHOR:-false}" == "true" ]]; then
   gcloud run deploy "$ANCHOR_SERVICE" \
@@ -284,11 +298,6 @@ if [[ "${VOX_DEPLOY_ANCHOR:-false}" == "true" ]]; then
   gcloud run services update-traffic "$ANCHOR_SERVICE" --to-revisions="${revision}=100" --region="$REGION" --project="$PROJECT_ID"
   echo "$ANCHOR_SERVICE is serving $revision (image $IMAGE). Previous revisions were retained."
 fi
-if [[ "${VOX_DEPLOY_RECONCILE:-false}" == "true" ]]; then
-  gcloud run jobs update "$RECONCILE_JOB" --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID"
-  echo "$RECONCILE_JOB image updated. No job execution was started."
-fi
-
 if [[ "${VOX_DEPLOY_HOSTING:-false}" == "true" ]]; then
   HOSTING_DEPLOYED="$MANUAL_MODE"
   npx --yes firebase-tools@15.24.0 deploy \

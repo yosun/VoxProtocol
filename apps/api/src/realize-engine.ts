@@ -8,6 +8,7 @@ import {
   ProviderPricingRequestV1Schema,
   ProviderFulfillmentRequestV1Schema,
   RealizeQuoteV1Schema,
+  RealizeErrorV1Schema,
   SettlementInstructionV1Schema,
   REALIZE_MAX_COMPUTE_UNITS_PER_TRANSACTION,
   REALIZE_MAX_RECIPIENTS_PER_TRANSACTION,
@@ -182,6 +183,7 @@ export const RealizeSettlementResponseV1Schema = z.object({
   transaction_signatures: z.array(z.string().min(32).max(128)).max(64).default([]),
   settled_payout_ids: z.array(id).max(64).default([]),
   settled_amount_usdc_atomic: atomic.optional(),
+  held_amount_usdc_atomic: atomic.optional(),
   failed_payout_ids: z.array(id).max(64).default([]),
   updated_at: z.string().datetime({offset: true})
 }).strict().superRefine((response, context) => {
@@ -206,6 +208,7 @@ export const RealizePaymentIntentResolutionV1Schema = z.object({
   record_id: id.optional(),
   state: z.string().max(64).optional(),
   settled_amount_usdc_atomic: atomic.optional(),
+  held_amount_usdc_atomic: atomic.optional(),
   batch_statuses: z.array(z.enum(["prepared", "finalized", "failed", "uncertain"])).max(64).optional()
 }).strict();
 export type RealizePaymentIntentResolutionV1 = z.infer<typeof RealizePaymentIntentResolutionV1Schema>;
@@ -227,7 +230,7 @@ function assertProviderUrl(value: string): URL {
 }
 
 export class RealizeProviderHttpError extends Error {
-  constructor(readonly status: number, readonly retryAfterMs: number) {
+  constructor(readonly status: number, readonly retryAfterMs: number, readonly code?: string) {
     super(`Populi request failed with HTTP ${status}`);
   }
 }
@@ -248,7 +251,12 @@ async function providerJson<T>(configuration: RealizeCreatorPayoutConfigurationV
     if (!response.ok) {
       const retryAfter = response.headers.get("retry-after");
       const delay = retryAfter && /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1_000 : retryAfter ? Date.parse(retryAfter) - Date.now() : 5_000;
-      throw new RealizeProviderHttpError(response.status, Number.isFinite(delay) ? Math.max(5_000, delay) : 5_000);
+      let code: string | undefined;
+      try {
+        const failure = RealizeErrorV1Schema.safeParse(JSON.parse(bodyText));
+        if (failure.success) code = failure.data.code;
+      } catch { /* An untyped HTTP error is not evidence that a provider job is absent. */ }
+      throw new RealizeProviderHttpError(response.status, Number.isFinite(delay) ? Math.max(5_000, delay) : 5_000, code);
     }
     let body: unknown;
     try { body = JSON.parse(bodyText); } catch { throw new Error("Populi returned invalid JSON"); }
@@ -268,7 +276,7 @@ export class HttpPopuliRealizeClient implements PopuliRealizeClient {
     if ([...schema.searchParams.keys()].some((key) => key !== "creator_id") || schemaCreatorIds.length > 1 || (schemaCreatorIds.length === 1 && schemaCreatorIds[0] !== creatorId)) {
       throw new Error("Provider input schema has unsupported or mismatched query parameters");
     }
-    return providerJson(configuration, `${schema.pathname}${schema.search}`, {method: "GET"}, z.record(z.unknown()).refine((value) => value.type === "object", "input schema must describe an object"));
+    return providerJson(configuration, `${schema.pathname}${schema.search}`, {method: "GET"}, z.record(z.string(), z.unknown()).refine((value) => value.type === "object", "input schema must describe an object"));
   }
 
   async getCapabilities(configuration: RealizeCreatorPayoutConfigurationV1, creatorId: string): Promise<CreatorCapabilitiesV1> {

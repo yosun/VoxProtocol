@@ -316,7 +316,7 @@ export const CommissionFulfillmentStateV1Schema = z.enum(["not_started", "queued
 export const REALIZE_COMMISSION_TRANSITIONS = Object.freeze({
   DRAFT: Object.freeze(["QUOTED", "FAILED", "EXPIRED"] as const),
   QUOTED: Object.freeze(["AWAITING_PAYMENT", "FAILED", "EXPIRED"] as const),
-  AWAITING_PAYMENT: Object.freeze(["FUNDED", "FAILED", "EXPIRED"] as const),
+  AWAITING_PAYMENT: Object.freeze(["FUNDED", "FAILED", "EXPIRED", "MANUAL_REVIEW"] as const),
   FUNDED: Object.freeze(["GENERATING", "FAILED", "REFUND_PENDING", "MANUAL_REVIEW"] as const),
   GENERATING: Object.freeze(["COMPLETED", "FAILED", "REFUND_PENDING", "MANUAL_REVIEW"] as const),
   COMPLETED: Object.freeze(["SETTLED", "REFUND_PENDING", "MANUAL_REVIEW"] as const),
@@ -325,8 +325,8 @@ export const REALIZE_COMMISSION_TRANSITIONS = Object.freeze({
   REFUND_PENDING: Object.freeze(["REFUNDED", "FAILED", "MANUAL_REVIEW"] as const),
   REFUNDED: Object.freeze([]),
   MANUAL_REVIEW: Object.freeze(["COMPLETED", "REFUND_PENDING"] as const),
-  // Recovery is permitted only after the backend verifies an already-received payment.
-  EXPIRED: Object.freeze(["FUNDED"] as const)
+  // Recovery retains the accepted payment binding before verification/capture.
+  EXPIRED: Object.freeze(["AWAITING_PAYMENT", "FUNDED"] as const)
 } as const satisfies Readonly<Record<CommissionStateValue, readonly CommissionStateValue[]>>);
 
 export function canTransitionRealizeCommission(from: CommissionStateValue, to: CommissionStateValue): boolean {

@@ -48,6 +48,19 @@ describe("production release approval guards", () => {
     expect(result.cloudToolCalled).toBe(false);
   });
 
+  it("blocks every API or reconciliation promotion without protected index readiness", () => {
+    for (const target of ["VOX_DEPLOY_API", "VOX_DEPLOY_RECONCILE"]) {
+      const result = runGuard("scripts/deploy-production-app.sh", [], {
+        [target]: "true", VOX_PRODUCTION_SENSITIVE_APPROVED: "true",
+        GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: "yosun/VoxProtocol", GITHUB_REF: "refs/heads/main",
+        VOX_PRODUCTION_IMAGE: `us-central1-docker.pkg.dev/voxprotocol/vox/vox-api@sha256:${"a".repeat(64)}`
+      });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain("Required indexes must finish the protected index step");
+      expect(result.cloudToolCalled).toBe(false);
+    }
+  });
+
   it("rejects invalid deployment environment labels before any cloud tools", () => {
     for (const environment of ["development", "prod", ""]) {
       const result = runGuard("infrastructure/gcp/deploy.sh", [], {VOX_DEPLOYMENT_ENV: environment || "invalid"});

@@ -9,3 +9,6 @@ test-results
 playwright-report
 .codex
 .kiro
+
+# Ephemeral google-github-actions/auth credentials must never enter source or build contexts.
+gha-creds-*.json

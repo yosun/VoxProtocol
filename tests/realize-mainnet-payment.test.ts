@@ -27,6 +27,7 @@ afterEach(async () => {
   app = undefined;
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+  vi.setSystemTime();
 });
 
 describe("Mainnet SPL USDC Realize payment rail", () => {
@@ -98,7 +99,7 @@ describe("Mainnet SPL USDC Realize payment rail", () => {
     await expect(rail.verifyFunding(auth, mainnetSignature, payer)).rejects.toThrow("does not serve Solana mainnet-beta");
   });
 
-  it("verifies a Mainnet payment intent before fulfillment, stores its payout allocation, and rejects transaction reuse", async () => {
+  it("verifies and recovers Mainnet payments across expiry, retries, refunds and replay protection", async () => {
     vi.stubEnv("VOX_REALIZE_SETTLEMENT_URL", "https://settlement.example.test");
     vi.stubEnv("VOX_REALIZE_SETTLEMENT_TOKEN", "test-only-token");
     const store = new MemoryStore();
@@ -179,7 +180,23 @@ describe("Mainnet SPL USDC Realize payment rail", () => {
 
     const first = await addCommission("one");
     const second = await addCommission("two");
-    const verifyFunding = vi.fn(async () => ({finalized: true, matched: true}));
+    expect(first.quote.payout_recipients.every((recipient) => recipient.destination.startsWith("solana:mainnet-beta:"))).toBe(true);
+    let latePaymentExpiresAt = 0;
+    let boundaryPaymentExpiresAt = 0;
+    let retryPaymentExpiresAt = 0;
+    let retryRpcFailuresRemaining = 1;
+    const lateSignature = "2".repeat(88);
+    const retrySignature = "3".repeat(88);
+    const boundarySignature = "4".repeat(88);
+    const verifyFunding = vi.fn(async (_funding: MainnetSplUsdcFundingAuthorization, signature: string) => {
+      if (signature === lateSignature) return {finalized: true, matched: true, block_time: Math.floor(latePaymentExpiresAt / 1_000) + 1};
+      if (signature === boundarySignature) return {finalized: true, matched: true, block_time: Math.floor(boundaryPaymentExpiresAt / 1_000)};
+      if (signature === retrySignature) {
+        if (retryRpcFailuresRemaining-- > 0) throw new Error("temporary Mainnet RPC timeout after signature submission");
+        return {finalized: true, matched: true, block_time: Math.floor(retryPaymentExpiresAt / 1_000) - 1};
+      }
+      return {finalized: true, matched: true, block_time: Math.floor(Date.now() / 1_000)};
+    });
     const prepareFunding = vi.fn(async ({quote, commission, payerWallet}: {quote: RealizeQuoteV1; commission: {commission_id: string}; payerWallet: string}) => {
         const paymentIntentId = `vox:payment-intent:${createHash("sha256").update(`${commission.commission_id}\u0000${quote.canonical_quote_hash}`).digest("hex")}`;
         return {mode: "direct", custody_model: "backend_managed", network_id: "solana:mainnet-beta", usdc_mint: MAINNET_USDC_MINT, destination_token_account: treasuryTokenAccount, destination_owner: treasuryOwner, amount_usdc_atomic: quote.total_amount_usdc_atomic, payment_reference: `vox:realize:payment:${paymentIntentId}:${quote.canonical_quote_hash}`, payer_wallet: payerWallet, commission_id: commission.commission_id, quote_id: quote.quote_id, accepted_quote_hash: quote.canonical_quote_hash, expires_at: quote.expires_at};
@@ -213,22 +230,26 @@ describe("Mainnet SPL USDC Realize payment rail", () => {
         ...extraHeaders
       }});
     }
-    async function signedGet(path: string) {
+    async function signedGet(path: string, signer = human, extraHeaders: Record<string, string> = {}) {
       const issuedAt = new Date().toISOString();
       return app!.inject({method: "GET", url: path, headers: {
-        "x-vox-realize-human-id": human.registration.human_id,
+        "x-vox-realize-human-id": signer.registration.human_id,
         "x-vox-realize-timestamp": issuedAt,
-        "x-vox-realize-signature": signRealizeClientRequest({method: "GET", path, principal_id: human.registration.human_id, issued_at: issuedAt}, parseSecretKey(human.key_material.identitySecretKey))
+        "x-vox-realize-signature": signRealizeClientRequest({method: "GET", path, principal_id: signer.registration.human_id, issued_at: issuedAt}, parseSecretKey(signer.key_material.identitySecretKey)),
+        ...extraHeaders
       }});
     }
     const acceptPath = `/v1/realize/commissions/${encodeURIComponent(first.commissionId)}/accept-quote`;
     const notReviewed = await signedRequest(acceptPath, {quote_id: first.quote.quote_id, canonical_quote_hash: first.quote.canonical_quote_hash, payer_wallet: payer});
     expect(notReviewed.statusCode).toBe(400);
     expect(prepareFunding).not.toHaveBeenCalled();
-    const accepted = await signedRequest(acceptPath, {quote_id: first.quote.quote_id, canonical_quote_hash: first.quote.canonical_quote_hash, payer_wallet: payer, rights_reviewed: true});
+    const accepted = await signedRequest(acceptPath, {quote_id: first.quote.quote_id, canonical_quote_hash: first.quote.canonical_quote_hash, payer_wallet: payer, rights_reviewed: true, nft_publication_consent: true});
     expect(accepted.statusCode, accepted.body).toBe(201);
     expect(accepted.json().funding).toMatchObject({mode: "direct", custody_model: "backend_managed", network_id: "solana:mainnet-beta", destination_token_account: treasuryTokenAccount, destination_owner: treasuryOwner});
     expect(accepted.json().funding).not.toHaveProperty("program_id");
+    const changedConsentRetry = await signedRequest(acceptPath, {quote_id: first.quote.quote_id, canonical_quote_hash: first.quote.canonical_quote_hash, payer_wallet: payer, rights_reviewed: true, nft_publication_consent: false});
+    expect(changedConsentRetry.statusCode).toBe(409);
+    expect(changedConsentRetry.json().code).toBe("quote_acceptance_conflict");
 
     const fundPath = `/v1/realize/commissions/${encodeURIComponent(first.commissionId)}/fund`;
     const fundBody = {payer_wallet: payer, transaction_signature: mainnetSignature};
@@ -237,7 +258,8 @@ describe("Mainnet SPL USDC Realize payment rail", () => {
     expect(verifyFunding).toHaveBeenCalled();
     expect(requestFulfillment).toHaveBeenCalledOnce();
     const stored = await store.getRealizeCommission(first.commissionId);
-    expect(stored).toMatchObject({funding_network_id: "solana:mainnet-beta", funding_signature: mainnetSignature, direct_funding: {custody_model: "backend_managed"}, commission: {state: "GENERATING", payment_state: "captured"}});
+    expect(stored).toMatchObject({funding_network_id: "solana:mainnet-beta", funding_signature: mainnetSignature, direct_funding: {custody_model: "backend_managed"}, nft_publication_consent: true, nft_publication_consent_at: expect.any(String), commission: {state: "GENERATING", payment_state: "captured"}});
+    await expect(store.updateRealizeCommission({...stored!, nft_publication_consent: false}, stored!.updated_at)).rejects.toThrow("Realize NFT publication consent is immutable");
     await store.updateRealizeCommission({...stored!, nft_media_ids: ["vox:media:historic-output"]}, stored!.updated_at);
     const accountOrders = await signedGet("/v1/realize/commissions?limit=30");
     expect(accountOrders.statusCode, accountOrders.body).toBe(200);
@@ -252,6 +274,7 @@ describe("Mainnet SPL USDC Realize payment rail", () => {
     expect(reused.json().code).toBe("payment_replayed");
     expect(requestFulfillment).toHaveBeenCalledOnce();
 
+    {
     // Delayed reporting/finalization must not hide a payment already received.
     const late = await addCommission("late");
     const lateAccepted = await signedRequest(`/v1/realize/commissions/${encodeURIComponent(late.commissionId)}/accept-quote`, {quote_id: late.quote.quote_id, canonical_quote_hash: late.quote.canonical_quote_hash, payer_wallet: payer, rights_reviewed: true});
@@ -262,16 +285,17 @@ describe("Mainnet SPL USDC Realize payment rail", () => {
     vi.setSystemTime(new Date(Date.parse(late.quote.expires_at) + 60_000));
     try {
       const latePath = `/v1/realize/commissions/${encodeURIComponent(late.commissionId)}/fund`;
-      const lateBody = {payer_wallet: payer, transaction_signature: "2".repeat(88)};
+      const lateBody = {payer_wallet: payer, transaction_signature: "6".repeat(88)};
       verifyFunding.mockResolvedValueOnce({finalized: false, matched: false});
       expect((await signedRequest(latePath, lateBody)).json().code).toBe("payment_pending");
       expect((await store.getRealizeCommission(late.commissionId))?.funding_signature).toBeUndefined();
       verifyFunding.mockResolvedValueOnce({finalized: true, matched: false});
       expect((await signedRequest(latePath, lateBody)).json().code).toBe("payment_unverified");
+      verifyFunding.mockResolvedValueOnce({finalized: true, matched: true, block_time: Math.floor(Date.now() / 1000)});
       const recovered = await signedRequest(latePath, lateBody);
       expect(recovered.statusCode, recovered.body).toBe(202);
       expect(recovered.json()).toMatchObject({state: "MANUAL_REVIEW", payment_state: "captured"});
-      expect(await store.getRealizeCommission(late.commissionId)).toMatchObject({funding_signature: lateBody.transaction_signature, resolution_reason: "payment_verified_after_quote_expiry", payment_intent: {status: "captured"}});
+      expect(await store.getRealizeCommission(late.commissionId)).toMatchObject({funding_signature: lateBody.transaction_signature, resolution_reason: "late_payment_after_quote_expiry", payment_intent: {status: "captured"}});
       expect((await signedRequest(latePath, lateBody)).statusCode).toBe(200);
       expect(requestFulfillment).toHaveBeenCalledOnce();
       const lateStored = (await store.getRealizeCommission(late.commissionId))!;
@@ -292,6 +316,8 @@ describe("Mainnet SPL USDC Realize payment rail", () => {
       vi.mocked(settlement.requestRefund).mockClear();
     } finally { vi.useRealTimers(); }
 
+    }
+
     const failedResult = {protocol_version: "realize/1", fulfillment_request_id: stored!.commission.fulfillment_request_id!, commission_id: first.commissionId, generation_provider_id: "provider:video:example", status: "failed", outputs: [], error_code: "GENERATION_PROVIDER_FAILED", completed_at: new Date().toISOString()};
     const callbackTimestamp = Math.floor(Date.now() / 1_000).toString();
     const callbackBody = JSON.stringify(failedResult);
@@ -300,6 +326,19 @@ describe("Mainnet SPL USDC Realize payment rail", () => {
     expect(callback.statusCode).toBe(200);
     expect((await store.getRealizeCommission(first.commissionId))?.commission.state).toBe("REFUND_PENDING");
     expect(settlement.requestRefund).not.toHaveBeenCalled();
+
+    const previewPath = `/v1/internal/realize/commissions/${encodeURIComponent(first.commissionId)}/refund-preview`;
+    const customerPreview = await signedGet(previewPath, human, {"x-vox-internal-token": "test-only-internal-token"});
+    expect(customerPreview.statusCode).toBe(403);
+    expect(customerPreview.json().code).toBe("realize_operator_forbidden");
+    const preview = await signedGet(previewPath, operator, {"x-vox-internal-token": "test-only-internal-token"});
+    expect(preview.statusCode, preview.body).toBe(200);
+    expect(preview.json()).toMatchObject({
+      commission: {commission_id: first.commissionId, state: "REFUND_PENDING", payment_state: "refund_pending"},
+      quote: {network_id: "solana:mainnet-beta", canonical_quote_hash: first.quote.canonical_quote_hash},
+      payment: {payer_wallet: payer, funding_signature: mainnetSignature, amount_usdc_atomic: first.quote.total_amount_usdc_atomic},
+      refund_approval_exists: false
+    });
 
     const approvalPath = `/v1/internal/realize/commissions/${encodeURIComponent(first.commissionId)}/refund-approval`;
     const approval = {payer_wallet: payer, funding_signature: mainnetSignature, payment_intent_id: stored!.payment_intent!.payment_intent_id, accepted_quote_hash: first.quote.canonical_quote_hash, amount_usdc_atomic: first.quote.total_amount_usdc_atomic, reason: "The signed provider failure is confirmed; refund the exact original payment."};
@@ -319,5 +358,59 @@ describe("Mainnet SPL USDC Realize payment rail", () => {
     expect(reconciled.statusCode, reconciled.body).toBe(200);
     expect(reconciled.json()).toMatchObject({commission: {state: "MANUAL_REVIEW"}, resolution_outcome: "manual_review"});
     expect((await store.getRealizeCommission(first.commissionId))?.resolution_events?.some((event) => event.reason_code === "mainnet_refund_outcome_uncertain")).toBe(true);
-  });
+
+    const late = await addCommission("late-payment");
+    const boundary = await addCommission("expiry-boundary");
+    const retry = await addCommission("lost-response-retry");
+    for (const commission of [late, boundary, retry]) {
+      const acceptedAt = await signedRequest(`/v1/realize/commissions/${encodeURIComponent(commission.commissionId)}/accept-quote`, {quote_id: commission.quote.quote_id, canonical_quote_hash: commission.quote.canonical_quote_hash, payer_wallet: payer, rights_reviewed: true});
+      expect(acceptedAt.statusCode, acceptedAt.body).toBe(201);
+    }
+    const previouslyExpired = await store.getRealizeCommission(late.commissionId);
+    const expiredAt = new Date(Date.parse(previouslyExpired!.updated_at) + 1).toISOString();
+    await store.updateRealizeCommission({...previouslyExpired!, commission: {...previouslyExpired!.commission, state: "EXPIRED", payment_state: "failed", updated_at: expiredAt}, updated_at: expiredAt}, previouslyExpired!.updated_at);
+    latePaymentExpiresAt = Date.parse(late.quote.expires_at);
+    boundaryPaymentExpiresAt = Date.parse(boundary.quote.expires_at);
+    retryPaymentExpiresAt = Date.parse(retry.quote.expires_at);
+    vi.setSystemTime(new Date(Math.max(latePaymentExpiresAt, boundaryPaymentExpiresAt, retryPaymentExpiresAt) + 2_000));
+
+    const lateResponse = await signedRequest(`/v1/realize/commissions/${encodeURIComponent(late.commissionId)}/fund`, {payer_wallet: payer, transaction_signature: lateSignature});
+    expect(lateResponse.statusCode, lateResponse.body).toBe(202);
+    const lateRecord = await store.getRealizeCommission(late.commissionId);
+    expect(lateRecord).toMatchObject({funding_submission_signature: lateSignature, funding_signature: lateSignature, funding_timing_status: "after_quote_expiry", commission: {state: "MANUAL_REVIEW", payment_state: "captured"}, resolution_reason: "late_payment_after_quote_expiry"});
+    expect(requestFulfillment).toHaveBeenCalledOnce();
+
+    const boundaryResponse = await signedRequest(`/v1/realize/commissions/${encodeURIComponent(boundary.commissionId)}/fund`, {payer_wallet: payer, transaction_signature: boundarySignature});
+    expect(boundaryResponse.statusCode, boundaryResponse.body).toBe(202);
+    expect(await store.getRealizeCommission(boundary.commissionId)).toMatchObject({funding_signature: boundarySignature, funding_timing_status: "ambiguous_at_expiry", commission: {state: "MANUAL_REVIEW", payment_state: "captured"}, resolution_reason: "funding_time_ambiguous_at_expiry"});
+    expect(requestFulfillment).toHaveBeenCalledOnce();
+
+    vi.mocked(settlement.getPaymentIntentResolution).mockImplementation(async (paymentIntentId) => ({payment_intent_id: paymentIntentId, kind: "none"}));
+    const lateApproval = {
+      payer_wallet: payer,
+      funding_signature: lateSignature,
+      payment_intent_id: lateRecord!.payment_intent!.payment_intent_id,
+      accepted_quote_hash: late.quote.canonical_quote_hash,
+      amount_usdc_atomic: late.quote.total_amount_usdc_atomic,
+      reason: "The exact transfer arrived after quote expiry; refund the captured funds."
+    };
+    const approvedLateRefund = await signedRequest(`/v1/internal/realize/commissions/${encodeURIComponent(late.commissionId)}/refund-approval`, lateApproval, {"x-vox-internal-token": "test-only-internal-token"}, operator);
+    expect(approvedLateRefund.statusCode, approvedLateRefund.body).toBe(200);
+    expect(approvedLateRefund.json()).toMatchObject({commission: {state: "REFUND_PENDING"}, refund_response: {status: "processing"}});
+    expect(settlement.requestRefund).toHaveBeenCalledTimes(2);
+
+    const retryPath = `/v1/realize/commissions/${encodeURIComponent(retry.commissionId)}/fund`;
+    const retryBody = {payer_wallet: payer, transaction_signature: retrySignature};
+    const lostResponse = await signedRequest(retryPath, retryBody);
+    expect(lostResponse.statusCode).toBe(500);
+    expect(await store.getRealizeCommission(retry.commissionId)).toMatchObject({funding_submission_signature: retrySignature, commission: {state: "AWAITING_PAYMENT"}});
+    const recoveredByRead = await signedGet(`/v1/realize/commissions/${encodeURIComponent(retry.commissionId)}`);
+    expect(recoveredByRead.statusCode, recoveredByRead.body).toBe(200);
+    expect(recoveredByRead.json().commission.state).toBe("GENERATING");
+    expect(await store.getRealizeCommission(retry.commissionId)).toMatchObject({funding_signature: retrySignature, funding_timing_status: "within_quote_window", commission: {state: "GENERATING", payment_state: "captured"}});
+    expect(requestFulfillment).toHaveBeenCalledTimes(2);
+    const duplicateRetry = await signedRequest(retryPath, retryBody);
+    expect(duplicateRetry.statusCode).toBe(200);
+    expect(requestFulfillment).toHaveBeenCalledTimes(2);
+  }, 15_000);
 });

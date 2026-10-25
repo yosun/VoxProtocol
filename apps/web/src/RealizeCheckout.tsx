@@ -229,7 +229,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
   const [finePrintOpen, setFinePrintOpen] = useState(false);
   const [publicConsent, setPublicConsent] = useState(false);
   const [publicAttribution, setPublicAttribution] = useState("");
-  const [nftPublicationConsent, setNftPublicationConsent] = useState(false);
+  const [nftPublicationConsent, setNftPublicationConsent] = useState(!!savedCheckout?.nftPublicationConsent);
   const [pendingSignature, setPendingSignature] = useState<string>();
   const [pendingRefundSignature, setPendingRefundSignature] = useState<string>();
   const [transactionUrl, setTransactionUrl] = useState<string>();
@@ -422,6 +422,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
     setFunding(undefined);
     setProvenance(undefined);
     setRightsReviewed(false);
+    setNftPublicationConsent(false);
     setPendingSignature(undefined);
     setPendingRefundSignature(undefined);
     setTransactionUrl(undefined);
@@ -454,6 +455,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
     setFunding(undefined);
     setProvenance(undefined);
     setRightsReviewed(false);
+    setNftPublicationConsent(false);
     setPendingSignature(undefined);
     const idempotencyKey = crypto.randomUUID();
     const pricingRequestId = `vox:pricing:${crypto.randomUUID()}`;
@@ -505,11 +507,13 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       if (networkMismatch || walletChainMismatch) throw new Error(`Switch your wallet to Solana ${networkName} before accepting this quote.`);
       const body = {quote_id: quote.quote_id, canonical_quote_hash: quote.canonical_quote_hash, payer_wallet: connectedAddress, rights_reviewed: true, nft_publication_consent: nftPublicationConsent, ...(publicConsent && publicAttribution.trim() ? {public_attribution: publicAttribution.trim()} : {})};
       const path = `${commissionPath(commissionId)}/accept-quote`;
+      // Acceptance may succeed even when its response or the following status
+      // request is lost. Retain the exact consent sent before crossing that boundary.
+      saveCheckout({version: 2, originPostId: post.post_id, creatorId, description: description.trim(), style, duration, resolution, testVideo: testVideoMode, idempotencyKey: loadSavedCheckout(post.post_id, commissionId)?.idempotencyKey ?? crypto.randomUUID(), requestId: quote.pricing_request_id, commissionId, nftPublicationConsent, ...(publicConsent && publicAttribution.trim() ? {publicAttribution: publicAttribution.trim()} : {})});
       const accepted = await api.acceptRealizeQuote(commissionId, body, await signRealizeRequest(identity, "POST", path, body));
       setFunding(accepted.funding);
       const updated = await refreshStatus(commissionId, identity);
       setCommissionStatus(updated);
-      saveCheckout({version: 2, originPostId: post.post_id, creatorId, description: description.trim(), style, duration, resolution, idempotencyKey: crypto.randomUUID(), requestId: quote.pricing_request_id, commissionId, nftPublicationConsent, ...(publicConsent && publicAttribution.trim() ? {publicAttribution: publicAttribution.trim()} : {})});
     } catch (reason) { setError(checkoutError(reason)); }
     finally { setBusy(false); }
   }
@@ -689,6 +693,8 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
 
   const state = commissionStatus?.commission.state;
   const refundReady = state === "REFUND_PENDING" && funding?.mode === "escrow" && funding.progress?.status === "Refundable";
+  const commissionState = state;
+  const isTerminal = commissionState === "SETTLED" || commissionState === "REFUNDED" || commissionState === "EXPIRED";
   const output = commissionStatus?.fulfillment_result?.outputs[0];
   const capabilitiesReady = !capabilityLoading && !capabilityError && !!selectedCapability && !!options;
   const publicCommissionerParty = rights?.policy_mode === "first_party" ? true : !!rights && rights.agreement.parties.some((party) => party.party_id === REALIZE_COMMISSIONER_ROLE_PARTY_ID && party.role === "commissioner");
@@ -737,6 +743,8 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       {!currentTermsMatchQuote && <p className="quote-stale" role="alert">This price does not match the active usage terms. Please get an updated quote.</p>}
       {quoteError && <p className="quote-inline-error" role="alert">{quoteError}</p>}
       <label className="consent-row quote-consent"><input type="checkbox" checked={rightsReviewed} onChange={(event) => setRightsReviewed(event.target.checked)} disabled={!currentTermsMatchQuote || !!commissionStatus?.commission.accepted_quote_hash} /><span>I agree to the usage terms and this price.</span></label>
+      <label className="consent-row quote-consent"><input type="checkbox" checked={nftPublicationConsent} onChange={(event) => setNftPublicationConsent(event.target.checked)} disabled={!!commissionStatus?.commission.accepted_quote_hash} /><span>Publish my finished video as a public NFT.</span></label>
+      <p className="tiny muted">If selected, anyone can view the video and NFT metadata. Your connected wallet is visible on-chain, including its payment and ownership history. Your generation prompt is not included in the NFT metadata.</p>
       <button type="button" className="fine-print-link" aria-expanded={finePrintOpen} aria-controls="realize-fine-print" onClick={() => setFinePrintOpen((open) => !open)}>{finePrintOpen ? "Hide the fine print" : "Read the fine print"}</button>
       <div id="realize-fine-print" className="checkout-fineprint checkout-fineprint-content" hidden={!finePrintOpen}>
           <section className="fine-print-section">
@@ -773,8 +781,6 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
           {quoteAccepted && funding && <div className="payment-authority-note"><span>{funding.mode === "escrow" ? "VOX-authorized Devnet escrow" : "Mainnet treasury · backend-managed"}</span><code>{short(funding.mode === "escrow" ? funding.escrow : funding.destination_token_account)}</code><span>Exact amount</span><strong>{money(funding.amount_usdc_atomic)} USDC</strong>{funding.mode === "escrow" && funding.progress && <><span>On-chain setup</span><strong>{funding.progress.status.toLowerCase()} · {funding.progress.payout_count}/{funding.payouts.length} recipients</strong></>}{funding.mode === "direct" && <span className="tiny muted">VOX manages settlement and refunds after generation.</span>}</div>}
 
           <details className="terms-details public-credit-details"><summary>Public credit <span>optional</span></summary><label className="consent-row"><input type="checkbox" checked={publicConsent} onChange={(event) => setPublicConsent(event.target.checked)} disabled={!!commissionStatus?.commission.accepted_quote_hash} /><span>Include a public credit with the finished work.</span></label>{publicConsent && <label className="field-label" htmlFor="realize-attribution">Credit text<input id="realize-attribution" className="realize-field" maxLength={120} value={publicAttribution} onChange={(event) => setPublicAttribution(event.target.value)} placeholder="Name or credit to display publicly" disabled={!!commissionStatus?.commission.accepted_quote_hash} /></label>}<p className="tiny muted">Public credit is optional. Wallet and billing details stay private.</p></details>
-
-          <details className="terms-details"><summary>Public NFT <span>optional</span></summary><label className="consent-row"><input type="checkbox" checked={nftPublicationConsent} onChange={(event) => setNftPublicationConsent(event.target.checked)} disabled={!!commissionStatus?.commission.accepted_quote_hash} /><span>Publish my finished video as a public NFT.</span></label><p className="tiny muted">Anyone will be able to view the video, creator credit, and public wallet or mint details. Your prompt, payment, and billing details stay private.</p></details>
 
           <div className="advanced-quote-details"><span>Signed quote <code>{short(quote.quote_id)}</code> · {quoteValid ? "verified" : "signature invalid"}</span><span>Quote expires {new Date(quote.expires_at).toLocaleString()}</span>{quote.network_id && <span>USDC mint <code>{short(quote.usdc_mint ?? "")}</code></span>}</div>
         </div>

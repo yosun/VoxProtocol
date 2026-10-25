@@ -80,6 +80,11 @@
             },
             "requested_generation_parameters": {
               "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
               "additionalProperties": {
                 "anyOf": [
                   {
@@ -98,6 +103,7 @@
                     "type": "null"
                   },
                   {
+                    "maxItems": 64,
                     "type": "array",
                     "items": {
                       "anyOf": [
@@ -117,14 +123,9 @@
                           "type": "null"
                         }
                       ]
-                    },
-                    "maxItems": 64
+                    }
                   }
                 ]
-              },
-              "propertyNames": {
-                "minLength": 1,
-                "maxLength": 64
               },
               "maxProperties": 64
             },
@@ -195,11 +196,13 @@
             },
             "created_at": {
               "type": "string",
-              "format": "date-time"
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
             },
             "updated_at": {
               "type": "string",
-              "format": "date-time"
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
             }
           },
           "required": [
@@ -713,11 +716,13 @@
             },
             "expires_at": {
               "type": "string",
-              "format": "date-time"
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
             },
             "created_at": {
               "type": "string",
-              "format": "date-time"
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
             }
           },
           "required": [
@@ -853,6 +858,11 @@
         },
         "requested_generation_parameters": {
           "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
           "additionalProperties": {
             "anyOf": [
               {
@@ -871,6 +881,7 @@
                 "type": "null"
               },
               {
+                "maxItems": 64,
                 "type": "array",
                 "items": {
                   "anyOf": [
@@ -890,14 +901,9 @@
                       "type": "null"
                     }
                   ]
-                },
-                "maxItems": 64
+                }
               }
             ]
-          },
-          "propertyNames": {
-            "minLength": 1,
-            "maxLength": 64
           },
           "maxProperties": 64
         },
@@ -968,11 +974,13 @@
         },
         "created_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "updated_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         }
       },
       "required": [
@@ -1441,6 +1449,11 @@
         },
         "requested_generation_parameters": {
           "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
           "additionalProperties": {
             "anyOf": [
               {
@@ -1459,6 +1472,7 @@
                 "type": "null"
               },
               {
+                "maxItems": 64,
                 "type": "array",
                 "items": {
                   "anyOf": [
@@ -1478,14 +1492,9 @@
                       "type": "null"
                     }
                   ]
-                },
-                "maxItems": 64
+                }
               }
             ]
-          },
-          "propertyNames": {
-            "minLength": 1,
-            "maxLength": 64
           },
           "maxProperties": 64
         },
@@ -1555,16 +1564,18 @@
           "maxLength": 256
         },
         "generation_provider_ids": {
+          "minItems": 1,
+          "maxItems": 16,
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1,
             "maxLength": 256
-          },
-          "minItems": 1,
-          "maxItems": 16
+          }
         },
         "capabilities": {
+          "minItems": 1,
+          "maxItems": 64,
           "type": "array",
           "items": {
             "type": "object",
@@ -1576,18 +1587,18 @@
               },
               "input_schema_uri": {
                 "type": "string",
-                "format": "uri",
-                "maxLength": 2048
+                "maxLength": 2048,
+                "format": "uri"
               },
               "output_media_types": {
+                "minItems": 1,
+                "maxItems": 32,
                 "type": "array",
                 "items": {
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 128
-                },
-                "minItems": 1,
-                "maxItems": 32
+                }
               },
               "max_output_count": {
                 "type": "integer",
@@ -1606,27 +1617,26 @@
               "output_media_types"
             ],
             "additionalProperties": false
-          },
-          "minItems": 1,
-          "maxItems": 64
+          }
         },
         "rights_agreement_references": {
+          "maxItems": 64,
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1,
             "maxLength": 256
-          },
-          "maxItems": 64
+          }
         },
         "discovery_uri": {
           "type": "string",
-          "format": "uri",
-          "maxLength": 2048
+          "maxLength": 2048,
+          "format": "uri"
         },
         "updated_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         }
       },
       "required": [
@@ -1677,6 +1687,11 @@
         },
         "requested_generation_parameters": {
           "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
           "additionalProperties": {
             "anyOf": [
               {
@@ -1695,6 +1710,7 @@
                 "type": "null"
               },
               {
+                "maxItems": 64,
                 "type": "array",
                 "items": {
                   "anyOf": [
@@ -1714,14 +1730,9 @@
                       "type": "null"
                     }
                   ]
-                },
-                "maxItems": 64
+                }
               }
             ]
-          },
-          "propertyNames": {
-            "minLength": 1,
-            "maxLength": 64
           },
           "maxProperties": 64
         },
@@ -1732,7 +1743,8 @@
         },
         "requested_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         }
       },
       "required": [
@@ -1764,6 +1776,8 @@
           "maxLength": 256
         },
         "quotes": {
+          "minItems": 1,
+          "maxItems": 10,
           "type": "array",
           "items": {
             "type": "object",
@@ -1807,14 +1821,14 @@
                 "maxLength": 256
               },
               "character_owner_recipient_ids": {
+                "minItems": 1,
+                "maxItems": 64,
                 "type": "array",
                 "items": {
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 256
-                },
-                "minItems": 1,
-                "maxItems": 64
+                }
               },
               "generation_provider_id": {
                 "type": "string",
@@ -1822,17 +1836,22 @@
                 "maxLength": 256
               },
               "generation_provider_recipient_ids": {
+                "minItems": 1,
+                "maxItems": 64,
                 "type": "array",
                 "items": {
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 256
-                },
-                "minItems": 1,
-                "maxItems": 64
+                }
               },
               "requested_generation_parameters": {
                 "type": "object",
+                "propertyNames": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
                 "additionalProperties": {
                   "anyOf": [
                     {
@@ -1851,6 +1870,7 @@
                       "type": "null"
                     },
                     {
+                      "maxItems": 64,
                       "type": "array",
                       "items": {
                         "anyOf": [
@@ -1870,26 +1890,21 @@
                             "type": "null"
                           }
                         ]
-                      },
-                      "maxItems": 64
+                      }
                     }
                   ]
-                },
-                "propertyNames": {
-                  "minLength": 1,
-                  "maxLength": 64
                 },
                 "maxProperties": 64
               },
               "output_media_types": {
+                "minItems": 1,
+                "maxItems": 32,
                 "type": "array",
                 "items": {
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 128
-                },
-                "minItems": 1,
-                "maxItems": 32
+                }
               },
               "provider_cost_usdc_atomic": {
                 "type": "string",
@@ -1912,11 +1927,13 @@
               },
               "provider_price_issued_at": {
                 "type": "string",
-                "format": "date-time"
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
               },
               "payout_configuration_version": {
                 "type": "integer",
-                "exclusiveMinimum": 0
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
               },
               "payout_configuration_hash": {
                 "type": "string",
@@ -2008,6 +2025,7 @@
                 "maxLength": 20
               },
               "additional_beneficiaries": {
+                "maxItems": 64,
                 "type": "array",
                 "items": {
                   "type": "object",
@@ -2046,8 +2064,7 @@
                     "amount_usdc_atomic"
                   ],
                   "additionalProperties": false
-                },
-                "maxItems": 64
+                }
               },
               "total_amount_usdc_atomic": {
                 "allOf": [
@@ -2063,6 +2080,8 @@
                 ]
               },
               "payout_recipients": {
+                "minItems": 1,
+                "maxItems": 64,
                 "type": "array",
                 "items": {
                   "type": "object",
@@ -2115,17 +2134,17 @@
                     "amount_usdc_atomic"
                   ],
                   "additionalProperties": false
-                },
-                "minItems": 1,
-                "maxItems": 64
+                }
               },
               "expires_at": {
                 "type": "string",
-                "format": "date-time"
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
               },
               "issued_at": {
                 "type": "string",
-                "format": "date-time"
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
               },
               "rights_agreement_reference": {
                 "type": "string",
@@ -2141,7 +2160,8 @@
               },
               "rights_agreement_version": {
                 "type": "integer",
-                "exclusiveMinimum": 0
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
               },
               "rights_agreement_hash": {
                 "type": "string",
@@ -2192,13 +2212,12 @@
               "signature"
             ],
             "additionalProperties": false
-          },
-          "minItems": 1,
-          "maxItems": 10
+          }
         },
         "issued_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         }
       },
       "required": [
@@ -2273,11 +2292,13 @@
         },
         "created_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "updated_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         }
       },
       "required": [
@@ -2370,7 +2391,8 @@
         },
         "verified_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         }
       },
       "required": [
@@ -2470,6 +2492,11 @@
         },
         "requested_generation_parameters": {
           "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
           "additionalProperties": {
             "anyOf": [
               {
@@ -2488,6 +2515,7 @@
                 "type": "null"
               },
               {
+                "maxItems": 64,
                 "type": "array",
                 "items": {
                   "anyOf": [
@@ -2507,31 +2535,26 @@
                       "type": "null"
                     }
                   ]
-                },
-                "maxItems": 64
+                }
               }
             ]
-          },
-          "propertyNames": {
-            "minLength": 1,
-            "maxLength": 64
           },
           "maxProperties": 64
         },
         "output_media_types": {
+          "minItems": 1,
+          "maxItems": 32,
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1,
             "maxLength": 128
-          },
-          "minItems": 1,
-          "maxItems": 32
+          }
         },
         "callback_uri": {
           "type": "string",
-          "format": "uri",
-          "maxLength": 2048
+          "maxLength": 2048,
+          "format": "uri"
         },
         "idempotency_key": {
           "type": "string",
@@ -2540,7 +2563,8 @@
         },
         "created_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         }
       },
       "required": [
@@ -2589,19 +2613,20 @@
           ]
         },
         "outputs": {
+          "maxItems": 64,
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
               "uri": {
                 "type": "string",
-                "format": "uri",
-                "maxLength": 2048
+                "maxLength": 2048,
+                "format": "uri"
               },
               "page_url": {
                 "type": "string",
-                "format": "uri",
-                "maxLength": 2048
+                "maxLength": 2048,
+                "format": "uri"
               },
               "media_type": {
                 "type": "string",
@@ -2625,8 +2650,7 @@
               "byte_length"
             ],
             "additionalProperties": false
-          },
-          "maxItems": 64
+          }
         },
         "error_code": {
           "type": "string",
@@ -2638,11 +2662,13 @@
         },
         "started_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "completed_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "provenance_record_id": {
           "type": "string",
@@ -2742,6 +2768,11 @@
     },
     "GenerationParameters": {
       "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64
+      },
       "additionalProperties": {
         "anyOf": [
           {
@@ -2760,6 +2791,7 @@
             "type": "null"
           },
           {
+            "maxItems": 64,
             "type": "array",
             "items": {
               "anyOf": [
@@ -2779,14 +2811,9 @@
                   "type": "null"
                 }
               ]
-            },
-            "maxItems": 64
+            }
           }
         ]
-      },
-      "propertyNames": {
-        "minLength": 1,
-        "maxLength": 64
       },
       "maxProperties": 64
     },
@@ -2864,11 +2891,13 @@
         },
         "expires_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "created_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         }
       },
       "required": [
@@ -3007,14 +3036,15 @@
           "maxLength": 120
         },
         "inputs": {
+          "maxItems": 64,
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
               "uri": {
                 "type": "string",
-                "format": "uri",
-                "maxLength": 2048
+                "maxLength": 2048,
+                "format": "uri"
               },
               "sha256": {
                 "type": "string",
@@ -3031,18 +3061,19 @@
               "media_type"
             ],
             "additionalProperties": false
-          },
-          "maxItems": 64
+          }
         },
         "outputs": {
+          "minItems": 1,
+          "maxItems": 64,
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
               "uri": {
                 "type": "string",
-                "format": "uri",
-                "maxLength": 2048
+                "maxLength": 2048,
+                "format": "uri"
               },
               "sha256": {
                 "type": "string",
@@ -3065,9 +3096,7 @@
               "byte_length"
             ],
             "additionalProperties": false
-          },
-          "minItems": 1,
-          "maxItems": 64
+          }
         },
         "model_id": {
           "type": "string",
@@ -3080,15 +3109,16 @@
           "maxLength": 256
         },
         "parent_record_ids": {
+          "maxItems": 64,
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1,
             "maxLength": 256
-          },
-          "maxItems": 64
+          }
         },
         "rights_provenance": {
+          "maxItems": 128,
           "type": "array",
           "items": {
             "type": "object",
@@ -3121,12 +3151,12 @@
               "record_id"
             ],
             "additionalProperties": false
-          },
-          "maxItems": 128
+          }
         },
         "created_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "issuer_id": {
           "type": "string",
@@ -3196,6 +3226,11 @@
         },
         "requested_generation_parameters": {
           "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
           "additionalProperties": {
             "anyOf": [
               {
@@ -3214,6 +3249,7 @@
                 "type": "null"
               },
               {
+                "maxItems": 64,
                 "type": "array",
                 "items": {
                   "anyOf": [
@@ -3233,31 +3269,26 @@
                       "type": "null"
                     }
                   ]
-                },
-                "maxItems": 64
+                }
               }
             ]
-          },
-          "propertyNames": {
-            "minLength": 1,
-            "maxLength": 64
           },
           "maxProperties": 64
         },
         "output_media_types": {
+          "minItems": 1,
+          "maxItems": 32,
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1,
             "maxLength": 128
-          },
-          "minItems": 1,
-          "maxItems": 32
+          }
         },
         "callback_uri": {
           "type": "string",
-          "format": "uri",
-          "maxLength": 2048
+          "maxLength": 2048,
+          "format": "uri"
         },
         "idempotency_key": {
           "type": "string",
@@ -3266,7 +3297,8 @@
         },
         "created_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "provider_quote_id": {
           "type": "string",
@@ -3346,7 +3378,8 @@
             },
             "verified_at": {
               "type": "string",
-              "format": "date-time"
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
             }
           },
           "required": [
@@ -3433,11 +3466,13 @@
         },
         "issued_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "expires_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         }
       },
       "required": [
@@ -3483,6 +3518,11 @@
         },
         "requested_generation_parameters": {
           "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
           "additionalProperties": {
             "anyOf": [
               {
@@ -3501,6 +3541,7 @@
                 "type": "null"
               },
               {
+                "maxItems": 64,
                 "type": "array",
                 "items": {
                   "anyOf": [
@@ -3520,14 +3561,9 @@
                       "type": "null"
                     }
                   ]
-                },
-                "maxItems": 64
+                }
               }
             ]
-          },
-          "propertyNames": {
-            "minLength": 1,
-            "maxLength": 64
           },
           "maxProperties": 64
         },
@@ -3542,7 +3578,8 @@
         },
         "requested_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         }
       },
       "required": [
@@ -3648,12 +3685,13 @@
         },
         "details": {
           "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 128
+          },
           "additionalProperties": {
             "type": "string",
             "maxLength": 2000
-          },
-          "propertyNames": {
-            "maxLength": 128
           }
         }
       },
@@ -3707,14 +3745,14 @@
           "maxLength": 256
         },
         "character_owner_recipient_ids": {
+          "minItems": 1,
+          "maxItems": 64,
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1,
             "maxLength": 256
-          },
-          "minItems": 1,
-          "maxItems": 64
+          }
         },
         "generation_provider_id": {
           "type": "string",
@@ -3722,17 +3760,22 @@
           "maxLength": 256
         },
         "generation_provider_recipient_ids": {
+          "minItems": 1,
+          "maxItems": 64,
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1,
             "maxLength": 256
-          },
-          "minItems": 1,
-          "maxItems": 64
+          }
         },
         "requested_generation_parameters": {
           "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
           "additionalProperties": {
             "anyOf": [
               {
@@ -3751,6 +3794,7 @@
                 "type": "null"
               },
               {
+                "maxItems": 64,
                 "type": "array",
                 "items": {
                   "anyOf": [
@@ -3770,26 +3814,21 @@
                       "type": "null"
                     }
                   ]
-                },
-                "maxItems": 64
+                }
               }
             ]
-          },
-          "propertyNames": {
-            "minLength": 1,
-            "maxLength": 64
           },
           "maxProperties": 64
         },
         "output_media_types": {
+          "minItems": 1,
+          "maxItems": 32,
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1,
             "maxLength": 128
-          },
-          "minItems": 1,
-          "maxItems": 32
+          }
         },
         "provider_cost_usdc_atomic": {
           "type": "string",
@@ -3812,11 +3851,13 @@
         },
         "provider_price_issued_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "payout_configuration_version": {
           "type": "integer",
-          "exclusiveMinimum": 0
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
         },
         "payout_configuration_hash": {
           "type": "string",
@@ -3908,6 +3949,7 @@
           "maxLength": 20
         },
         "additional_beneficiaries": {
+          "maxItems": 64,
           "type": "array",
           "items": {
             "type": "object",
@@ -3946,8 +3988,7 @@
               "amount_usdc_atomic"
             ],
             "additionalProperties": false
-          },
-          "maxItems": 64
+          }
         },
         "total_amount_usdc_atomic": {
           "allOf": [
@@ -3963,6 +4004,8 @@
           ]
         },
         "payout_recipients": {
+          "minItems": 1,
+          "maxItems": 64,
           "type": "array",
           "items": {
             "type": "object",
@@ -4015,17 +4058,17 @@
               "amount_usdc_atomic"
             ],
             "additionalProperties": false
-          },
-          "minItems": 1,
-          "maxItems": 64
+          }
         },
         "expires_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "issued_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "rights_agreement_reference": {
           "type": "string",
@@ -4041,7 +4084,8 @@
         },
         "rights_agreement_version": {
           "type": "integer",
-          "exclusiveMinimum": 0
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
         },
         "rights_agreement_hash": {
           "type": "string",
@@ -4129,15 +4173,18 @@
         },
         "attributed_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "expires_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "accepted_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "accepted_by_key_id": {
           "type": "string",
@@ -4154,7 +4201,8 @@
         },
         "referrer_accepted_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "referrer_key_id": {
           "type": "string",
@@ -4235,6 +4283,8 @@
           "additionalProperties": false
         },
         "parties": {
+          "minItems": 2,
+          "maxItems": 64,
           "type": "array",
           "items": {
             "type": "object",
@@ -4262,9 +4312,7 @@
               "role"
             ],
             "additionalProperties": false
-          },
-          "minItems": 2,
-          "maxItems": 64
+          }
         },
         "grant": {
           "type": "object",
@@ -4275,6 +4323,8 @@
               "maxLength": 2000
             },
             "rights": {
+              "minItems": 1,
+              "maxItems": 16,
               "type": "array",
               "items": {
                 "type": "string",
@@ -4287,9 +4337,7 @@
                   "create_derivatives",
                   "train_models"
                 ]
-              },
-              "minItems": 1,
-              "maxItems": 16
+              }
             },
             "license_type": {
               "type": "string",
@@ -4299,25 +4347,27 @@
               ]
             },
             "territory": {
+              "minItems": 1,
+              "maxItems": 64,
               "type": "array",
               "items": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 128
-              },
-              "minItems": 1,
-              "maxItems": 64
+              }
             },
             "attribution_required": {
               "type": "boolean"
             },
             "starts_at": {
               "type": "string",
-              "format": "date-time"
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
             },
             "expires_at": {
               "type": "string",
-              "format": "date-time"
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
             }
           },
           "required": [
@@ -4346,6 +4396,7 @@
               "maxLength": 2000
             },
             "permitted_deductions": {
+              "maxItems": 5,
               "type": "array",
               "items": {
                 "type": "string",
@@ -4356,8 +4407,7 @@
                   "taxes",
                   "distribution_costs"
                 ]
-              },
-              "maxItems": 5
+              }
             }
           },
           "required": [
@@ -4368,6 +4418,8 @@
           "additionalProperties": false
         },
         "eligible_transaction_types": {
+          "minItems": 1,
+          "maxItems": 8,
           "type": "array",
           "items": {
             "type": "string",
@@ -4381,11 +4433,11 @@
               "subscription",
               "secondary_sale"
             ]
-          },
-          "minItems": 1,
-          "maxItems": 8
+          }
         },
         "allocations": {
+          "minItems": 1,
+          "maxItems": 64,
           "type": "array",
           "items": {
             "type": "object",
@@ -4406,20 +4458,20 @@
               "basis_points"
             ],
             "additionalProperties": false
-          },
-          "minItems": 1,
-          "maxItems": 64
+          }
         },
         "duration": {
           "type": "object",
           "properties": {
             "starts_at": {
               "type": "string",
-              "format": "date-time"
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
             },
             "ends_at": {
               "type": "string",
-              "format": "date-time"
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
             }
           },
           "required": [
@@ -4428,6 +4480,8 @@
           "additionalProperties": false
         },
         "termination_conditions": {
+          "minItems": 1,
+          "maxItems": 5,
           "type": "array",
           "items": {
             "type": "string",
@@ -4438,32 +4492,30 @@
               "legal_requirement",
               "term_expiry"
             ]
-          },
-          "minItems": 1,
-          "maxItems": 5
+          }
         },
         "modification_policy": {
           "type": "object",
           "properties": {
             "proposer_party_ids": {
+              "minItems": 1,
+              "maxItems": 64,
               "type": "array",
               "items": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 256
-              },
-              "minItems": 1,
-              "maxItems": 64
+              }
             },
             "required_acceptance_party_ids": {
+              "minItems": 2,
+              "maxItems": 64,
               "type": "array",
               "items": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 256
-              },
-              "minItems": 2,
-              "maxItems": 64
+              }
             }
           },
           "required": [
@@ -4473,37 +4525,37 @@
           "additionalProperties": false
         },
         "required_acceptance_party_ids": {
+          "minItems": 2,
+          "maxItems": 64,
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1,
             "maxLength": 256
-          },
-          "minItems": 2,
-          "maxItems": 64
+          }
         },
         "termination_policy": {
           "type": "object",
           "properties": {
             "authorized_party_ids": {
+              "minItems": 1,
+              "maxItems": 64,
               "type": "array",
               "items": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 256
-              },
-              "minItems": 1,
-              "maxItems": 64
+              }
             },
             "required_acceptance_party_ids": {
+              "minItems": 1,
+              "maxItems": 64,
               "type": "array",
               "items": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 256
-              },
-              "minItems": 1,
-              "maxItems": 64
+              }
             }
           },
           "required": [
@@ -4513,6 +4565,8 @@
           "additionalProperties": false
         },
         "provenance_references": {
+          "minItems": 1,
+          "maxItems": 128,
           "type": "array",
           "items": {
             "type": "object",
@@ -4545,11 +4599,10 @@
               "record_id"
             ],
             "additionalProperties": false
-          },
-          "minItems": 1,
-          "maxItems": 128
+          }
         },
         "attribution": {
+          "maxItems": 64,
           "type": "array",
           "items": {
             "type": "object",
@@ -4570,10 +4623,10 @@
               "credit_text"
             ],
             "additionalProperties": false
-          },
-          "maxItems": 64
+          }
         },
         "acceptances": {
+          "maxItems": 64,
           "type": "array",
           "items": {
             "type": "object",
@@ -4598,7 +4651,8 @@
               },
               "accepted_at": {
                 "type": "string",
-                "format": "date-time"
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
               },
               "signature": {
                 "type": "string",
@@ -4614,12 +4668,12 @@
               "signature"
             ],
             "additionalProperties": false
-          },
-          "maxItems": 64
+          }
         },
         "created_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         }
       },
       "required": [
@@ -4673,7 +4727,8 @@
         },
         "accepted_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "signature": {
           "type": "string",
@@ -4704,7 +4759,8 @@
         },
         "version": {
           "type": "integer",
-          "exclusiveMinimum": 0
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
         },
         "condition": {
           "type": "string",
@@ -4722,9 +4778,12 @@
         },
         "proposed_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "acceptances": {
+          "minItems": 1,
+          "maxItems": 64,
           "type": "array",
           "items": {
             "type": "object",
@@ -4745,7 +4804,8 @@
               },
               "accepted_at": {
                 "type": "string",
-                "format": "date-time"
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
               },
               "signature": {
                 "type": "string",
@@ -4760,9 +4820,7 @@
               "signature"
             ],
             "additionalProperties": false
-          },
-          "minItems": 1,
-          "maxItems": 64
+          }
         }
       },
       "required": [
@@ -4839,7 +4897,8 @@
         },
         "version": {
           "type": "integer",
-          "exclusiveMinimum": 0
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
         },
         "kind": {
           "type": "string",
@@ -4865,7 +4924,8 @@
         },
         "occurred_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "evidence_reference": {
           "type": "string",
@@ -4972,7 +5032,8 @@
         },
         "created_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         }
       },
       "required": [
@@ -5011,7 +5072,8 @@
         },
         "agreement_version": {
           "type": "integer",
-          "exclusiveMinimum": 0
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
         },
         "beneficiary_id": {
           "type": "string",
@@ -5049,11 +5111,13 @@
         },
         "created_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "updated_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         }
       },
       "required": [
@@ -5160,6 +5224,7 @@
           "maxLength": 20
         },
         "deductions": {
+          "maxItems": 32,
           "type": "array",
           "items": {
             "type": "object",
@@ -5185,8 +5250,7 @@
               "amount_usdc_atomic"
             ],
             "additionalProperties": false
-          },
-          "maxItems": 32
+          }
         },
         "verification": {
           "type": "object",
@@ -5206,12 +5270,13 @@
             },
             "evidence_uri": {
               "type": "string",
-              "format": "uri",
-              "maxLength": 2048
+              "maxLength": 2048,
+              "format": "uri"
             },
             "verified_at": {
               "type": "string",
-              "format": "date-time"
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
             }
           },
           "required": [
@@ -5224,11 +5289,13 @@
         },
         "occurred_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "recorded_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         }
       },
       "required": [
@@ -5266,7 +5333,8 @@
         },
         "accepted_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "signature": {
           "type": "string",
@@ -5370,6 +5438,8 @@
           ]
         },
         "payout_recipients": {
+          "minItems": 1,
+          "maxItems": 64,
           "type": "array",
           "items": {
             "type": "object",
@@ -5423,11 +5493,11 @@
               "destination"
             ],
             "additionalProperties": false
-          },
-          "minItems": 1,
-          "maxItems": 64
+          }
         },
         "transaction_batches": {
+          "minItems": 1,
+          "maxItems": 64,
           "type": "array",
           "items": {
             "type": "object",
@@ -5438,14 +5508,14 @@
                 "maximum": 63
               },
               "payout_ids": {
+                "minItems": 1,
+                "maxItems": 8,
                 "type": "array",
                 "items": {
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 256
-                },
-                "minItems": 1,
-                "maxItems": 8
+                }
               },
               "compute_units": {
                 "type": "integer",
@@ -5465,13 +5535,12 @@
               "serialized_size_bytes"
             ],
             "additionalProperties": false
-          },
-          "minItems": 1,
-          "maxItems": 64
+          }
         },
         "created_at": {
           "type": "string",
-          "format": "date-time"
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         }
       },
       "required": [

@@ -99,4 +99,15 @@ Populi's new endpoints return `RealizeErrorV1`, using the stable codes in the ma
 
 Transport retries reuse IDs and canonical bodies. A failed generation stays failed under the same job ID; creating another billable attempt requires a new provider reservation, new fulfillment ID, and explicit VOX funding authorization. Populi may retry internal transient generation work under the existing job only when it does not charge again or deliver duplicate jobs. VOX owns refund decisions and payment state; a failed generation callback never claims funds were refunded.
 
+VOX first looks up the stored fulfillment ID during submission recovery. Only a
+schema-valid `404 COMMISSION_NOT_FOUND` can trigger a bounded retry of its exact
+persisted fulfillment body and idempotency key, including the original creation
+and funding timestamps. The accepted quote must still be current, its payment
+must remain captured and verified, and its rights must remain active. A prior
+provider acknowledgment, terminal/refund state, expired window, binding mismatch,
+or exhausted three-retry limit blocks another submission. An ambiguous POST
+response remains captured for lookup; it is not terminal failure or refund
+evidence. Recovery depends on Populi's durable idempotency and one-job funding
+constraints described above and does not authorize a replacement paid render.
+
 This handoff specifies contracts. Deployment, blockchain transfers, Populi job execution, and existing Stripe behavior are separate implementation work.

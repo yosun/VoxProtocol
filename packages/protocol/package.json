@@ -17,9 +17,6 @@
   },
   "dependencies": {
     "tweetnacl": "1.0.3",
-    "zod": "3.25.20"
-  },
-  "devDependencies": {
-    "zod-to-json-schema": "3.24.6"
+    "zod": "4.6.7"
   }
 }

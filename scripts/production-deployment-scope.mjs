@@ -4,26 +4,41 @@ import {execFileSync} from "node:child_process";
 
 const [base, head, ...explicitFiles] = process.argv.slice(2);
 if (!base || (base !== "--paths" && !head)) {
-  console.error("Usage: node scripts/production-deployment-scope.mjs <base-sha> <head-sha> | --paths <changed-path>... | --release-profile <realize-refund-settlement|firestore-indexes>");
+  console.error("Usage: node scripts/production-deployment-scope.mjs <base-sha> <head-sha> | --paths <changed-path>... | --release-profile <realize-paid-order-recovery|realize-refund-settlement|firestore-indexes>");
   process.exit(2);
 }
 
 if (base === "--release-profile") {
-  if (!["realize-refund-settlement", "firestore-indexes"].includes(head) || explicitFiles.length > 0) {
+  const profiles = {
+    "firestore-indexes": {deploy_api: "false", deploy_hosting: "false", run_e2e: "false", deploy_settlement: "false", deploy_reconcile: "false", deploy_anchor: "false", deploy_indexes: "true", sensitive: "true", changed_files: "0"},
+    "realize-paid-order-recovery": {
+      deploy_api: "true",
+      deploy_hosting: "true",
+      run_e2e: "true",
+      deploy_settlement: "true",
+      deploy_reconcile: "true",
+      deploy_indexes: "false",
+      deploy_anchor: "true",
+      sensitive: "true",
+      changed_files: "0"
+    },
+    "realize-refund-settlement": {
+      deploy_api: "false",
+      deploy_hosting: "false",
+      run_e2e: "true",
+      deploy_settlement: "true",
+      deploy_reconcile: "true",
+      deploy_indexes: "false",
+      deploy_anchor: "false",
+      sensitive: "true",
+      changed_files: "0"
+    }
+  };
+  if (explicitFiles.length > 0 || !profiles[head]) {
     console.error("Unknown production release profile.");
     process.exit(2);
   }
-  const outputs = {
-    deploy_api: "false",
-    deploy_hosting: "false",
-    run_e2e: String(head === "realize-refund-settlement"),
-    deploy_settlement: String(head === "realize-refund-settlement"),
-    deploy_reconcile: String(head === "realize-refund-settlement"),
-    deploy_indexes: String(head === "firestore-indexes"),
-    deploy_anchor: "false",
-    sensitive: "true",
-    changed_files: "0"
-  };
+  const outputs = profiles[head];
   const lines = Object.entries(outputs).map(([key, value]) => `${key}=${value}`).join("\n") + "\n";
   if (process.env.GITHUB_OUTPUT) {
     const {appendFileSync} = await import("node:fs");
@@ -42,30 +57,33 @@ const files = base === "--paths"
   : execFileSync("git", ["diff", "--name-only", "--diff-filter=ACDMRTUXB", base, head], {encoding: "utf8"}).split(/\r?\n/);
 const changed = [...new Set(files.map((file) => file.trim().replaceAll("\\", "/")).filter(Boolean))].sort();
 
-const deployApi = changed.some((file) =>
+const fullRealizeRelease = changed.includes("deployments/realize-paid-order-recovery-release.json");
+const deployApi = fullRealizeRelease || changed.some((file) =>
   file.startsWith("apps/api/") ||
   file.startsWith("apps/web/") ||
   file.startsWith("packages/") ||
   file.startsWith("docs/") ||
   ["Dockerfile", "infrastructure/gcp/Dockerfile", "package.json", "package-lock.json", "tsconfig.base.json"].includes(file)
 );
-const deployHosting = changed.some((file) =>
+const deployHosting = fullRealizeRelease || changed.some((file) =>
   file.startsWith("apps/web/") ||
   file.startsWith("packages/") ||
   ["firebase.json", "package.json", "package-lock.json", "tsconfig.base.json"].includes(file)
 );
 const runE2e = deployHosting || changed.some((file) => file.startsWith("tests/e2e/") || file === "playwright.config.ts");
-const deploySettlement = changed.some((file) =>
+const deploySettlement = fullRealizeRelease || changed.some((file) =>
   file.startsWith("apps/settlement/") ||
   ["packages/protocol/", "packages/solana/"].some((prefix) => file.startsWith(prefix)) ||
   ["Dockerfile", "infrastructure/gcp/Dockerfile", "package.json", "package-lock.json", "tsconfig.base.json"].includes(file)
 );
-const deployReconcile = changed.some((file) =>
-  file.startsWith("apps/api/") ||
+const deployReconcile = fullRealizeRelease || changed.some((file) =>
+  // The reconciliation job does not serve public pages; skip its image update
+  // when only presentation code in the API container changes.
+  (file.startsWith("apps/api/") && file !== "apps/api/src/public-presentation.ts") ||
   file.startsWith("packages/") ||
   ["Dockerfile", "infrastructure/gcp/Dockerfile", "package.json", "package-lock.json", "tsconfig.base.json"].includes(file)
 );
-const deployAnchor = changed.some((file) =>
+const deployAnchor = fullRealizeRelease || changed.some((file) =>
   file.startsWith("workers/anchor/") ||
   ["packages/protocol/", "packages/merkle/", "packages/solana/"].some((prefix) => file.startsWith(prefix)) ||
   ["Dockerfile", "infrastructure/gcp/Dockerfile", "package.json", "package-lock.json", "tsconfig.base.json"].includes(file)

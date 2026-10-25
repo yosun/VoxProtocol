@@ -180,3 +180,63 @@ test("adds the supported Base Sepolia network before requesting a testnet NFT cl
   const signedMessage = Buffer.from(calls.find((call: any) => call.method === "personal_sign").params[0].slice(2), "hex").toString("utf8");
   expect(signedMessage).toContain("Chain: base:sepolia");
 });
+
+test("loads earlier signed DM pages and retains history when a busy conversation is polled", async ({page}) => {
+  await seedAccounts(page);
+  await page.clock.install();
+  const conversationId = `vox:dm:${"d".repeat(64)}`;
+  const oldestMediaHash = "a".repeat(64);
+  const message = (index: number) => ({message_id: `vox:dm:message:${index.toString(16).padStart(64, "0")}`, conversation_id: conversationId, sender_id: bobId, recipient_id: account.registration.human_id, client_message_id: `client-${index}`, created_at: new Date(Date.parse(timestamp) + index * 1000).toISOString(), signed_at: timestamp, text: `History message ${index}`, attachments: index === 0 ? [{asset_hash: oldestMediaHash, file_name: "old-private.png", media_type: "image/png", byte_length: 68, kind: "image"}] : [], signature: "mock-server-signature"});
+  let count = 145;
+  const requestedCursors: Array<string | null> = [];
+  const mediaReads: string[] = [];
+  await page.route("**/v1/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = decodeURIComponent(url.pathname);
+    const send = (body: unknown) => route.fulfill({contentType: "application/json", body: JSON.stringify(body)});
+    if (path === "/v1/humans") return send({registration: account.registration});
+    if (path === `/v1/agents/${bobId}`) return send(bob);
+    if (path === "/v1/dm/conversations") {
+      expectSignedRequest(request, account);
+      return send({items: [{conversation_id: conversationId, participants: [account.registration.human_id, bobId].sort(), updated_at: timestamp, last_message: {sender_id: bobId, created_at: timestamp, text: "A conversation with history", attachment_count: 0, message_id: message(count - 1).message_id}}]});
+    }
+    if (path === `/v1/dm/conversations/${conversationId}/messages`) {
+      expectSignedRequest(request, account);
+      const cursor = url.searchParams.get("cursor");
+      requestedCursors.push(cursor);
+      const before = cursor === null ? count : Number(cursor);
+      const start = Math.max(0, before - Number(url.searchParams.get("limit")));
+      return send({items: Array.from({length: before - start}, (_, index) => message(start + index)), ...(start ? {next_cursor: String(start)} : {})});
+    }
+    if (path === `/v1/dm/media/${oldestMediaHash}`) {
+      expectSignedRequest(request, account);
+      expect(url.searchParams.get("conversation_id")).toBe(conversationId);
+      expect(url.searchParams.get("message_id")).toBe(message(0).message_id);
+      mediaReads.push(url.search);
+      return route.fulfill({contentType: "image/png", body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==", "base64")});
+    }
+    return send({items: []});
+  });
+  await page.goto("/?messages=true");
+  await page.locator(".dm-conversation").filter({hasText: "Bob"}).click();
+  await expect(page.locator(".dm-message")).toHaveCount(60);
+  await page.getByRole("button", {name: "Load earlier messages", exact: true}).click();
+  await expect(page.locator(".dm-message")).toHaveCount(120);
+  await page.getByRole("button", {name: "Load earlier messages", exact: true}).click();
+  await expect(page.locator(".dm-message")).toHaveCount(145);
+  await expect(page.getByRole("button", {name: "Load earlier messages", exact: true})).toHaveCount(0);
+  await page.getByText("History message 0", {exact: true}).scrollIntoViewIfNeeded();
+  await expect.poll(() => mediaReads.length).toBe(1);
+  expect(requestedCursors.slice(0, 3)).toEqual([null, "85", "25"]);
+
+  // Eighty arrivals exceed a single latest-page response. Polling must fetch a
+  // bridge page and merge by ID, preserving all previously loaded messages.
+  count = 225;
+  await page.clock.fastForward(12_100);
+  await expect(page.locator(".dm-message")).toHaveCount(225);
+  await expect(page.getByText("History message 0", {exact: true})).toHaveCount(1);
+  await expect(page.getByText("History message 144", {exact: true})).toHaveCount(1);
+  await expect(page.getByText("History message 224", {exact: true})).toHaveCount(1);
+  expect(requestedCursors).toContain("165");
+});

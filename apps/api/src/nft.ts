@@ -35,12 +35,12 @@ const PROCESSING_STATES = new Set<NftMintRecord["state"]>(["queued", "signing", 
 
 export interface NftMediaInput {
   source_kind: NftMediaRecord["source_kind"];
+  publication_consent?: boolean;
   source_id: string;
   output_index: number;
   source_post_id?: string;
   creator_id?: string;
   owner_id: string;
-  publication_consent?: boolean;
   owner_wallets?: Partial<Record<"solana" | "base" | "monad" | "arbitrum" | "ethereum" | "hyperevm" | "robinhood", string>>;
   provider_id: string;
   source_content?: string;
@@ -149,8 +149,13 @@ function chainWalletKey(chain: NftChain): "solana" | "base" | "monad" | "arbitru
 }
 
 function metadataSummary(input: NftMediaInput): string {
-  void input;
-  return "A VOX commissioned media record. Private generation details are not published.";
+  if (input.source_kind === "realize_commission") return "A VOX commissioned media record. Private generation details are not published.";
+  const source = input.source_content?.replace(/\s+/g, " ").trim();
+  const parameters = input.request_parameters;
+  const request = typeof parameters.prompt === "string" ? parameters.prompt : typeof parameters.concept === "string" ? parameters.concept : undefined;
+  const sourcePart = source ? `Source: ${source.slice(0, 220)}${source.length > 220 ? "…" : ""}.` : "A VOX commissioned media record.";
+  const requestPart = request ? ` Request: ${request.slice(0, 220)}${request.length > 220 ? "…" : ""}.` : "";
+  return `${sourcePart}${requestPart}`.trim();
 }
 
 function mediaIdFor(input: Pick<NftMediaInput, "source_kind" | "source_id" | "output_index" | "media_sha256">): string {
@@ -167,7 +172,7 @@ function metadataFor(input: NftMediaInput, mediaId: string, metadataUri: string,
     {trait_type: "Media type", value: input.media_type},
     {trait_type: "Provider", value: input.provider_id},
     {trait_type: "Media SHA-256", value: input.media_sha256},
-    {trait_type: "Request SHA-256", value: canonicalHash(input.request_parameters)},
+    ...(input.source_kind === "realize_commission" ? [] : [{trait_type: "Request SHA-256", value: canonicalHash(input.request_parameters)}]),
     {trait_type: "Output index", value: String(input.output_index)},
     ...(input.source_post_id ? [{trait_type: "Source post", value: input.source_post_id}] : []),
     ...(input.creator_id ? [{trait_type: "Creator", value: input.creator_id}] : [])
@@ -181,11 +186,14 @@ function metadataFor(input: NftMediaInput, mediaId: string, metadataUri: string,
     media_id: mediaId,
     source: {
       kind: input.source_kind,
-      id: input.source_id,
+      id: input.source_kind === "realize_commission" ? mediaId : input.source_id,
       ...(input.source_post_id ? {post_id: input.source_post_id} : {}),
       ...(input.creator_id ? {creator_id: input.creator_id} : {})
     },
-    request: {sha256: canonicalHash(input.request_parameters)},
+    ...(input.source_kind === "realize_commission" ? {} : {request: {
+      summary: typeof input.request_parameters.prompt === "string" ? input.request_parameters.prompt.slice(0, 240) : typeof input.request_parameters.concept === "string" ? input.request_parameters.concept.slice(0, 240) : "Private generation request",
+      sha256: canonicalHash(input.request_parameters)
+    }}),
     media: {
       uri: input.media_uri,
       type: input.media_type,
@@ -239,7 +247,7 @@ export class NftMintService {
   }
 
   async ensureMedia(store: VoxStore, input: NftMediaInput): Promise<NftMediaRecord> {
-    if (input.source_kind === "realize_commission" && input.publication_consent !== true) throw new Error("Realize NFT media requires explicit public publication consent");
+    if (input.source_kind === "realize_commission" && input.publication_consent !== true) throw new Error("Realize NFT media requires explicit commissioner publication consent");
     if (!/^https:\/\//.test(input.media_uri) && process.env.NODE_ENV === "production") throw new Error("production NFT media must use HTTPS");
     if (!/^[0-9a-f]{64}$/.test(input.media_sha256)) throw new Error("NFT media SHA-256 must be lowercase hexadecimal");
     const mediaId = mediaIdFor(input);
@@ -250,6 +258,7 @@ export class NftMintService {
     const record: NftMediaRecord = {
       media_id: mediaId,
       source_kind: input.source_kind,
+      ...(input.source_kind === "realize_commission" ? {publication_consent: true} : {}),
       source_id: input.source_id,
       output_index: input.output_index,
       ...(input.source_post_id ? {source_post_id: input.source_post_id} : {}),
@@ -814,11 +823,12 @@ export function configuredNftService(publicBaseUrl: string, env: Readonly<Record
   return new NftMintService({publicBaseUrl, adapters});
 }
 
-export function fulfillmentOutputToNftInput(input: {commissionId: string; ownerId: string; ownerWallet?: string; creatorId: string; providerId: string; sourcePostId?: string; sourceContent?: string; requestParameters: Record<string, unknown>; provenanceRecordId?: string; publicationConsent?: boolean; result: FulfillmentResultV1; outputIndex: number; publicBaseUrl: string}): NftMediaInput {
+export function fulfillmentOutputToNftInput(input: {commissionId: string; ownerId: string; ownerWallet?: string; creatorId: string; providerId: string; sourcePostId?: string; sourceContent?: string; requestParameters: Record<string, unknown>; provenanceRecordId?: string; result: FulfillmentResultV1; outputIndex: number; publicationConsent: boolean; publicBaseUrl: string}): NftMediaInput {
   const output = input.result.outputs[input.outputIndex];
   if (!output) throw new Error("fulfillment output does not exist");
   return {
     source_kind: "realize_commission",
+    publication_consent: input.publicationConsent,
     source_id: input.commissionId,
     output_index: input.outputIndex,
     ...(input.sourcePostId ? {source_post_id: input.sourcePostId} : {}),

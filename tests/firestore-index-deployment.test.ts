@@ -1,4 +1,6 @@
 import {describe, expect, it, vi} from "vitest";
+import {readFileSync} from "node:fs";
+import {parse} from "yaml";
 import {provisionProductionIndexes, validateIndexManifest} from "../scripts/deploy-firestore-indexes.mjs";
 
 const approved = {GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: "yosun/VoxProtocol", GITHUB_REF: "refs/heads/main", GITHUB_EVENT_NAME: "push", VOX_PRODUCTION_SENSITIVE_APPROVED: "true"};
@@ -6,6 +8,45 @@ const expected = {collectionGroup: "vox_nft_mints", queryScope: "COLLECTION", fi
 const ready = {...expected, state: "READY"};
 
 describe("protected additive index provisioning", () => {
+  it("separates index provisioning credentials from application deployment in the protected workflow", () => {
+    const workflow = parse(readFileSync(new URL("../.github/workflows/production.yml", import.meta.url), "utf8"));
+    const job = workflow.jobs["deploy-production"];
+    const steps = job.steps;
+    const indexAuth = steps.findIndex((step: any) => step.name === "Authenticate only the reviewed index provisioning step");
+    const provision = steps.findIndex((step: any) => step.name === "Add missing indexes and await readiness before app promotion");
+    const readiness = steps.findIndex((step: any) => step.name === "Verify required indexes for every API and reconciliation release");
+    const appAuth = steps.findIndex((step: any) => step.name === "Restore the application release identity");
+    const cleanup = steps.findIndex((step: any) => step.name === "Remove temporary index credentials before application build");
+    const promote = steps.findIndex((step: any) => step.name === "Release production Cloud Run and Firebase Hosting targets");
+    expect(job.environment.name).toContain("production-sensitive");
+    expect(indexAuth).toBeGreaterThan(steps.findIndex((step: any) => step.name === "Fail closed unless sensitive production releases require reviewers"));
+    expect(provision).toBeGreaterThan(indexAuth);
+    expect(readiness).toBeGreaterThan(provision);
+    expect(cleanup).toBeGreaterThan(readiness);
+    expect(appAuth).toBeGreaterThan(cleanup);
+    expect(promote).toBeGreaterThan(appAuth);
+    expect(steps[indexAuth].with.service_account).toBe("${{ vars.VOX_GCP_INDEX_SERVICE_ACCOUNT }}");
+    expect(steps[appAuth].with.service_account).toBe("${{ vars.VOX_GCP_DEPLOY_SERVICE_ACCOUNT }}");
+    expect(steps[provision].if).toBe("needs.scope.outputs.deploy_indexes == 'true'");
+    expect(steps[readiness].if).toContain("deploy_api");
+    expect(steps[readiness].if).toContain("deploy_reconcile");
+    expect(steps[indexAuth].if).toBe(steps[readiness].if);
+    expect(steps[readiness].run).toContain("node scripts/check-firestore-indexes.mjs");
+    expect(steps[readiness].run).toContain("VOX_INDEXES_READY=true");
+    expect(steps[cleanup].if).toContain("always()");
+    expect(steps[cleanup].env.INDEX_CREDENTIALS_FILE).toBe("${{ steps.index_auth.outputs.credentials_file_path }}");
+    expect(steps[cleanup].run).toContain('"$GITHUB_WORKSPACE"/gha-creds-*.json) rm -f -- "$INDEX_CREDENTIALS_FILE"');
+    for (const path of [".gitignore", ".gcloudignore", ".dockerignore"]) {
+      expect(readFileSync(new URL(`../${path}`, import.meta.url), "utf8")).toContain("gha-creds-*.json");
+    }
+    expect(steps[appAuth].if).not.toContain("deploy_indexes");
+    expect(steps[promote].if).not.toContain("deploy_indexes");
+    const release = readFileSync(new URL("../scripts/deploy-production-app.sh", import.meta.url), "utf8");
+    expect(release).not.toContain("ensure_realize_reconcile_index");
+    expect(release).not.toContain("node scripts/deploy-firestore-indexes.mjs --apply");
+    expect(release).toContain("VOX_INDEXES_READY");
+  });
+
   it("requires protected main approval before using any GCP commands", async () => {
     for (const env of [{}, {...approved, GITHUB_REF: "refs/heads/feature"}, {...approved, VOX_PRODUCTION_SENSITIVE_APPROVED: "false"}, {...approved, GITHUB_EVENT_NAME: "pull_request"}]) {
       const run = vi.fn();

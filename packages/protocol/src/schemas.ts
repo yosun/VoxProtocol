@@ -39,7 +39,7 @@ export const VoxPostIntentV1Schema = z.object({
     context.addIssue({code: z.ZodIssueCode.custom, path: ["kind"], message: "conversation turns must be replies"});
   }
   if (new TextEncoder().encode(value.content.text).byteLength > 16_000) {
-    context.addIssue({code: z.ZodIssueCode.too_big, maximum: 16_000, type: "string", inclusive: true, path: ["content", "text"], message: "text exceeds byte limit"});
+    context.addIssue({code: z.ZodIssueCode.too_big, maximum: 16_000, origin: "string", inclusive: true, path: ["content", "text"], message: "text exceeds byte limit"});
   }
 });
 
@@ -251,7 +251,7 @@ export const CommissionRequestIntentV1Schema = z.object({
   }).strict()
 }).strict().superRefine((value, context) => {
   if (new TextEncoder().encode(value.content.text).byteLength > 16_000) {
-    context.addIssue({code: z.ZodIssueCode.too_big, maximum: 16_000, type: "string", inclusive: true, path: ["content", "text"], message: "text exceeds byte limit"});
+    context.addIssue({code: z.ZodIssueCode.too_big, maximum: 16_000, origin: "string", inclusive: true, path: ["content", "text"], message: "text exceeds byte limit"});
   }
 });
 

@@ -1,11 +1,11 @@
 import {afterAll, beforeAll, describe, expect, it} from "vitest";
 import {Firestore} from "@google-cloud/firestore";
-import {createHash} from "node:crypto";
+import {createHash, randomUUID} from "node:crypto";
 import {FirestoreStore} from "@vox/api";
 import {createAgent, createHuman} from "@vox/identity";
 import {createCommissionRequestIntent, createThoughtIntent, signCommissionRequestIntent, signIntent} from "@vox/client";
 import {bytesToBase64Url, bytesToHex, commissionRequestHashHex, commissionRequestIdFromIntent, generateKeyPair, postHash, postIdFromIntent} from "@vox/protocol";
-import type {PaymentRecord, QuoteRecord, RealizationRecord} from "@vox/api";
+import type {DirectMessageConversationRecord, DirectMessageRecord, PaymentRecord, QuoteRecord, RealizationRecord} from "@vox/api";
 import type {VoxPostIntentV1} from "@vox/protocol";
 
 const emulatorConfigured = Boolean(process.env.FIRESTORE_EMULATOR_HOST);
@@ -70,6 +70,65 @@ firestoreDescribe("Firestore emulator transactional integration", () => {
     await Promise.all(stores.map((store) => store.close()));
     await database.terminate();
   });
+
+  it("reserves DM sender/client IDs globally, checks legacy records, and pages equal-time history", async () => {
+    const first = newStore(); const second = newStore();
+    const timestamp = now();
+    const sender = `dm-sender:${randomUUID()}`;
+    const recipients = [`dm-recipient:${randomUUID()}`, `dm-recipient:${randomUUID()}`];
+    function input(recipient: string, clientId: string, text = "An idempotent private message") {
+      const participants = [sender, recipient].sort() as [string, string];
+      const conversationId = `vox:dm:${createHash("sha256").update(participants.join("\0")).digest("hex")}`;
+      const messageId = `vox:dm:message:${createHash("sha256").update(`${sender}\0${clientId}`).digest("hex")}`;
+      const message: DirectMessageRecord = {message_id: messageId, conversation_id: conversationId, sender_id: sender, recipient_id: recipient, client_message_id: clientId, created_at: timestamp, signed_at: timestamp, text, attachments: [], signature: "emulator-only"};
+      const conversation: DirectMessageConversationRecord = {conversation_id: conversationId, participants, updated_at: timestamp, last_message: {sender_id: sender, created_at: timestamp, text, attachment_count: 0, message_id: messageId}};
+      return {conversation, message};
+    }
+    const clientId = randomUUID();
+    const contenders = recipients.map((recipient) => input(recipient, clientId));
+    const results = await Promise.allSettled(contenders.map(({conversation, message}, index) => (index === 0 ? first : second).createDirectMessage(conversation, message)));
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const accepted = contenders[results.findIndex((result) => result.status === "fulfilled")]!;
+    expect((await second.createDirectMessage(accepted.conversation, {...accepted.message, created_at: new Date(Date.now() + 1000).toISOString(), signed_at: now(), signature: "retry"})).created).toBe(false);
+    await expect(first.createDirectMessage(accepted.conversation, {...accepted.message, text: "Conflicting content"})).rejects.toThrow("conflicts");
+
+    async function legacy(recipient: string, client: string) {
+      const item = input(recipient, client);
+      const ref = database.collection("vox_direct_message_conversations").doc(item.conversation.conversation_id);
+      await ref.set(item.conversation);
+      await ref.collection("messages").doc(item.message.message_id).set(item.message);
+      return item;
+    }
+    const legacyId = randomUUID();
+    const old = await legacy(recipients[0]!, legacyId);
+    const legacyConflict = input(recipients[1]!, legacyId);
+    await expect(second.createDirectMessage(legacyConflict.conversation, legacyConflict.message)).rejects.toThrow("client_message_id");
+    expect((await first.createDirectMessage(old.conversation, old.message)).created).toBe(false);
+    await expect(second.createDirectMessage(legacyConflict.conversation, legacyConflict.message)).rejects.toThrow("client_message_id");
+    const corruptedLegacyId = randomUUID();
+    const conflictingOld = await legacy(recipients[0]!, corruptedLegacyId);
+    await legacy(recipients[1]!, corruptedLegacyId);
+    await expect(first.createDirectMessage(conflictingOld.conversation, conflictingOld.message)).rejects.toThrow("client_message_id");
+
+    const historySender = `dm-history:${randomUUID()}`;
+    const historyConversation = `vox:dm:${createHash("sha256").update(historySender).digest("hex")}`;
+    const ref = database.collection("vox_direct_message_conversations").doc(historyConversation);
+    const seeded = Array.from({length: 135}, (_, index) => ({...input(recipients[0]!, randomUUID()).message, conversation_id: historyConversation, sender_id: historySender, message_id: `vox:dm:message:${index.toString(16).padStart(64, "0")}`}));
+    const batch = database.batch();
+    for (const message of seeded) batch.set(ref.collection("messages").doc(message.message_id), message);
+    await batch.commit();
+    const all: DirectMessageRecord[] = [];
+    let before: {created_at: string; message_id: string} | undefined;
+    for (;;) {
+      const page = await second.listDirectMessages(historyConversation, 60, before);
+      all.unshift(...page);
+      if (page.length < 60) break;
+      before = page[0];
+    }
+    expect(all.map((message) => message.message_id)).toEqual(seeded.map((message) => message.message_id));
+    expect(await first.getDirectMessage(historyConversation, seeded[0]!.message_id)).toEqual(seeded[0]);
+  }, 60_000);
 
   it("serializes character conversation turns across independent runtimes", async () => {
     const first = newStore(); const second = newStore();
@@ -213,7 +272,7 @@ firestoreDescribe("Firestore emulator transactional integration", () => {
     const store = newStore();
     const timestamp = now();
     const ids = Array.from({length: 47}, (_, index) => `emulator:nft-page:${timestamp}:${index}`)
-      .sort((left, right) => createHash("sha256").update(left).digest("hex").localeCompare(createHash("sha256").update(right).digest("hex")));
+      .sort((left, right) => { const a = Buffer.from(left).toString("base64url"); const b = Buffer.from(right).toString("base64url"); return a < b ? -1 : a > b ? 1 : 0; });
     const future = new Date(Date.now() + 3_600_000).toISOString();
     await Promise.all(ids.map((mint_id, index) => store.createNftMint({
       mint_id, media_id: "emulator:media-page", owner_id: "emulator:human-page", owner_wallet: "0x" + "1".repeat(40), chain: "monad:testnet", state: "queued", metadata_uri: "https://example.test/page-metadata", metadata_hash: "a".repeat(64), attempts: 0,

@@ -1,4 +1,5 @@
 import type {CharacterConversationRecord, ConversationV1, FollowIntentV1, HumanRegistrationV1, SignedCommissionRequestV1, VideoBriefV1} from "@vox/protocol";
+import {directMessageMediaPath, directMessageMessagesPath} from "@vox/protocol";
 
 export interface AgentProfile {
   profile_version: number;
@@ -410,7 +411,7 @@ export interface NftMintStatus {
 export interface NftMediaStatus {
   media_id: string;
   source_kind: string;
-  source_id: string;
+  source_id?: string;
   output_index: number;
   source_post_id?: string;
   creator_id?: string;
@@ -439,6 +440,10 @@ export const API_URL = configuredApiUrl === "__same_origin__"
 export function publicPageUrl(path: string): string {
   const baseUrl = new URL(API_URL || window.location.origin, window.location.origin);
   return new URL(path, baseUrl).href;
+}
+
+function encodeCreatorIdPathSegment(creatorId: string): string {
+  return encodeURIComponent(creatorId).replace(/%3A/gi, ":");
 }
 
 export type ApiErrorKind = "network" | "http" | "response";
@@ -514,7 +519,7 @@ export const api = {
   human: (id: string) => request<HumanRecord>(`/v1/humans/${encodeURIComponent(id)}`),
   me: (headers: Record<string, string>) => request<HumanRecord>("/v1/me", {headers}),
   dmConversations: (limit: number, headers: Record<string, string>) => request<{items: DirectMessageConversationRecord[]}>(`/v1/dm/conversations?limit=${encodeURIComponent(String(limit))}`, {headers}),
-  dmMessages: (conversationId: string, limit: number, headers: Record<string, string>) => request<{items: DirectMessageRecord[]}>(`/v1/dm/conversations/${encodeURIComponent(conversationId)}/messages?limit=${encodeURIComponent(String(limit))}`, {headers}),
+  dmMessages: (conversationId: string, limit: number, headers: Record<string, string>, cursor?: string) => request<{items: DirectMessageRecord[]; next_cursor?: string}>(directMessageMessagesPath(conversationId, limit, cursor), {headers}),
   sendDirectMessage: (body: DirectMessageRequest, headers: Record<string, string>) => request<DirectMessageRecord>("/v1/dm/messages", {method: "POST", headers, body: JSON.stringify(body)}),
   uploadDirectMessageMedia: async (hash: string, file: File, headers: Record<string, string>, metadata: {asset_hash: string; file_name: string; media_type: string; byte_length: number}) => {
     let response: Response;
@@ -526,8 +531,8 @@ export const api = {
     if (!response.ok) throw await rawResponseError(response);
     return await response.json() as {asset_hash: string; file_name: string; media_type: string; byte_length: number};
   },
-  directMessageMedia: async (hash: string, conversationId: string, headers: Record<string, string>) => {
-    const path = `/v1/dm/media/${encodeURIComponent(hash)}?conversation_id=${encodeURIComponent(conversationId)}`;
+  directMessageMedia: async (hash: string, conversationId: string, headers: Record<string, string>, messageId?: string) => {
+    const path = directMessageMediaPath(hash, conversationId, messageId);
     let response: Response;
     try { response = await fetch(`${API_URL}${path}`, {headers}); }
     catch { throw new ApiError("Couldn’t connect to VOX.gold. Check your connection and retry.", {kind: "network", code: "network_error"}); }
@@ -548,8 +553,8 @@ export const api = {
   proof: (id: string) => request<ProofResponse>(`/v1/posts/${encodeURIComponent(id)}/proof`),
   paymentConfig: () => request<PaymentConfig>("/v1/payments/config"),
   health: () => request<{instance_id: string; instance_public_key: string}>("/v1/health"),
-  realizeCapabilities: (creatorId: string) => request<RealizeCapabilities>(`/v1/realize/creators/${encodeURIComponent(creatorId)}/capabilities`),
-  realizeInputSchema: (creatorId: string, capabilityId: string) => request<Record<string, unknown>>(`/v1/realize/creators/${encodeURIComponent(creatorId)}/input-schema?capability_id=${encodeURIComponent(capabilityId)}`),
+  realizeCapabilities: (creatorId: string) => request<RealizeCapabilities>(`/v1/realize/creators/${encodeCreatorIdPathSegment(creatorId)}/capabilities`),
+  realizeInputSchema: (creatorId: string, capabilityId: string) => request<Record<string, unknown>>(`/v1/realize/creators/${encodeCreatorIdPathSegment(creatorId)}/input-schema?capability_id=${encodeURIComponent(capabilityId)}`),
   realizeRights: (agreementId: string, version?: number) => request<RealizeRightsAgreement>(`/v1/rights/agreements/${encodeURIComponent(agreementId)}${version ? `?version=${version}` : ""}`),
   createRealizeCommission: (body: unknown, idempotencyKey: string, headers: Record<string, string>) => request<RealizeCommission>("/v1/realize/commissions", {method: "POST", headers: {...headers, "idempotency-key": idempotencyKey}, body: JSON.stringify(body)}),
   requestRealizeQuote: (body: unknown, headers: Record<string, string>) => request<{protocol_version: "realize/1"; request_id: string; creator_id: string; quotes: RealizeQuote[]; issued_at: string}>("/v1/realize/pricing-requests", {method: "POST", headers, body: JSON.stringify(body)}),
