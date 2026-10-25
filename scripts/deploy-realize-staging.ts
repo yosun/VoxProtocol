@@ -62,8 +62,8 @@ for (const name of requiredSecrets) gcloud(["secrets", "add-iam-policy-binding",
 const indexes = JSON.parse(readFileSync(new URL("../infrastructure/gcp/firestore.indexes.json", import.meta.url), "utf8")).indexes;
 const existingIndexes = json(["firestore", "indexes", "composite", "list", `--database=${settings.firestoreDatabase}`]);
 for (const index of indexes) {
-  const matches = existingIndexes.some((actual: any) => actual.name.includes(`/collectionGroups/${index.collectionGroup}/`) && index.fields.every((field: any) => actual.fields.some((candidate: any) => candidate.fieldPath === field.fieldPath && candidate.order === field.order)));
-  if (!matches) gcloud(["firestore", "indexes", "composite", "create", "--async", `--database=${settings.firestoreDatabase}`, `--collection-group=${index.collectionGroup}`, ...index.fields.map((field: any) => `--field-config=field-path=${field.fieldPath},order=${field.order.toLowerCase()}`)]);
+  const matches = existingIndexes.some((actual: any) => actual.name.includes(`/collectionGroups/${index.collectionGroup}/`) && index.fields.every((field: any) => actual.fields.some((candidate: any) => candidate.fieldPath === field.fieldPath && (field.arrayConfig ? candidate.arrayConfig === field.arrayConfig : candidate.order === field.order))));
+  if (!matches) gcloud(["firestore", "indexes", "composite", "create", "--async", `--database=${settings.firestoreDatabase}`, `--collection-group=${index.collectionGroup}`, ...index.fields.map((field: any) => `--field-config=field-path=${field.fieldPath},${field.order ? `order=${field.order.toLowerCase()}` : `array-config=${field.arrayConfig.toLowerCase()}`}`)]);
 }
 const env = {
   GOOGLE_CLOUD_PROJECT: settings.projectId, VOX_STORAGE: "firestore", VOX_FIRESTORE_DATABASE: settings.firestoreDatabase,

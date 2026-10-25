@@ -1,0 +1,34 @@
+.character-conversations { width: min(760px, 100vw); max-width: 100vw; padding: 28px; overflow-y: auto; outline: none; }
+.character-conversations h2 { font-size: 28px; line-height: 1.2; }
+.character-conversations .drawer-header { display: flex; align-items: start; justify-content: space-between; gap: 20px; }
+.character-conversations .drawer-header > button { border: 0; background: transparent; color: #bdb3a3; font-size: 28px; line-height: 1; padding: 4px; }
+.character-conversations button { cursor: pointer; }
+.conversation-cast { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 12px 0 24px; }
+.conversation-cast a { color: #e6c988; text-decoration: none; }
+.conversation-cast span { flex-basis: 100%; font-size: 12px; color: #a6a3a0; }
+.conversation-transcript { list-style: none; padding: 0; margin: 16px 0; }
+.conversation-transcript > li { border-left: 2px solid #655035; padding: 4px 0 22px 20px; margin-bottom: 20px; }
+.conversation-speaker { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.conversation-speaker a, .conversation-back, .conversation-branch { color: #bdb3a3; font-size: 12px; }
+.conversation-dialogue { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.75; }
+.conversation-source { border-left: 2px solid #655035; margin: 12px 0; padding: 8px 16px; color: #bdb3a3; white-space: pre-wrap; overflow-wrap: anywhere; }
+.conversation-brief { border: 1px solid #67512f; background: #b58b3420; border-radius: 14px; padding: 18px; margin: 18px 0; }
+.conversation-brief h3 { margin: 8px 0; }
+.conversation-brief details { margin: 16px 0; }
+.conversation-brief summary { cursor: pointer; color: #e6c988; }
+.conversation-branch, .conversation-back, .conversation-section-heading button { border: 0; padding: 6px 0; background: transparent; }
+.conversation-section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-top: 28px; }
+.conversation-section-heading button { color: #e6c988; }
+.conversation-list-item { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; text-align: left; background: #ffffff05; color: inherit; border: 1px solid #ffffff1c; border-radius: 10px; padding: 16px; margin: 10px 0; }
+.conversation-list-item span { font-size: 12px; color: #bdb3a3; }
+.conversation-compose form { display: grid; gap: 18px; }
+.conversation-compose label { display: grid; gap: 8px; font-size: 13px; }
+.conversation-compose input, .conversation-compose textarea, .conversation-compose select { width: 100%; border: 1px solid #ffffff30; border-radius: 8px; background: #15191d; color: #f3ede5; padding: 12px; font: inherit; }
+.conversation-compose textarea { min-height: 110px; resize: vertical; }
+.conversation-compose blockquote { border-left: 2px solid #b58b34; margin: 0; padding-left: 14px; color: #bdb3a3; line-height: 1.6; }
+.conversation-selected, .conversation-character-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.conversation-selected button, .conversation-character-options button { background: #b58b341c; color: #e6c988; border: 1px solid #655035; border-radius: 18px; padding: 8px 12px; font-size: 12px; }
+.conversation-sent { border: 1px solid #655035; border-radius: 12px; padding: 20px; margin: 16px 0; }
+.conversation-recent { margin-top: 32px; }
+.post-story-link { display: inline-flex; gap: 6px; margin: 10px 0 0; color: #e6c988; font-size: 12px; text-decoration: none; }
+@media (max-width: 600px) { .character-conversations { padding: 20px 16px; } .conversation-list-item { align-items: start; flex-direction: column; gap: 6px; } }

@@ -325,7 +325,8 @@ export const REALIZE_COMMISSION_TRANSITIONS = Object.freeze({
   REFUND_PENDING: Object.freeze(["REFUNDED", "FAILED", "MANUAL_REVIEW"] as const),
   REFUNDED: Object.freeze([]),
   MANUAL_REVIEW: Object.freeze(["COMPLETED", "REFUND_PENDING"] as const),
-  EXPIRED: Object.freeze([])
+  // Recovery is permitted only after the backend verifies an already-received payment.
+  EXPIRED: Object.freeze(["FUNDED"] as const)
 } as const satisfies Readonly<Record<CommissionStateValue, readonly CommissionStateValue[]>>);
 
 export function canTransitionRealizeCommission(from: CommissionStateValue, to: CommissionStateValue): boolean {
@@ -344,7 +345,7 @@ export const REALIZE_COMMISSION_STATE_REQUIREMENTS = Object.freeze({
   FAILED: {payment: ["not_started", "pending", "authorized", "captured", "failed", "refund_pending"], fulfillment: ["not_started", "queued", "failed", "canceled", "completed"]},
   REFUND_PENDING: {payment: ["refund_pending"], fulfillment: ["not_started", "failed", "canceled", "completed"]},
   REFUNDED: {payment: ["refunded"], fulfillment: ["not_started", "failed", "canceled", "completed"]},
-  MANUAL_REVIEW: {payment: ["captured", "refund_pending"], fulfillment: ["queued", "generating", "failed", "canceled", "completed"]},
+  MANUAL_REVIEW: {payment: ["captured", "refund_pending"], fulfillment: ["not_started", "queued", "generating", "failed", "canceled", "completed"]},
   EXPIRED: {payment: ["not_started", "pending", "failed"], fulfillment: ["not_started", "canceled"]}
 } as const);
 for (const requirements of Object.values(REALIZE_COMMISSION_STATE_REQUIREMENTS)) {

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { VOX_USERNAME_PATTERN } from "./usernames.js";
+import {ConversationSeedV1Schema, ConversationV1Schema, VideoBriefV1Schema} from "./conversation.js";
 
 const isoDate = z.string().datetime({offset: true});
 const base64url = z.string().regex(/^[A-Za-z0-9_-]+$/, "must be base64url");
@@ -19,7 +20,9 @@ export const VoxPostIntentV1Schema = z.object({
   kind: PostKindSchema,
   content: z.object({
     text: z.string().min(1).max(4000),
-    parent_id: postId.optional()
+    parent_id: postId.optional(),
+    conversation: ConversationV1Schema.optional(),
+    video_brief: VideoBriefV1Schema.optional()
   }).strict()
 }).strict().superRefine((value, context) => {
   if (value.kind === "reply" && !value.content.parent_id) {
@@ -27,6 +30,13 @@ export const VoxPostIntentV1Schema = z.object({
   }
   if (value.kind !== "reply" && value.content.parent_id) {
     context.addIssue({code: z.ZodIssueCode.custom, path: ["content", "parent_id"], message: "only reply posts may set parent_id"});
+  }
+  const conversation = value.content.conversation;
+  if (conversation?.type === "start" && (value.kind !== "fiction" || conversation.participant_ids[0] !== value.agent_id)) {
+    context.addIssue({code: z.ZodIssueCode.custom, path: ["content", "conversation"], message: "conversations start as fiction with the author first in the cast"});
+  }
+  if (conversation?.type === "turn" && value.kind !== "reply") {
+    context.addIssue({code: z.ZodIssueCode.custom, path: ["kind"], message: "conversation turns must be replies"});
   }
   if (new TextEncoder().encode(value.content.text).byteLength > 16_000) {
     context.addIssue({code: z.ZodIssueCode.too_big, maximum: 16_000, type: "string", inclusive: true, path: ["content", "text"], message: "text exceeds byte limit"});
@@ -76,7 +86,15 @@ export const SignedAvatarUploadIntentV1Schema = z.object({
 
 export const AgentLivestreamV1Schema = z.object({
   provider: z.literal("populi"),
-  username: z.string().regex(/^[a-z0-9_-]{1,64}$/, "must be a lowercase Populi username")
+  username: z.string().regex(/^[a-z0-9_-]{1,64}$/, "must be a lowercase Populi username"),
+  time_zone: z.string().min(1).max(64).refine((timeZone) => {
+    try {
+      new Intl.DateTimeFormat("en-US", {timeZone});
+      return true;
+    } catch {
+      return false;
+    }
+  }, "must be a valid IANA time zone").optional()
 }).strict();
 
 export const AgentProfileUpdateV1Schema = z.object({
@@ -228,7 +246,8 @@ export const CommissionRequestIntentV1Schema = z.object({
   kind: z.literal("commission_request"),
   content: z.object({
     text: z.string().min(1).max(4000),
-    source_post_id: postId.optional()
+    source_post_id: postId.optional(),
+    conversation: ConversationSeedV1Schema.optional()
   }).strict()
 }).strict().superRefine((value, context) => {
   if (new TextEncoder().encode(value.content.text).byteLength > 16_000) {

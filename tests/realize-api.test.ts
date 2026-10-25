@@ -34,7 +34,7 @@ async function setup() {
     getInputSchema: async () => ({type: "object", properties: {concept: {type: "string"}}}),
     getCurrentPrice: vi.fn(), requestFulfillment, getFulfillment
   };
-  app = await buildApp({store, populiRealizeClient: provider});
+  app = await buildApp({store, populiRealizeClient: provider, internalToken: "test-only-reconcile-token"});
   async function request(path: string, method: "GET" | "POST" = "GET", body?: unknown, signingPath = path) {
     const issued_at = new Date().toISOString();
     const principal_id = human.registration.human_id;
@@ -46,6 +46,29 @@ async function setup() {
 }
 
 describe("Realize API checkout integration", () => {
+  it("keeps abandoned drafts and failed records out of the reconciliation queue", async () => {
+    const {store, record, getFulfillment} = await setup();
+    for (const state of ["DRAFT", "FAILED"] as const) {
+      await store.createRealizeCommission({...record, commission: {...record.commission, commission_id: `old:${state}`, state}, updated_at: "2026-01-01T00:00:00.000Z"});
+    }
+    const response = await app!.inject({method: "POST", url: "/v1/internal/realize/reconcile", headers: {"x-vox-internal-token": "test-only-reconcile-token"}, payload: {limit: 1}});
+    expect(response.statusCode).toBe(200);
+    expect(response.json().commissions).toEqual([{commission_id: record.commission.commission_id, state: "GENERATING"}]);
+    expect(getFulfillment).toHaveBeenCalledOnce();
+  });
+
+  it("rotates blocked commissions so later paid work is eventually reconciled", async () => {
+    const {store, record, getFulfillment} = await setup();
+    await store.createRealizeCommission({...record, commission: {...record.commission, commission_id: "old:manual-review", state: "MANUAL_REVIEW"}, fulfillment_request: undefined, updated_at: "2026-01-01T00:00:00.000Z"});
+    const run = () => app!.inject({method: "POST", url: "/v1/internal/realize/reconcile", headers: {"x-vox-internal-token": "test-only-reconcile-token"}, payload: {limit: 1}});
+    const first = await run();
+    expect(first.json().commissions[0]).toEqual({commission_id: "old:manual-review", state: "MANUAL_REVIEW"});
+    expect(getFulfillment).not.toHaveBeenCalled();
+    const second = await run();
+    expect(second.json().commissions[0]).toEqual({commission_id: record.commission.commission_id, state: "GENERATING"});
+    expect(getFulfillment).toHaveBeenCalledOnce();
+  });
+
   it("returns VOX's pinned rights reference when Populi omits the optional field", async () => {
     const {creator} = await setup();
     const response = await app!.inject(`/v1/realize/creators/${encodeURIComponent(creator.registration.agent_id)}/capabilities`);

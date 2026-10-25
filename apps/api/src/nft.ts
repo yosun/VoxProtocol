@@ -1,5 +1,5 @@
 import {readFileSync} from "node:fs";
-import {createHash} from "node:crypto";
+import {createHash, randomUUID} from "node:crypto";
 import {secp256k1} from "@noble/curves/secp256k1";
 import {keccak_256} from "@noble/hashes/sha3.js";
 import nacl from "tweetnacl";
@@ -40,6 +40,7 @@ export interface NftMediaInput {
   source_post_id?: string;
   creator_id?: string;
   owner_id: string;
+  publication_consent?: boolean;
   owner_wallets?: Partial<Record<"solana" | "base" | "monad" | "arbitrum" | "ethereum" | "hyperevm" | "robinhood", string>>;
   provider_id: string;
   source_content?: string;
@@ -148,12 +149,8 @@ function chainWalletKey(chain: NftChain): "solana" | "base" | "monad" | "arbitru
 }
 
 function metadataSummary(input: NftMediaInput): string {
-  const source = input.source_content?.replace(/\s+/g, " ").trim();
-  const parameters = input.request_parameters;
-  const request = typeof parameters.prompt === "string" ? parameters.prompt : typeof parameters.concept === "string" ? parameters.concept : undefined;
-  const sourcePart = source ? `Source: ${source.slice(0, 220)}${source.length > 220 ? "…" : ""}.` : "A VOX commissioned media record.";
-  const requestPart = request ? ` Request: ${request.slice(0, 220)}${request.length > 220 ? "…" : ""}.` : "";
-  return `${sourcePart}${requestPart}`.trim();
+  void input;
+  return "A VOX commissioned media record. Private generation details are not published.";
 }
 
 function mediaIdFor(input: Pick<NftMediaInput, "source_kind" | "source_id" | "output_index" | "media_sha256">): string {
@@ -188,10 +185,7 @@ function metadataFor(input: NftMediaInput, mediaId: string, metadataUri: string,
       ...(input.source_post_id ? {post_id: input.source_post_id} : {}),
       ...(input.creator_id ? {creator_id: input.creator_id} : {})
     },
-    request: {
-      summary: typeof input.request_parameters.prompt === "string" ? input.request_parameters.prompt.slice(0, 240) : typeof input.request_parameters.concept === "string" ? input.request_parameters.concept.slice(0, 240) : "Private generation request",
-      sha256: canonicalHash(input.request_parameters)
-    },
+    request: {sha256: canonicalHash(input.request_parameters)},
     media: {
       uri: input.media_uri,
       type: input.media_type,
@@ -245,6 +239,7 @@ export class NftMintService {
   }
 
   async ensureMedia(store: VoxStore, input: NftMediaInput): Promise<NftMediaRecord> {
+    if (input.source_kind === "realize_commission" && input.publication_consent !== true) throw new Error("Realize NFT media requires explicit public publication consent");
     if (!/^https:\/\//.test(input.media_uri) && process.env.NODE_ENV === "production") throw new Error("production NFT media must use HTTPS");
     if (!/^[0-9a-f]{64}$/.test(input.media_sha256)) throw new Error("NFT media SHA-256 must be lowercase hexadecimal");
     const mediaId = mediaIdFor(input);
@@ -260,6 +255,7 @@ export class NftMintService {
       ...(input.source_post_id ? {source_post_id: input.source_post_id} : {}),
       ...(input.creator_id ? {creator_id: input.creator_id} : {}),
       owner_id: input.owner_id,
+      ...(input.publication_consent === true ? {publication_consent: true} : {}),
       provider_id: input.provider_id,
       ...(input.source_content ? {source_content: input.source_content} : {}),
       request_parameters: structuredClone(input.request_parameters),
@@ -300,54 +296,69 @@ export class NftMintService {
 
   async processPending(store: VoxStore, limit = 30, workerId = "vox-nft-reconcile"): Promise<Array<{mint_id: string; state: NftMintRecord["state"]; error?: string}>> {
     const candidates = await store.listNftMintsForProcessing(Math.min(Math.max(limit, 1), 100));
+    return this.processCandidates(store, candidates, workerId);
+  }
+
+  async processMint(store: VoxStore, mintId: string, workerId: string): Promise<void> {
+    const mint = await store.getNftMint(mintId);
+    if (mint && PROCESSING_STATES.has(mint.state)) await this.processCandidates(store, [mint], workerId);
+  }
+
+  private async processCandidates(store: VoxStore, candidates: NftMintRecord[], workerId: string): Promise<Array<{mint_id: string; state: NftMintRecord["state"]; error?: string}>> {
     const outcomes: Array<{mint_id: string; state: NftMintRecord["state"]; error?: string}> = [];
     for (const candidate of candidates) {
-      const claimed = await store.claimNftMint(candidate.mint_id, workerId, 300);
-      if (!claimed) continue;
-      const adapter = this.adapters.find((item) => item.chain === claimed.chain);
-      if (!adapter) {
-        const failed = clearLease({...claimed, state: "retryable_failure", last_error: "configured NFT chain adapter is unavailable", next_attempt_at: nextAttempt(claimed.attempts), updated_at: new Date().toISOString()});
-        const saved = await store.updateNftMint(failed, claimed.updated_at).catch(() => failed);
-        outcomes.push({mint_id: saved.mint_id, state: saved.state, ...(saved.last_error ? {error: saved.last_error} : {})});
-        continue;
-      }
+      const chainLeaseOwner = `${workerId}:${randomUUID()}`;
+      if (!await store.claimNftChain(candidate.chain, chainLeaseOwner, 300)) continue;
       try {
-        let observation: NftChainObservation;
-        let currentForObservation = claimed;
-        if (claimed.state === "signed") {
-          observation = await adapter.submit(claimed);
-        } else if (claimed.state === "submitted") {
-          observation = await adapter.reconcile(claimed);
-        } else {
-          if (!claimed.owner_wallet) {
-            const claimable = clearLease({...claimed, state: "claimable", updated_at: new Date().toISOString()});
-            const saved = await store.updateNftMint(claimable, claimed.updated_at);
-            outcomes.push({mint_id: saved.mint_id, state: saved.state});
-            continue;
-          }
-          const media = await store.getNftMedia(claimed.media_id);
-          if (!media) throw new Error("canonical NFT media record is missing");
-          const prepared = await adapter.prepare({media, mint: claimed});
-          const signed = {...claimed, state: "signed" as const, transaction_id: prepared.transaction_id, ...(prepared.token_id ? {token_id: prepared.token_id} : {}), ...(prepared.asset_address ? {asset_address: prepared.asset_address} : {}), ...(prepared.explorer_url ? {explorer_url: prepared.explorer_url} : {}), signed_transaction: prepared.signed_transaction, ...(prepared.nonce ? {nonce: prepared.nonce} : {}), ...(prepared.blockhash ? {blockhash: prepared.blockhash} : {}), ...(prepared.last_valid_block_height === undefined ? {} : {last_valid_block_height: prepared.last_valid_block_height}), updated_at: new Date().toISOString()};
-          const stored = await store.updateNftMint(signed, claimed.updated_at);
-          observation = await adapter.submit(stored);
-          currentForObservation = stored;
+        const claimed = await store.claimNftMint(candidate.mint_id, workerId, 300);
+        if (!claimed) continue;
+        const adapter = this.adapters.find((item) => item.chain === claimed.chain);
+        if (!adapter) {
+          const failed = clearLease({...claimed, state: "retryable_failure", last_error: "configured NFT chain adapter is unavailable", next_attempt_at: nextAttempt(claimed.attempts), updated_at: new Date().toISOString()});
+          const saved = await store.updateNftMint(failed, claimed.updated_at).catch(() => failed);
+          outcomes.push({mint_id: saved.mint_id, state: saved.state, ...(saved.last_error ? {error: saved.last_error} : {})});
+          continue;
         }
-        const updated = this.applyObservation(currentForObservation, observation);
-        const saved = await store.updateNftMint(updated, currentForObservation.updated_at).catch(async () => await store.getNftMint(currentForObservation.mint_id) ?? updated);
-        outcomes.push({mint_id: saved.mint_id, state: saved.state, ...(saved.last_error ? {error: saved.last_error} : {})});
-      } catch (error) {
-        const latest = await store.getNftMint(claimed.mint_id) ?? claimed;
-        const uncertain = latest.state === "signed" || latest.state === "submitted";
-        const failed = clearLease({
-          ...latest,
-          state: uncertain ? "manual_review" : "retryable_failure",
-          last_error: errorText(error),
-          ...(uncertain ? {} : {next_attempt_at: nextAttempt(latest.attempts)}),
-          updated_at: new Date().toISOString()
-        });
-        const saved = await store.updateNftMint(failed, latest.updated_at).catch(() => failed);
-        outcomes.push({mint_id: saved.mint_id, state: saved.state, ...(saved.last_error ? {error: saved.last_error} : {})});
+        try {
+          let observation: NftChainObservation;
+          let currentForObservation = claimed;
+          if (claimed.state === "signed") {
+            observation = await adapter.submit(claimed);
+          } else if (claimed.state === "submitted") {
+            observation = await adapter.reconcile(claimed);
+          } else {
+            if (!claimed.owner_wallet) {
+              const claimable = clearLease({...claimed, state: "claimable", updated_at: new Date().toISOString()});
+              const saved = await store.updateNftMint(claimable, claimed.updated_at);
+              outcomes.push({mint_id: saved.mint_id, state: saved.state});
+              continue;
+            }
+            const media = await store.getNftMedia(claimed.media_id);
+            if (!media) throw new Error("canonical NFT media record is missing");
+            const prepared = await adapter.prepare({media, mint: claimed});
+            const signed = {...claimed, state: "signed" as const, transaction_id: prepared.transaction_id, ...(prepared.token_id ? {token_id: prepared.token_id} : {}), ...(prepared.asset_address ? {asset_address: prepared.asset_address} : {}), ...(prepared.explorer_url ? {explorer_url: prepared.explorer_url} : {}), signed_transaction: prepared.signed_transaction, ...(prepared.nonce ? {nonce: prepared.nonce} : {}), ...(prepared.blockhash ? {blockhash: prepared.blockhash} : {}), ...(prepared.last_valid_block_height === undefined ? {} : {last_valid_block_height: prepared.last_valid_block_height}), updated_at: new Date().toISOString()};
+            const stored = await store.updateNftMint(signed, claimed.updated_at);
+            observation = await adapter.submit(stored);
+            currentForObservation = stored;
+          }
+          const updated = this.applyObservation(currentForObservation, observation);
+          const saved = await store.updateNftMint(updated, currentForObservation.updated_at).catch(async () => await store.getNftMint(currentForObservation.mint_id) ?? updated);
+          outcomes.push({mint_id: saved.mint_id, state: saved.state, ...(saved.last_error ? {error: saved.last_error} : {})});
+        } catch (error) {
+          const latest = await store.getNftMint(claimed.mint_id) ?? claimed;
+          const uncertain = latest.state === "signed" || latest.state === "submitted";
+          const failed = clearLease({
+            ...latest,
+            state: uncertain ? "manual_review" : "retryable_failure",
+            last_error: errorText(error),
+            ...(uncertain ? {} : {next_attempt_at: nextAttempt(latest.attempts)}),
+            updated_at: new Date().toISOString()
+          });
+          const saved = await store.updateNftMint(failed, latest.updated_at).catch(() => failed);
+          outcomes.push({mint_id: saved.mint_id, state: saved.state, ...(saved.last_error ? {error: saved.last_error} : {})});
+        }
+      } finally {
+        await store.releaseNftChain(candidate.chain, chainLeaseOwner);
       }
     }
     return outcomes;
@@ -420,6 +431,7 @@ function createMetadataAccountV3Instruction(input: {metadata: PublicKey; mint: P
     0,
     0,
     0,
+    0,
     1,
     0
   ]);
@@ -436,6 +448,20 @@ function createMetadataAccountV3Instruction(input: {metadata: PublicKey; mint: P
     ],
     data: Buffer.from(data)
   });
+}
+
+export function createSolanaNftMintInstructions(input: {authority: PublicKey; mint: PublicKey; owner: PublicKey; rentLamports: number; metadataUri: string; name: string}): TransactionInstruction[] {
+  const tokenAccount = getAssociatedTokenAddressSync(input.mint, input.owner, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
+  return [
+    SystemProgram.createAccount({fromPubkey: input.authority, newAccountPubkey: input.mint, lamports: input.rentLamports, space: MINT_SIZE, programId: TOKEN_PROGRAM_ID}),
+    createInitializeMintInstruction(input.mint, 0, input.authority, input.authority, TOKEN_PROGRAM_ID),
+    createAssociatedTokenAccountIdempotentInstruction(input.authority, tokenAccount, input.owner, input.mint, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID),
+    createMintToInstruction(input.mint, tokenAccount, input.authority, 1, [], TOKEN_PROGRAM_ID),
+    createMetadataAccountV3Instruction({metadata: metadataPda(input.mint), mint: input.mint, authority: input.authority, payer: input.authority, uri: input.metadataUri, name: input.name}),
+    // Token Metadata validates the current mint authority when creating metadata.
+    createSetAuthorityInstruction(input.mint, input.authority, AuthorityType.MintTokens, null, [], TOKEN_PROGRAM_ID),
+    createSetAuthorityInstruction(input.mint, input.authority, AuthorityType.FreezeAccount, null, [], TOKEN_PROGRAM_ID)
+  ];
 }
 
 export interface SolanaNftAdapterOptions {
@@ -466,20 +492,10 @@ export class SolanaNftAdapter implements NftChainAdapter {
     if (input.media.metadata_uri.length > MAX_SOLANA_METADATA_URI_BYTES) throw new Error("NFT metadata URI exceeds the Solana Token Metadata limit");
     const owner = new PublicKey(input.mint.owner_wallet);
     const mint = Keypair.generate();
-    const metadata = metadataPda(mint.publicKey);
-    const tokenAccount = getAssociatedTokenAddressSync(mint.publicKey, owner, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
     const {blockhash, lastValidBlockHeight} = await this.connection.getLatestBlockhash("finalized");
     const rent = await this.connection.getMinimumBalanceForRentExemption(MINT_SIZE, "finalized");
     const transaction = new Transaction({feePayer: this.signer.publicKey, recentBlockhash: blockhash});
-    transaction.add(
-      SystemProgram.createAccount({fromPubkey: this.signer.publicKey, newAccountPubkey: mint.publicKey, lamports: rent, space: MINT_SIZE, programId: TOKEN_PROGRAM_ID}),
-      createInitializeMintInstruction(mint.publicKey, 0, this.signer.publicKey, this.signer.publicKey, TOKEN_PROGRAM_ID),
-      createAssociatedTokenAccountIdempotentInstruction(this.signer.publicKey, tokenAccount, owner, mint.publicKey, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID),
-      createMintToInstruction(mint.publicKey, tokenAccount, this.signer.publicKey, 1, [], TOKEN_PROGRAM_ID),
-      createSetAuthorityInstruction(mint.publicKey, this.signer.publicKey, AuthorityType.MintTokens, null, [], TOKEN_PROGRAM_ID),
-      createSetAuthorityInstruction(mint.publicKey, this.signer.publicKey, AuthorityType.FreezeAccount, null, [], TOKEN_PROGRAM_ID),
-      createMetadataAccountV3Instruction({metadata, mint: mint.publicKey, authority: this.signer.publicKey, payer: this.signer.publicKey, uri: input.media.metadata_uri, name: String(input.media.metadata.name ?? `VOX ${input.media.media_id}`).slice(0, 32)})
-    );
+    transaction.add(...createSolanaNftMintInstructions({authority: this.signer.publicKey, mint: mint.publicKey, owner, rentLamports: rent, metadataUri: input.media.metadata_uri, name: String(input.media.metadata.name ?? `VOX ${input.media.media_id}`).slice(0, 32)}));
     transaction.sign(this.signer, mint);
     const simulation = await this.connection.simulateTransaction(transaction);
     if (simulation.value.err) throw new Error(`Solana NFT transaction simulation failed: ${JSON.stringify(simulation.value.err)}`);
@@ -525,7 +541,7 @@ export class SolanaNftAdapter implements NftChainAdapter {
       if (mint.last_valid_block_height !== undefined && await this.connection.getBlockHeight("finalized") > mint.last_valid_block_height) return {state: "manual_review", error: "Solana NFT transaction blockhash expired without a resolvable result", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
       return {state: "submitted", transaction_id: mint.transaction_id, ...(mint.asset_address ? {asset_address: mint.asset_address} : {}), ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
     }
-    if (status.err) return {state: "retryable_failure", error: `Solana NFT transaction failed: ${JSON.stringify(status.err)}`, transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
+    if (status.err && status.confirmationStatus === "finalized") return {state: "retryable_failure", error: `Solana NFT transaction failed: ${JSON.stringify(status.err)}`, transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
     if (status.confirmationStatus === "finalized") return {state: "finalized", transaction_id: mint.transaction_id, ...(mint.asset_address ? {asset_address: mint.asset_address} : {}), ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
     return {state: "submitted", transaction_id: mint.transaction_id, ...(mint.asset_address ? {asset_address: mint.asset_address} : {}), ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
   }
@@ -664,7 +680,7 @@ export class EvmNftAdapter implements NftChainAdapter {
     const digest = keccak_256(signingPayload);
     const signature = secp256k1.sign(digest, this.privateKey, {lowS: true});
     const signed = rlpList([
-      rlpBigint(BigInt(this.chainId)), rlpBigint(nonce), rlpBigint(priority), rlpBigint(maxFee), rlpBigint(gasLimit), rlpHex(this.contractAddress), rlpBigint(0n), rlpHex(data), {list: []}, rlpBigint(BigInt(signature.recovery ?? 0)), rlpHex(`0x${bytesToHex(signature.toCompactRawBytes().slice(0, 32))}`), rlpHex(`0x${bytesToHex(signature.toCompactRawBytes().slice(32))}`)
+      rlpBigint(BigInt(this.chainId)), rlpBigint(nonce), rlpBigint(priority), rlpBigint(maxFee), rlpBigint(gasLimit), rlpHex(this.contractAddress), rlpBigint(0n), rlpHex(data), {list: []}, rlpBigint(BigInt(signature.recovery ?? 0)), rlpBigint(BigInt(`0x${bytesToHex(signature.toCompactRawBytes().slice(0, 32))}`)), rlpBigint(BigInt(`0x${bytesToHex(signature.toCompactRawBytes().slice(32))}`))
     ]);
     const raw = Uint8Array.from([2, ...signed]);
     const transactionId = `0x${bytesToHex(keccak_256(raw))}`;
@@ -685,7 +701,7 @@ export class EvmNftAdapter implements NftChainAdapter {
   }
 
   async reconcile(mint: NftMintRecord): Promise<NftChainObservation> {
-    return this.observe(mint);
+    return this.submit(mint);
   }
 
   private async observe(mint: NftMintRecord): Promise<NftChainObservation> {
@@ -693,22 +709,37 @@ export class EvmNftAdapter implements NftChainAdapter {
     const receipt = await this.rpc("eth_getTransactionReceipt", [mint.transaction_id]);
     if (receipt === null) return {state: "submitted", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
     if (!receipt || typeof receipt !== "object") return {state: "manual_review", error: "EVM NFT receipt response is invalid", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
-    const receiptObject = receipt as {status?: unknown; blockNumber?: unknown; logs?: unknown};
-    if (receiptObject.status !== "0x1") return {state: "retryable_failure", error: "EVM NFT transaction reverted", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
-    const tokenId = this.receiptTokenId(receiptObject.logs);
+    const receiptObject = receipt as {status?: unknown; blockNumber?: unknown; logs?: unknown; to?: unknown; transactionHash?: unknown};
+    if (typeof receiptObject.to !== "string" || receiptObject.to.toLowerCase() !== this.contractAddress || typeof receiptObject.transactionHash !== "string" || receiptObject.transactionHash.toLowerCase() !== mint.transaction_id.toLowerCase()) return {state: "manual_review", error: "EVM NFT receipt does not match the configured contract and transaction", transaction_id: mint.transaction_id};
     const blockNumber = parseRpcQuantity(receiptObject.blockNumber, "receipt block");
     const latest = parseRpcQuantity(await this.rpc("eth_blockNumber", []), "latest block");
-    if (latest + 1n - blockNumber < BigInt(this.confirmations)) return {state: "submitted", transaction_id: mint.transaction_id, ...(mint.asset_address ? {asset_address: mint.asset_address} : {}), ...(tokenId ? {token_id: tokenId} : {}), ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
+    const confirmed = latest + 1n - blockNumber >= BigInt(this.confirmations);
+    if (receiptObject.status === "0x0") return confirmed
+      ? {state: "retryable_failure", error: "EVM NFT transaction reverted", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})}
+      : {state: "submitted", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
+    if (receiptObject.status !== "0x1") return {state: "manual_review", error: "EVM NFT receipt status is invalid", transaction_id: mint.transaction_id};
+    const tokenId = this.receiptTokenId(receiptObject.logs, mint.owner_wallet);
+    if (!tokenId) return {state: "manual_review", error: "EVM NFT receipt has no mint Transfer to the bound owner wallet", transaction_id: mint.transaction_id};
+    if (!confirmed) return {state: "submitted", transaction_id: mint.transaction_id, ...(mint.asset_address ? {asset_address: mint.asset_address} : {}), ...(tokenId ? {token_id: tokenId} : {}), ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
+    const uriData = `0x${bytesToHex(keccak_256(utf8("tokenURI(uint256)")).slice(0, 4))}${bytesToHex(pad32(bigintBytes(BigInt(tokenId))))}`;
+    const encodedUri = await this.rpc("eth_call", [{to: this.contractAddress, data: uriData}, "latest"]);
+    if (typeof encodedUri !== "string") return {state: "manual_review", error: "EVM NFT token URI is unavailable", transaction_id: mint.transaction_id};
+    const uriBytes = hexToBytes(encodedUri);
+    const offset = Number(BigInt(`0x${bytesToHex(uriBytes.slice(0, 32)) || "0"}`));
+    const length = Number(BigInt(`0x${bytesToHex(uriBytes.slice(offset, offset + 32)) || "0"}`));
+    if (offset !== 32 || !Number.isSafeInteger(length) || length < 1 || offset + 32 + length > uriBytes.length || new TextDecoder().decode(uriBytes.slice(offset + 32, offset + 32 + length)) !== mint.metadata_uri) return {state: "manual_review", error: "EVM NFT token URI does not match canonical VOX metadata", transaction_id: mint.transaction_id};
     return {state: "finalized", transaction_id: mint.transaction_id, ...(mint.asset_address ? {asset_address: mint.asset_address} : {}), ...(tokenId ? {token_id: tokenId} : {}), ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
   }
 
-  private receiptTokenId(rawLogs: unknown): string | undefined {
+  private receiptTokenId(rawLogs: unknown, ownerWallet: string | undefined): string | undefined {
+    if (!ownerWallet || !EVM_ADDRESS_PATTERN.test(ownerWallet)) return undefined;
     if (!Array.isArray(rawLogs)) return undefined;
     const transferTopic = `0x${bytesToHex(keccak_256(utf8("Transfer(address,address,uint256)")))}`;
     for (const rawLog of rawLogs) {
       if (!rawLog || typeof rawLog !== "object") continue;
       const log = rawLog as {address?: unknown; topics?: unknown};
       if (typeof log.address !== "string" || log.address.toLowerCase() !== this.contractAddress || !Array.isArray(log.topics) || log.topics.length < 4 || log.topics[0] !== transferTopic || log.topics[1] !== `0x${"0".repeat(64)}`) continue;
+      if (typeof log.topics[2] !== "string" || log.topics[2].toLowerCase() !== `0x${ownerWallet.slice(2).toLowerCase().padStart(64, "0")}`) continue;
       const tokenTopic = log.topics[3];
       if (typeof tokenTopic === "string" && /^0x[0-9a-f]+$/i.test(tokenTopic)) return BigInt(tokenTopic).toString();
     }
@@ -716,7 +747,7 @@ export class EvmNftAdapter implements NftChainAdapter {
   }
 
   private async rpc(method: string, params: unknown[]): Promise<unknown> {
-    const response = await this.fetcher(this.rpcUrl, {method: "POST", headers: {"content-type": "application/json"}, body: jsonString({jsonrpc: "2.0", id: 1, method, params})});
+    const response = await this.fetcher(this.rpcUrl, {method: "POST", headers: {"content-type": "application/json"}, body: jsonString({jsonrpc: "2.0", id: 1, method, params}), signal: AbortSignal.timeout(15_000)});
     if (!response.ok) throw new Error(`EVM RPC returned HTTP ${response.status}`);
     const payload = await response.json() as {result?: unknown; error?: {message?: string}};
     if (payload.error) throw new Error(payload.error.message ?? `EVM RPC ${method} failed`);
@@ -783,7 +814,7 @@ export function configuredNftService(publicBaseUrl: string, env: Readonly<Record
   return new NftMintService({publicBaseUrl, adapters});
 }
 
-export function fulfillmentOutputToNftInput(input: {commissionId: string; ownerId: string; ownerWallet?: string; creatorId: string; providerId: string; sourcePostId?: string; sourceContent?: string; requestParameters: Record<string, unknown>; provenanceRecordId?: string; result: FulfillmentResultV1; outputIndex: number; publicBaseUrl: string}): NftMediaInput {
+export function fulfillmentOutputToNftInput(input: {commissionId: string; ownerId: string; ownerWallet?: string; creatorId: string; providerId: string; sourcePostId?: string; sourceContent?: string; requestParameters: Record<string, unknown>; provenanceRecordId?: string; publicationConsent?: boolean; result: FulfillmentResultV1; outputIndex: number; publicBaseUrl: string}): NftMediaInput {
   const output = input.result.outputs[input.outputIndex];
   if (!output) throw new Error("fulfillment output does not exist");
   return {
@@ -793,6 +824,7 @@ export function fulfillmentOutputToNftInput(input: {commissionId: string; ownerI
     ...(input.sourcePostId ? {source_post_id: input.sourcePostId} : {}),
     creator_id: input.creatorId,
     owner_id: input.ownerId,
+    ...(input.publicationConsent ? {publication_consent: true} : {}),
     ...(input.ownerWallet ? {owner_wallets: {solana: input.ownerWallet}} : {}),
     provider_id: input.providerId,
     ...(input.sourceContent ? {source_content: input.sourceContent} : {}),

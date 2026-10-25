@@ -48,6 +48,7 @@ type MockState = {
   commission?: Record<string, any>;
   funding?: Record<string, string>;
   funded: boolean;
+  nftMediaIds?: string[];
   sourceBalance: bigint;
   fundCalls: Array<Record<string, any>>;
   rejectFunding: boolean;
@@ -96,7 +97,7 @@ function makeQuote(pricing: Record<string, any>) {
     protocol_version: "realize/1" as const,
     quote_id: "quote:e2e-realize",
     pricing_request_id: pricing.request_id,
-    commission_id: COMMISSION_ID,
+    commission_id: pricing.commission_id ?? COMMISSION_ID,
     creator_id: CREATOR_ID,
     capability_id: pricing.capability_id ?? CAPABILITY_ID,
     generation_provider_id: providerId,
@@ -164,8 +165,9 @@ function makePublicProvenance(quote: Record<string, any>, publicAttribution?: st
   return {...unsigned, signature: signBytes(payload, ISSUER.secretKey)};
 }
 
-function createWallet(page: Page) {
-  return page.addInitScript(({address, publicKey}) => {
+function createWallet(page: Page, disableOnRecovery = false) {
+  return page.addInitScript(({address, publicKey, disableOnRecovery}) => {
+    if (disableOnRecovery && sessionStorage.getItem("vox:e2e:recover-without-wallet") === "true") return;
     const account = {
       address,
       publicKey: new Uint8Array(publicKey),
@@ -186,6 +188,7 @@ function createWallet(page: Page) {
           version: "1.0.0",
           supportedTransactionVersions: ["legacy"],
           signAndSendTransaction: async (...inputs: Array<{transaction: Uint8Array}>) => inputs.map(({transaction}) => {
+            (window as any).__voxPaymentSendCount = ((window as any).__voxPaymentSendCount ?? 0) + 1;
             (window as any).__voxLastSentTransaction = Array.from(transaction);
             return {signature: new Uint8Array(64).fill(1)};
           })
@@ -195,7 +198,7 @@ function createWallet(page: Page) {
     window.addEventListener("wallet-standard:app-ready", (event: Event) => {
       (event as CustomEvent<{register: (candidate: unknown) => void}>).detail.register(wallet);
     });
-  }, {address: PAYER.toBase58(), publicKey: Array.from(PAYER.toBytes())});
+  }, {address: PAYER.toBase58(), publicKey: Array.from(PAYER.toBytes()), disableOnRecovery});
 }
 
 async function installMocks(page: Page, sourceBalance = PAYER_USDC, rejectFunding = false): Promise<MockState> {
@@ -308,6 +311,7 @@ async function installMocks(page: Page, sourceBalance = PAYER_USDC, rejectFundin
         fulfillment_result: state.funded ? {status: "completed", outputs: [{uri: "https://populi.example.test/v1/realize/artifacts?fulfillment_request_id=vox%3Afulfillment%3Ae2e&output_index=0", page_url: "https://populi.example.test/bob/e2e-render", sha256: "a".repeat(64), media_type: "video/mp4", byte_length: 1_024}], completed_at: new Date().toISOString()} : undefined,
         settlement_status: state.funded ? "settled" : "pending",
         settlement_response: state.funded ? {status: "settled", transaction_signatures: [new PublicKey(new Uint8Array(32).fill(9)).toBase58()]} : undefined,
+        ...(state.funded && state.nftMediaIds ? {nft_media_ids: state.nftMediaIds} : {}),
         provenance_record_id: state.funded ? PROVENANCE_ID : undefined
       });
     }
@@ -324,7 +328,7 @@ test("commissioner reviews rights, pays from the backend quote, and sees mocked 
   const state = await installMocks(page);
   await createWallet(page);
   await page.goto("/");
-  await page.getByRole("button", {name: "Realize post"}).click();
+  await page.getByRole("button", {name: "Realize by post"}).click();
 
   const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
   await expect(dialog.getByLabel("Your idea")).toHaveValue("A thought ready to become a moving image.");
@@ -381,7 +385,7 @@ test("commissioner reviews rights, pays from the backend quote, and sees mocked 
 test("integration-test checkout requests only the fixed prerecorded Bob clip and the test provider", async ({page}) => {
   const state = await installMocks(page);
   await page.goto("/");
-  await page.getByRole("button", {name: "Realize post"}).click();
+  await page.getByRole("button", {name: "Realize by post"}).click();
 
   const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
   await dialog.getByRole("button", {name: "Use prerecorded payment-path test"}).click();
@@ -417,7 +421,7 @@ test("a restored draft adopts the provider's current settings before quoting", a
     commissionId: COMMISSION_ID
   });
   await page.goto("/");
-  await page.getByRole("button", {name: "Realize post"}).click();
+  await page.getByRole("button", {name: "Realize by post"}).click();
 
   const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
   await expect(dialog.getByLabel("Style")).toHaveValue("special");
@@ -433,16 +437,21 @@ test("insufficient USDC leaves the accepted quote unfunded", async ({page}) => {
   const state = await installMocks(page, 100_000n);
   await createWallet(page);
   await page.goto("/");
-  await page.getByRole("button", {name: "Realize post"}).click();
+  await page.getByRole("button", {name: "Realize by post"}).click();
   const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
   await dialog.getByLabel("Your idea").fill("A blue moon above a quiet glass city.");
   await dialog.getByRole("button", {name: "Get my price"}).click();
   await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
   await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
   await dialog.getByRole("button", {name: "Continue to payment"}).click();
+  await expect(dialog.getByText(PAYER.toBase58(), {exact: true})).toBeVisible();
   await dialog.getByRole("button", {name: "Pay 1.00 USDC"}).click();
-  await expect(dialog.getByRole("alert").filter({hasText: "Insufficient USDC"})).toBeVisible();
-  await expect(dialog.getByText("Awaiting server verification")).toHaveCount(2);
+  await expect(dialog.getByRole("alert").filter({hasText: `Insufficient USDC in wallet ${PAYER.toBase58()}`})).toBeVisible();
+  await expect(dialog.getByText("Payment not submitted")).toHaveCount(3);
+  await expect(dialog.getByRole("heading", {name: "Payment not submitted"})).toBeVisible();
+  await expect(dialog.getByText("Awaiting VOX verification")).toHaveCount(0);
+  await expect(dialog.getByText("Waiting for payment verification")).toHaveCount(0);
+  await expect(dialog.getByRole("button", {name: "Pay 1.00 USDC"})).toBeEnabled();
   expect(state.fundCalls).toHaveLength(0);
 });
 
@@ -450,7 +459,7 @@ test("a wallet callback cannot mark payment successful before server verificatio
   const state = await installMocks(page, PAYER_USDC, true);
   await createWallet(page);
   await page.goto("/");
-  await page.getByRole("button", {name: "Realize post"}).click();
+  await page.getByRole("button", {name: "Realize by post"}).click();
   const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
   await dialog.getByLabel("Your idea").fill("A quiet glass city beneath a blue moon.");
   await dialog.getByRole("button", {name: "Get my price"}).click();
@@ -470,7 +479,7 @@ test("public credit appears in provenance only after explicit consent", async ({
   const state = await installMocks(page);
   await createWallet(page);
   await page.goto("/");
-  await page.getByRole("button", {name: "Realize post"}).click();
+  await page.getByRole("button", {name: "Realize by post"}).click();
   const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
   await dialog.getByLabel("Your idea").fill("A glass city beneath a crescent moon.");
   await dialog.getByRole("button", {name: "Get my price"}).click();
@@ -491,7 +500,7 @@ test("an unavailable creator has a recoverable setup state", async ({page}) => {
   const state = await installMocks(page);
   state.capabilityFailures = 2; // React's development StrictMode mounts effects twice.
   await page.goto("/");
-  await page.getByRole("button", {name: "Realize post"}).click();
+  await page.getByRole("button", {name: "Realize by post"}).click();
   const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
   await expect(dialog.getByRole("alert")).toContainText("not ready to accept commissions");
   await expect(dialog.getByText("Getting this creator ready…")).not.toBeVisible();
@@ -508,7 +517,7 @@ test("reloading an unverified payment restores the signature and prevents a seco
   const state = await installMocks(page, PAYER_USDC, true);
   await createWallet(page);
   await page.goto("/");
-  await page.getByRole("button", {name: "Realize post"}).click();
+  await page.getByRole("button", {name: "Realize by post"}).click();
   let dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
   await dialog.getByLabel("Your idea").fill("A quiet cinematic scene for recovery testing.");
   await dialog.getByRole("button", {name: "Get my price"}).click();
@@ -519,9 +528,186 @@ test("reloading an unverified payment restores the signature and prevents a seco
   await expect(dialog.getByRole("button", {name: "Check payment status"})).toBeVisible();
   const fundingCalls = state.fundCalls.length;
   await page.reload();
-  await page.getByRole("button", {name: "Realize post"}).click();
+  await page.getByRole("button", {name: "Realize by post"}).click();
   dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
   await expect(dialog.getByRole("button", {name: "Check payment status"})).toBeVisible();
   await expect(dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true})).not.toBeVisible();
   expect(state.fundCalls).toHaveLength(fundingCalls);
+});
+
+test("an expired submitted payment can be verified after reload without reconnecting or sending again", async ({page}) => {
+  const state = await installMocks(page, PAYER_USDC, true);
+  await createWallet(page, true);
+  await page.clock.install();
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  let dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
+  await dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true}).click();
+  await expect(dialog.getByRole("button", {name: "Check payment status"})).toBeVisible();
+  const originalFunding = state.fundCalls[0];
+  expect(originalFunding?.transaction_signature).toBeTruthy();
+  await page.route("**/v1/realize/commissions/*/fund", async (route) => {
+    const body = route.request().postDataJSON();
+    state.fundCalls.push(body);
+    state.commission = {...state.commission, state: "MANUAL_REVIEW", payment_state: "captured", fulfillment_state: "not_started"};
+    return json(route, state.commission);
+  });
+  await page.evaluate(() => sessionStorage.setItem("vox:e2e:recover-without-wallet", "true"));
+  await page.clock.setSystemTime(Date.now() + 20 * 60_000);
+  await page.reload();
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await expect(dialog.getByText("Price expired · update it to continue")).toBeVisible();
+  await expect(dialog.getByText("Reconnect the payer wallet to fund this accepted quote.")).toBeVisible();
+  await dialog.getByRole("button", {name: "Check payment status"}).click();
+  await expect(dialog.getByRole("heading", {name: "Commission needs review"})).toBeVisible();
+  expect(state.fundCalls).toHaveLength(2);
+  expect(state.fundCalls[1]).toEqual(originalFunding);
+  expect(await page.evaluate(() => (window as any).__voxLastSentTransaction)).toBeUndefined();
+  await expect(dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true})).toHaveCount(0);
+});
+
+test("keeps in-flight checkout recovery isolated until its quote request finishes", async ({page}) => {
+  await installMocks(page);
+  let requested = false;
+  let release!: () => void;
+  const delayed = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/v1/realize/pricing-requests", async (route) => {
+    requested = true;
+    const pricing = route.request().postDataJSON();
+    await delayed;
+    return json(route, {protocol_version: "realize/1", request_id: pricing.request_id, creator_id: CREATOR_ID, quotes: [makeQuote(pricing)], issued_at: new Date().toISOString()});
+  });
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await expect.poll(() => requested).toBe(true);
+  await expect(dialog.getByRole("button", {name: "Close realization"})).toBeDisabled();
+  await page.locator(".drawer-backdrop").click({position: {x: 5, y: 5}});
+  await expect(dialog).toBeVisible();
+  release();
+  await expect(dialog.getByText("✓ Price verified", {exact: true})).toBeVisible();
+  await dialog.getByRole("button", {name: "Close realization"}).click();
+  await expect(dialog).toHaveCount(0);
+});
+
+test("preserves a submitted payment when another source post opens a new checkout", async ({page}) => {
+  const first = await installMocks(page, PAYER_USDC, true);
+  await createWallet(page);
+  const firstPostId = `vox:post:${"b".repeat(64)}`;
+  const secondPostId = `vox:post:${"d".repeat(64)}`;
+  const secondCommissionId = "commission:e2e-second-post";
+  await page.route("**/v1/feed?**", (route) => json(route, {items: [firstPostId, secondPostId].map((id, index) => ({
+    post_id: id, intent: {agent_id: CREATOR_ID, created_at: NOW, kind: "thought", content: {text: index ? "A second source post for another video." : "The original source post with a pending payment."}},
+    signature: "test-signature", post_hash: id.slice("vox:post:".length), envelope: {sequence: index + 1, accepted_at: NOW, publisher_instance_id: ISSUER_ID}, envelope_hash: "c".repeat(64), publication_status: "published", anchoring: {status: "pending", tier: "standard"}
+  }))}));
+  await page.route("**/v1/realize/commissions", async (route) => {
+    const body = route.request().postDataJSON();
+    if (body.source_post_id !== secondPostId) return route.fallback();
+    return json(route, makeCommission(body, {commission_id: secondCommissionId}));
+  });
+  await page.route("**/v1/realize/pricing-requests", async (route) => {
+    const pricing = route.request().postDataJSON();
+    if (pricing.commission_id !== secondCommissionId) return route.fallback();
+    return json(route, {protocol_version: "realize/1", request_id: pricing.request_id, creator_id: CREATOR_ID, quotes: [makeQuote(pricing)], issued_at: new Date().toISOString()});
+  });
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).nth(0).click();
+  let dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
+  await dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true}).click();
+  await expect(dialog.getByRole("button", {name: "Check payment status"})).toBeVisible();
+  const originalSignature = first.fundCalls[0]?.transaction_signature;
+  expect(originalSignature).toBeTruthy();
+  // Simulate an existing customer upgrading from the previous singleton checkpoint.
+  await page.evaluate(() => sessionStorage.removeItem("vox.realize.v1.checkpoints"));
+  await dialog.getByRole("button", {name: "Close realization"}).click();
+  await page.getByRole("button", {name: "Realize by post"}).nth(1).click();
+  dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await expect(dialog.getByText("✓ Price verified", {exact: true})).toBeVisible();
+  const checkpoints = await page.evaluate(() => JSON.parse(sessionStorage.getItem("vox.realize.v1.checkpoints")!));
+  expect(checkpoints.entries[`commission:${COMMISSION_ID}`]).toMatchObject({originPostId: firstPostId, transactionSignature: originalSignature});
+  expect(checkpoints.entries[`commission:${secondCommissionId}`]).toMatchObject({originPostId: secondPostId, commissionId: secondCommissionId});
+  await dialog.getByRole("button", {name: "Close realization"}).click();
+  await page.getByRole("button", {name: "Realize by post"}).nth(0).click();
+  dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await expect(dialog.getByRole("button", {name: "Check payment status"})).toBeVisible();
+  await expect(dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true})).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).__voxPaymentSendCount)).toBe(1);
+  expect(first.fundCalls).toHaveLength(1);
+});
+
+test("mints a chosen completed output on Monad and keeps refreshing after settlement", async ({page}) => {
+  const state = await installMocks(page);
+  state.nftMediaIds = ["vox:media:nft-e2e-0", "vox:media:nft-e2e-1"];
+  await createWallet(page);
+  const recipient = "0x" + "2".repeat(40);
+  const contract = "0x" + "3".repeat(40);
+  const tx = "0x" + "4".repeat(64);
+  let mintState = "claimable";
+  let claims = 0;
+  let syncs = 0;
+  await page.addInitScript(({recipient}) => {
+    let chain = "0x1";
+    (window as any).__voxEvmCalls = [];
+    (window as any).ethereum = {async request({method, params}: {method: string; params: any[]}) {
+      (window as any).__voxEvmCalls.push({method, params});
+      if (method === "eth_requestAccounts") return [recipient];
+      if (method === "eth_chainId") return chain;
+      if (method === "wallet_switchEthereumChain") { chain = params[0].chainId; return null; }
+      if (method === "personal_sign") return "0x" + "1".repeat(130);
+      throw new Error("Unexpected wallet method " + method);
+    }};
+  }, {recipient});
+  const media = (index: number) => ({
+    media_id: state.nftMediaIds![index], source_kind: "realize_commission", source_id: COMMISSION_ID,
+    output_index: index, provider_id: PROVIDER_ID, media_uri: "https://media.example.test/completed.mp4",
+    media_type: "video/mp4", media_sha256: "a".repeat(64), metadata_hash: "b".repeat(64),
+    metadata_uri: "https://vox.example.test/metadata", created_at: NOW,
+    mints: [{mint_id: `mint:e2e:${index}`, chain: "monad:mainnet", state: index === 1 ? mintState : "claimable",
+      created_at: "2026-10-12T01:00:00.000Z", ...(index === 1 && mintState !== "claimable" ? {owner_wallet: recipient, transaction_id: tx, asset_address: contract, explorer_url: `https://monadscan.com/tx/${tx}`} : {}),
+      ...(index === 1 && mintState === "finalized" ? {token_id: "42"} : {})}]
+  });
+  await page.route("**/v1/nft/**", async (route) => {
+    const path = decodeURIComponent(new URL(route.request().url()).pathname);
+    if (path.endsWith("/claim")) {
+      claims += 1;
+      expect(path).toContain("mint:e2e:1");
+      expect(route.request().postDataJSON().wallet).toBe(recipient);
+      expect(route.request().headers()["x-vox-realize-signature"]).toBeTruthy();
+      mintState = "submitted";
+      return json(route, {state: mintState}, 202);
+    }
+    if (path.endsWith("/sync")) { syncs += 1; if (syncs >= 2) mintState = "finalized"; return json(route, media(1)); }
+    return json(route, media(path.endsWith("nft-e2e-1") ? 1 : 0));
+  });
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
+  await expect(dialog.getByRole("button", {name: "Mint on Monad"})).toHaveCount(0);
+  await dialog.getByRole("button", {name: "Pay 1.00 USDC"}).click();
+  await expect(dialog.getByRole("button", {name: "Mint on Monad"})).toHaveCount(2);
+  await dialog.getByRole("button", {name: "Mint on Monad"}).nth(1).click();
+  await expect(dialog.getByText("Minted · Token #42", {exact: true})).toBeVisible({timeout: 20_000});
+  await expect(dialog.getByRole("link", {name: "View your NFT ↗"})).toHaveAttribute("href", `https://monadscan.com/token/${contract}?a=42`);
+  expect(claims).toBe(1);
+  expect(syncs).toBeGreaterThanOrEqual(2);
+  const calls = await page.evaluate(() => (window as any).__voxEvmCalls);
+  expect(calls.some((call: any) => call.method === "wallet_switchEthereumChain" && call.params[0].chainId === "0x8f")).toBe(true);
+  const signedMessage = Buffer.from(calls.find((call: any) => call.method === "personal_sign").params[0].slice(2), "hex").toString("utf8");
+  expect(signedMessage).toContain("Created: 2026-10-12T01:00:00.000Z");
+  expect(signedMessage).toContain("Mint: mint:e2e:1");
 });

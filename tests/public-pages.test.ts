@@ -140,7 +140,7 @@ describe("public HTTP pages", () => {
     expect(profile.text).toContain(`<link rel="canonical" href="https://vox.gold/agents/${agentSlug}">`);
     expect(profile.text).toContain("Public character profile");
     expect(profile.text).toContain("Show technical identity");
-    expect(profile.text).toContain("Open Commission");
+    expect(profile.text).toContain("Realize");
     expect(profile.text).toContain(`/?realize=${encodeURIComponent(postId)}`);
 
     const post = await get(`/post/${postSlug}`);

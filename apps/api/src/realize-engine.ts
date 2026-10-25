@@ -95,10 +95,13 @@ export const DEFAULT_MAINNET_PRICING_POLICY = Object.freeze({
   platform_basis_points: 500
 });
 
-/** Mainnet disbursements require a separate explicit approval and are never automatic. */
-export function requiresExplicitMainnetDisbursementApproval(networkId: string): boolean {
+/** Mainnet customer refunds require a separate explicit operator approval. */
+export function requiresExplicitMainnetRefundApproval(networkId: string): boolean {
   return networkId === "solana:mainnet-beta";
 }
+
+/** @deprecated Use requiresExplicitMainnetRefundApproval. Payout settlement is automatic after verified fulfillment. */
+export const requiresExplicitMainnetDisbursementApproval = requiresExplicitMainnetRefundApproval;
 
 export const RealizeCreatorPayoutConfigurationV1Schema = z.object({
   protocol_version: z.literal("realize/1"),
@@ -177,10 +180,15 @@ export const RealizeSettlementResponseV1Schema = z.object({
   settlement_id: id,
   status: z.enum(["accepted", "processing", "partial", "settled", "failed"]),
   transaction_signatures: z.array(z.string().min(32).max(128)).max(64).default([]),
+  settled_payout_ids: z.array(id).max(64).default([]),
   settled_amount_usdc_atomic: atomic.optional(),
   failed_payout_ids: z.array(id).max(64).default([]),
   updated_at: z.string().datetime({offset: true})
-}).strict();
+}).strict().superRefine((response, context) => {
+  if (new Set(response.settled_payout_ids).size !== response.settled_payout_ids.length) context.addIssue({code: z.ZodIssueCode.custom, path: ["settled_payout_ids"], message: "settled payout IDs must be unique"});
+  if (new Set(response.failed_payout_ids).size !== response.failed_payout_ids.length) context.addIssue({code: z.ZodIssueCode.custom, path: ["failed_payout_ids"], message: "failed payout IDs must be unique"});
+  if (response.settled_payout_ids.some((payoutId) => response.failed_payout_ids.includes(payoutId))) context.addIssue({code: z.ZodIssueCode.custom, path: ["settled_payout_ids"], message: "a payout cannot be both settled and failed"});
+});
 export type RealizeSettlementResponseV1 = z.infer<typeof RealizeSettlementResponseV1Schema>;
 
 export const RealizeRefundResponseV1Schema = z.object({
@@ -440,7 +448,7 @@ export function buildRealizeQuote(input: {
   if (!Number.isFinite(issuedAtMs) || expiresAtMs <= issuedAtMs) throw new Error("Provider price expires too soon to issue a quote");
 
   const recipients: Array<{payout_id: string; recipient_id: string; role: "generation_provider" | "character_owner" | "platform" | "commissioner" | "referrer" | "sponsor" | "additional_beneficiary"; amount_usdc_atomic: string; destination: string}> = [];
-  const destinationPrefix = configuration.network_id === "solana:mainnet-beta" ? "solana:mainnet" : configuration.network_id;
+  const destinationPrefix = configuration.network_id;
   const destination = (wallet: string) => `${destinationPrefix}:${wallet}`;
   const addAllocation = (role: "generation_provider" | "character_owner" | "platform", amount: bigint, allocation: z.infer<typeof FeeAllocationV1Schema> | {recipients: z.infer<typeof WeightedRecipientV1Schema>[]}) => {
     if (amount === 0n) return;

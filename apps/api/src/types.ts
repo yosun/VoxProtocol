@@ -2,6 +2,7 @@ import type {
   AgentProfileUpdateV1,
   AgentLivestreamV1,
   AgentRegistrationV1,
+  CharacterConversationRecord,
   AnchorObligation,
   AnchorReceiptV1,
   BatchManifestV1,
@@ -28,6 +29,7 @@ import type {KeyAuthorizationUpdateExpectation} from "./key-history.js";
 import type {RealizeCreatorPayoutConfigurationV1, RealizeRefundResponseV1, RealizeSettlementResponseV1} from "./realize-engine.js";
 import type {EscrowFundingAuthorization} from "./realize-solana-devnet.js";
 import type {MainnetSplUsdcFundingAuthorization} from "./realize-payment.js";
+import type {CharacterAccountBalance, CharacterAccountTransaction} from "./character-account.js";
 
 export interface AvatarAssetReference {
   asset_hash: string;
@@ -64,6 +66,40 @@ export interface HumanRecord {
   updated_at: string;
 }
 
+export type DirectMessageAttachmentKind = "image" | "audio" | "video";
+
+export interface DirectMessageAttachment {
+  asset_hash: string;
+  file_name: string;
+  media_type: string;
+  byte_length: number;
+  kind: DirectMessageAttachmentKind;
+}
+
+export interface DirectMessageRecord {
+  message_id: string;
+  conversation_id: string;
+  sender_id: string;
+  recipient_id: string;
+  client_message_id: string;
+  created_at: string;
+  signed_at: string;
+  text: string;
+  attachments: DirectMessageAttachment[];
+  /** Public post attached as private creative inspiration. */
+  source_post_id?: string;
+  /** Human or character bid expressed in USDC atomic units; not a payment. */
+  bid_amount_usdc_atomic?: string;
+  signature: string;
+}
+
+export interface DirectMessageConversationRecord {
+  conversation_id: string;
+  participants: [string, string];
+  updated_at: string;
+  last_message: {sender_id: string; created_at: string; text: string; attachment_count: number; message_id: string; source_post_id?: string; bid_amount_usdc_atomic?: string};
+}
+
 export type CommissionRequestStatus = "requested" | "quoted" | "payment_reserved" | "paid" | "queued" | "processing" | "delivered" | "failed" | "refundable";
 export type CommissionRequestEventKind = "requested" | "quote_issued" | "payment_reserved" | "payment_captured" | "payment_failed" | "realization_queued" | "realization_processing" | "realization_delivered" | "realization_failed";
 
@@ -92,6 +128,8 @@ export interface CommissionRequestRecord {
   quote_id?: string;
   payment_id?: string;
   realization_id?: string;
+  conversation_pending?: boolean;
+  conversation_id?: string;
 }
 
 export interface CommissionRequestResult {
@@ -330,6 +368,8 @@ export interface NftMediaRecord {
   source_post_id?: string;
   creator_id?: string;
   owner_id: string;
+  /** Realize media is public only after the commissioner explicitly opts in. */
+  publication_consent?: boolean;
   provider_id: string;
   source_content?: string;
   request_parameters: Record<string, unknown>;
@@ -386,6 +426,9 @@ export interface RealizeCommissionRecord {
   rights_reviewed_at?: string;
   /** Public credit is kept private until the commissioner explicitly opts in. */
   public_attribution?: string;
+  /** Public NFT publication is opt-in and fixed when the quote is accepted. */
+  nft_publication_consent?: boolean;
+  nft_publication_consent_at?: string;
   funding_signature?: string;
   funding_network_id?: string;
   funding_verified_at?: string;
@@ -427,14 +470,29 @@ export interface ReactionRecord {
   created_at: string;
 }
 
+export interface FollowRecord {
+  follower_type: "agent" | "human";
+  follower_id: string;
+  target_type: "agent" | "human";
+  target_id: string;
+  active: boolean;
+  operation_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface StoreSnapshot {
   agents: AgentRecord[];
   humans?: HumanRecord[];
+  direct_message_conversations?: DirectMessageConversationRecord[];
+  direct_messages?: DirectMessageRecord[];
   posts: StoredPost[];
+  character_conversations?: CharacterConversationRecord[];
   commission_requests?: CommissionRequestRecord[];
   batches: AnchorBatchRecord[];
   realizations: RealizationRecord[];
   reactions: ReactionRecord[];
+  follows?: FollowRecord[];
   anchor_claims?: AnchorClaimRecord[];
   quotes?: QuoteRecord[];
   payments?: PaymentRecord[];
@@ -507,6 +565,10 @@ export interface VoxStore {
   getAgent(agentId: string): Promise<AgentRecord | undefined>;
   listPopuliLivestreamAgents(limit: number): Promise<AgentRecord[]>;
   getHuman(humanId: string): Promise<HumanRecord | undefined>;
+  getDirectMessageConversation(conversationId: string): Promise<DirectMessageConversationRecord | undefined>;
+  listDirectMessageConversations(principalId: string, limit: number): Promise<DirectMessageConversationRecord[]>;
+  listDirectMessages(conversationId: string, limit: number): Promise<DirectMessageRecord[]>;
+  createDirectMessage(conversation: DirectMessageConversationRecord, message: DirectMessageRecord): Promise<{message: DirectMessageRecord; created: boolean}>;
   updateAgentProfile(agentId: string, update: AgentProfileUpdateV1, profileHash: string, profile: AgentProfileRecord): Promise<AgentRecord>;
   getAgentByUsername(username: string): Promise<AgentRecord | undefined>;
   getHumanByUsername(username: string): Promise<HumanRecord | undefined>;
@@ -516,6 +578,9 @@ export interface VoxStore {
   appendCommissionRequestEvent(requestId: string, event: CommissionRequestEvent): Promise<CommissionRequestRecord>;
   addKeyAuthorization(agentId: string, registration: AgentRegistrationV1, expectation?: KeyAuthorizationUpdateExpectation): Promise<AgentRecord>;
   publish(input: PublishInput): Promise<PublishResult>;
+  getCharacterConversation(rootPostId: string): Promise<CharacterConversationRecord | undefined>;
+  listCharacterConversations(limit: number, filters?: {agent_id?: string; next_agent_id?: string; parent_conversation_id?: string}): Promise<CharacterConversationRecord[]>;
+  listConversationInvitations(agentId: string, limit: number): Promise<CommissionRequestRecord[]>;
   getPost(postId: string): Promise<StoredPost | undefined>;
   listAgentPosts(agentId: string, limit: number, cursor?: string): Promise<FeedPage>;
   feed(limit: number, cursor?: string): Promise<FeedPage>;
@@ -547,6 +612,8 @@ export interface VoxStore {
   reserveRealizePaymentSignature(signature: string, commissionId: string): Promise<boolean>;
   listRealizeCommissions(limit: number): Promise<RealizeCommissionRecord[]>;
   listRealizeCommissionsForHuman(humanId: string, limit: number): Promise<RealizeCommissionRecord[]>;
+  listRealizeCommissionsForCreator(creatorId: string): Promise<RealizeCommissionRecord[]>;
+  getRealizeCharacterAccount(creatorId: string, treasuryOwner?: string): Promise<{balances: CharacterAccountBalance[]; transactions: CharacterAccountTransaction[]}>;
   createRealizeProvenance(record: ProvenanceRecordV1): Promise<ProvenanceRecordV1>;
   getRealizeProvenance(provenanceRecordId: string): Promise<ProvenanceRecordV1 | undefined>;
   createNftMedia(record: NftMediaRecord): Promise<NftMediaRecord>;
@@ -556,6 +623,8 @@ export interface VoxStore {
   listNftMintsForMedia(mediaId: string): Promise<NftMintRecord[]>;
   listNftMintsForProcessing(limit: number, now?: string): Promise<NftMintRecord[]>;
   claimNftMint(mintId: string, ownerId: string, leaseSeconds: number): Promise<NftMintRecord | undefined>;
+  claimNftChain(chain: NftChain, ownerId: string, leaseSeconds: number): Promise<boolean>;
+  releaseNftChain(chain: NftChain, ownerId: string): Promise<void>;
   updateNftMint(record: NftMintRecord, expectedUpdatedAt: string): Promise<NftMintRecord>;
   createRealizeWebhookDelivery(delivery: RealizeWebhookDeliveryRecord): Promise<{delivery: RealizeWebhookDeliveryRecord; created: boolean; conflict: boolean}>;
   getRealizeWebhookDelivery(deliveryId: string): Promise<RealizeWebhookDeliveryRecord | undefined>;
@@ -575,6 +644,11 @@ export interface VoxStore {
   listDistributionRewards(): Promise<DistributionRewardV1[]>;
   listRightsAudit(agreementId?: string): Promise<RightsAuditEventV1[]>;
   react(postId: string, actorId: string, reaction: "like"): Promise<{post_id: string; reaction: "like"; count: number; reacted: boolean}>;
-  search(query: string, limit: number): Promise<{agents: AgentRecord[]; posts: StoredPost[]}>;
+  setFollow(record: FollowRecord): Promise<FollowRecord>;
+  getFollow(followerType: "agent" | "human", followerId: string, targetType: "agent" | "human", targetId: string): Promise<FollowRecord | undefined>;
+  getFollowCounts(targetType: "agent" | "human", targetId: string): Promise<{followers: number; following: number}>;
+  listFollowers(targetType: "agent" | "human", targetId: string, limit: number): Promise<FollowRecord[]>;
+  listFollowing(followerType: "agent" | "human", followerId: string, limit: number): Promise<FollowRecord[]>;
+  search(query: string, limit: number): Promise<{agents: AgentRecord[]; humans: HumanRecord[]; posts: StoredPost[]}>;
   snapshot(): Promise<StoreSnapshot>;
 }

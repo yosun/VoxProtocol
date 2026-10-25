@@ -1,0 +1,49 @@
+{
+  "feature": "vox-nft-minting",
+  "environment": "production",
+  "projectId": "voxprotocol",
+  "region": "us-central1",
+  "spendingCapUsd": 5,
+  "automaticMintingEnabled": true,
+  "enabledChains": ["monad:mainnet"],
+  "apiRevision": "vox-api-monad-nft-claim-20261013",
+  "chains": {
+    "solana:mainnet-beta": {
+      "signer": "8jp94NVHc23KC4jqDLXMY7zFn5T8bKoNY8xwjVBbSLKL",
+      "status": "awaiting_funding_and_recipient"
+    },
+    "base:mainnet": {
+      "signer": "0x48bf4da53bad3ad90b834438f43b7fcd381ebf0f",
+      "status": "awaiting_funding_and_contract"
+    },
+    "monad:mainnet": {
+      "signer": "0xafac2571572aa858da801b5c8ed38009c555a4c6",
+      "chain_id": 143,
+      "contract_address": "0x87ef9e71625878a0babeee7864fa7d96ed4e3571",
+      "deployment_transaction": "0x0f3bc2837fb9440d8b710a59d75990da76a5c70a4836d93d9afcdf331d3a86cf",
+      "explorer_url": "https://monadscan.com/tx/0x0f3bc2837fb9440d8b710a59d75990da76a5c70a4836d93d9afcdf331d3a86cf",
+      "gas_used": "2209334",
+      "effective_gas_price_wei": "102000000000",
+      "fee_native_mon": "0.225352068",
+      "owner_verified": true,
+      "minter_verified": true,
+      "status": "enabled_awaiting_recipient"
+    },
+    "arbitrum:mainnet": {
+      "signer": "0xbf49b4db793b004f24d9e5c53e3669fa80483de4",
+      "status": "awaiting_funding_and_contract"
+    },
+    "ethereum:mainnet": {
+      "signer": "0xf696227687c123e12f4ec5e9129e6496f261a47b",
+      "status": "awaiting_funding_and_contract"
+    },
+    "hyperevm:mainnet": {
+      "signer": "0x345a9095ffcbf941e85ce82b911ab97ab159f18b",
+      "status": "awaiting_funding_and_contract"
+    },
+    "robinhood:mainnet": {
+      "signer": "0x2fcd638a42c68810bfab9e0f4dbff35e4bf78172",
+      "status": "awaiting_funding_and_contract"
+    }
+  }
+}

@@ -3,6 +3,16 @@ set -euo pipefail
 
 CONFIG="${VOX_GCP_PROJECT_CONFIG:-.kiro/gcp-project.json}"
 DEPLOYMENT_ENV="${VOX_DEPLOYMENT_ENV:-production}"
+case "$DEPLOYMENT_ENV" in
+  production|staging) ;;
+  *) echo "VOX_DEPLOYMENT_ENV must be production or staging." >&2; exit 2 ;;
+esac
+# Bootstrap changes IAM, treasury wiring, and live services. Keep production
+# behind the same reviewed environment as selective application releases.
+if [[ "$DEPLOYMENT_ENV" == "production" ]] && [[ "${GITHUB_ACTIONS:-false}" != "true" || "${GITHUB_REPOSITORY:-}" != "yosun/VoxProtocol" || "${GITHUB_REF:-}" != "refs/heads/main" || "${VOX_PRODUCTION_SENSITIVE_APPROVED:-false}" != "true" ]]; then
+  echo "Production infrastructure requires the protected production-sensitive approval environment on main." >&2
+  exit 2
+fi
 REALIZE_DEVNET_ENABLED="${VOX_REALIZE_DEVNET_ENABLED:-false}"
 REALIZE_MAINNET_ENABLED="${VOX_REALIZE_MAINNET_ENABLED:-false}"
 NFT_ENABLED="${VOX_NFT_ENABLED:-false}"
@@ -259,19 +269,20 @@ if [[ "$NFT_ENABLED" == "true" ]]; then
   API_NFT_ENV="|VOX_NFT_ENABLED=true|VOX_NFT_CHAINS=$NFT_CHAINS|VOX_NFT_MAINNET_ENABLED=$NFT_MAINNET_ENABLED|VOX_CONFIRM_NFT_MAINNET=$NFT_CONFIRM_MAINNET|VOX_DEPLOYMENT_ENV=$DEPLOYMENT_ENV"
   IFS=',' read -r -a NFT_CHAIN_LIST <<< "$NFT_CHAINS"
   for chain in "${NFT_CHAIN_LIST[@]}"; do
-    key="${chain^^}"
+    key="$(printf '%s' "$chain" | tr '[:lower:]' '[:upper:]')"
     key="${key//:/_}"
     key="${key//-/_}"
+    key_lower="$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')"
     rpc_var="VOX_NFT_${key}_RPC_URL"
     signer_name_var="VOX_NFT_${key}_SIGNER_SECRET_NAME"
     rpc_url="${!rpc_var:-}"
-    signer_name="${!signer_name_var:-vox-nft-${key,,}-signer}"
+    signer_name="${!signer_name_var:-vox-nft-${key_lower}-signer}"
     if [[ -z "$rpc_url" || ! "$rpc_url" =~ ^https:// ]]; then
       echo "$rpc_var must be an HTTPS URL when NFT minting is enabled." >&2
       exit 2
     fi
     require_secret_version "$signer_name"
-    signer_path="/run/secrets/vox-nft/${key,,}/signer"
+    signer_path="/run/secrets/vox-nft/$key_lower/signer"
     API_SECRETS="${API_SECRETS},${signer_path}=${signer_name}:latest"
     API_SECRET_NAMES+=("$signer_name")
     API_NFT_ENV="${API_NFT_ENV}|VOX_NFT_${key}_RPC_URL=$rpc_url|VOX_NFT_${key}_SIGNER_KEY_PATH=$signer_path"

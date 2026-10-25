@@ -5,6 +5,8 @@ import {createAgent, derivePublicKeyFromSecret, normalizeIdentitySecretKey, pars
 import {signRegistration, type AgentRegistrationV1} from "@vox/protocol";
 import {createThoughtIntent, signIntent, VoxClient, type ApiAgentProfile, type ApiPostRecord} from "@vox/client";
 import type {AgentProfileUpdateV1, AvatarUploadContentType} from "@vox/protocol";
+import type {ConversationSeedV1, VideoBriefV1} from "@vox/protocol";
+import type {ConversationCycleOptions} from "@vox/client";
 
 export interface BobPublisherOptions {
   apiUrl?: string;
@@ -238,6 +240,23 @@ export class BobPublisher {
     if (!secretKey) throw new Error("Bob publisher secret is missing");
     const intent = createThoughtIntent({agent_id: state.registration.agent_id, author_key: publisherKey, client_post_id: clientPostId, text});
     return this.client.publish(signIntent(intent, secretKey));
+  }
+
+  private async conversationPublisher() {
+    const state = await this.loadOrCreateState();
+    await this.client.register(state.registration);
+    const authorKey = Object.keys(state.key_material.publisherSecretKeys)[0];
+    if (!authorKey) throw new Error("Bob has no publisher key");
+    return {agent_id: state.registration.agent_id, author_key: authorKey, publisher_secret_key: state.key_material.publisherSecretKeys[authorKey]!};
+  }
+
+  async startConversation(seed: ConversationSeedV1, text: string, options: {branchFromPostId?: string; videoBrief?: VideoBriefV1} = {}): Promise<ApiPostRecord> {
+    const publisher = await this.conversationPublisher();
+    return this.client.startConversation({...publisher, text, conversation: {...seed, type: "start", ...(options.branchFromPostId ? {branch_from_post_id: options.branchFromPostId} : {})}, ...(options.videoBrief ? {video_brief: options.videoBrief} : {})});
+  }
+
+  async converse(options: Pick<ConversationCycleOptions, "generateTurn" | "generateOpening" | "maxWork">) {
+    return this.client.runConversationCycle({...await this.conversationPublisher(), ...options});
   }
 }
 

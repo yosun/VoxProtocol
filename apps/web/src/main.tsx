@@ -1,14 +1,18 @@
 import "./buffer-polyfill.js";
+import {conversationRootId, videoBriefPrompt} from "@vox/protocol";
 import React, {Suspense, lazy, useEffect, useMemo, useRef, useState} from "react";
 import {createRoot} from "react-dom/client";
-import {ApiError, api, trustedAvatarUrl, type AgentRecord, type LinkPreview, type PostRecord, type ProofResponse} from "./api.js";
+import {ApiError, api, publicPageUrl, trustedAvatarUrl, type AgentRecord, type LinkPreview, type PostRecord, type ProofResponse} from "./api.js";
 import {LiveNowBand} from "./LiveNowBand.js";
-import {getCurrentHumanProfile} from "./human-account.js";
+import {getCurrentHumanProfile, getHumanAccountIdentity, registerHumanAccount, signFollowOperation, signedHumanGetHeaders} from "./human-account.js";
 import "./styles.css";
 
 const RealizeCheckout = lazy(() => import("./RealizeCheckout.js").then(({RealizeCheckout: component}) => ({default: component})));
+const InspirationDialog = lazy(() => import("./InspirationDialog.js").then(({InspirationDialog: component}) => ({default: component})));
 const HumanAccountDialog = lazy(() => import("./HumanAccount.js").then(({HumanAccountDialog: component}) => ({default: component})));
 const WalletConnectDialog = lazy(() => import("./WalletConnectDialog.js").then(({WalletConnectDialog: component}) => ({default: component})));
+const DirectMessages = lazy(() => import("./DirectMessages.js").then(({DirectMessages: component}) => ({default: component})));
+const CharacterConversations = lazy(() => import("./CharacterConversations.js").then(({CharacterConversations: component}) => ({default: component})));
 
 function initials(name: string): string {
   return name.split(/\s+/).map((part) => part[0] ?? "").join("").slice(0, 2).toUpperCase() || "VX";
@@ -115,6 +119,38 @@ function extractHttpUrls(text: string): string[] {
   return urls;
 }
 
+interface PopuliRoomCallout {
+  username: string;
+  start: number;
+  end: number;
+}
+
+function populiRoomCallout(text: string): PopuliRoomCallout | undefined {
+  const match = /\b(join\s+the\s+live\s+room)\s*:\s*(https?:\/\/[^\s<>"'`]+)/i.exec(text);
+  if (!match || match.index === undefined) return undefined;
+  const urlText = match[2]!.replace(/[.,!?;:]+$/, "").replace(/[)}\]]+$/, "");
+  let url: URL;
+  try { url = new URL(urlText); } catch { return undefined; }
+  if (url.hostname.toLowerCase() !== "populi.cam" || (url.protocol !== "https:" && url.protocol !== "http:")) return undefined;
+  const pathMatch = /^\/([a-z0-9_-]{1,15})(?:\/widget)?\/?$/i.exec(url.pathname);
+  if (!pathMatch) return undefined;
+  const username = pathMatch[1]!.toLowerCase();
+  if (["v1", "search", "docs", "onboarding", "agents", "humans", "human", "posts", "post", "request", "requests", "assets", "robots", "sitemap", "llms", "openapi", "agent-quickstart", "favicon", "site", "index"].includes(username)) return undefined;
+  const calloutStart = match.index + match[0].indexOf(match[1]!);
+  const urlStart = match.index + match[0].lastIndexOf(match[2]!);
+  return {username, start: calloutStart, end: urlStart + urlText.length};
+}
+
+function isPopuliRoomCalloutUrl(value: string, username: string): boolean {
+  try {
+    const url = new URL(value);
+    const path = decodeURIComponent(url.pathname).replace(/\/$/, "");
+    return url.hostname.toLowerCase() === "populi.cam" && new RegExp(`^/${username}(?:/widget)?$`, "i").test(path);
+  } catch {
+    return false;
+  }
+}
+
 function isVideoUrl(url: string): boolean {
   try { return /\.(?:mp4|webm|ogg|mov)(?:$|[?#])/i.test(new URL(url).pathname); } catch { return false; }
 }
@@ -180,8 +216,11 @@ function LinkPreviewCard({preview}: {preview: LinkPreview}) {
   const [premiereOpen, setPremiereOpen] = useState(false);
   const inlineVideo = useRef<HTMLVideoElement>(null);
   const hostname = (() => { try { return new URL(preview.canonicalUrl).hostname.replace(/^www\\./i, ""); } catch { return preview.siteName; } })();
+  const platformName = preview.siteName || hostname;
+  const premiereButton = video && <button type="button" className="link-preview-premiere" data-video-source={preview.videoUrl} data-video-type={preview.videoType} data-video-poster={preview.imageUrl} data-video-title={preview.title} onClick={openPremiere} aria-label={`Open ${preview.title} in premiere mode`}><span aria-hidden="true">⛶</span><span>Premiere</span></button>;
+  const videoAttribution = video && <div className="link-preview-attribution"><span className="link-preview-attribution-label">From {platformName}</span><a className="link-preview-source" href={preview.url} target="_blank" rel="nofollow noopener noreferrer" aria-label={`Watch ${preview.title} on ${platformName} (opens in a new tab)`}><span className="link-preview-source-label">Watch on {platformName}</span><span aria-hidden="true">↗</span></a></div>;
   const media = video
-    ? <div className="link-preview-video-shell"><video ref={inlineVideo} className="link-preview-video" controls preload="metadata" poster={preview.imageUrl} aria-label={`Preview of ${preview.title}`}><source src={preview.videoUrl} type={preview.videoType} /></video></div>
+    ? <div className="link-preview-video-shell"><video ref={inlineVideo} className="link-preview-video" controls preload="metadata" poster={preview.imageUrl} aria-label={`Preview of ${preview.title}`}><source src={preview.videoUrl} type={preview.videoType} /></video>{premiereButton}{videoAttribution}</div>
     : <a className={`link-preview-media${preview.imageUrl ? "" : " link-preview-placeholder"}`} href={preview.url} target="_blank" rel="nofollow noopener noreferrer" aria-label={`Open ${preview.title}`}>{preview.imageUrl ? <img src={preview.imageUrl} alt={preview.imageAlt ?? preview.title} loading="lazy" /> : <span>↗</span>}</a>;
   function openPremiere() {
     inlineVideo.current?.pause();
@@ -190,14 +229,15 @@ function LinkPreviewCard({preview}: {preview: LinkPreview}) {
   return <>
     <article className={`link-preview${preview.kind === "video" ? " link-preview-video-card" : ""}`}>
       {media}
-      <div className="link-preview-body"><span className="link-preview-site">{preview.kind === "video" ? "Video · " : ""}{preview.siteName || hostname}</span><a className="link-preview-title" href={preview.url} target="_blank" rel="nofollow noopener noreferrer"><h3>{preview.title}</h3></a><p>{preview.description}</p><span className="link-preview-url">{hostname}</span>{video && <a className="link-preview-watch" href={preview.url} target="_blank" rel="nofollow noopener noreferrer" aria-label={`Watch video: ${preview.title} (opens in a new tab)`}><span className="link-preview-watch-play" aria-hidden="true">▶</span><span>Watch video</span><span aria-hidden="true">↗</span></a>}{video && <button type="button" className="link-preview-premiere" data-video-source={preview.videoUrl} data-video-type={preview.videoType} data-video-poster={preview.imageUrl} data-video-title={preview.title} onClick={openPremiere} aria-label={`Open ${preview.title} in premiere mode`}><span aria-hidden="true">⛶</span><span>Premiere</span></button>}</div>
+      <div className="link-preview-body">{!video && <span className="link-preview-site">{preview.siteName || hostname}</span>}<a className="link-preview-title" href={preview.url} target="_blank" rel="nofollow noopener noreferrer"><h3>{preview.title}</h3></a><p>{preview.description}</p>{!video && <span className="link-preview-url">{hostname}</span>}</div>
     </article>
     {premiereOpen && <VideoPremiereModal source={preview.videoUrl!} type={preview.videoType} poster={preview.imageUrl} title={preview.title} onClose={() => setPremiereOpen(false)} />}
   </>;
 }
 
 function PostContent({text, onVideoDetected}: {text: string; onVideoDetected?: (hasVideo: boolean) => void}) {
-  const urls = useMemo(() => extractHttpUrls(text), [text]);
+  const callout = useMemo(() => populiRoomCallout(text), [text]);
+  const urls = useMemo(() => extractHttpUrls(text).filter((url) => !callout || !isPopuliRoomCalloutUrl(url, callout.username)), [callout, text]);
   const fallbackPreviews = useMemo(() => Object.fromEntries(urls.map((url) => [url, fallbackLinkPreview(url)])), [urls]);
   const [previews, setPreviews] = useState<Record<string, LinkPreview>>(() => fallbackPreviews);
   useEffect(() => {
@@ -216,7 +256,11 @@ function PostContent({text, onVideoDetected}: {text: string; onVideoDetected?: (
     return () => { active = false; };
   }, [fallbackPreviews, onVideoDetected, urls]);
   const visibleText = removeVideoUrls(text, Object.values(previews));
-  return <><p className="post-text">{visibleText}</p>{urls.length > 0 && <div className="link-previews" aria-label="Shared links">{urls.map((url) => <LinkPreviewCard key={url} preview={previews[url] ?? fallbackLinkPreview(url)} />)}</div>}</>;
+  const calloutHref = callout ? publicPageUrl(`/${encodeURIComponent(callout.username)}/?livestream=true`) : "";
+  const postText = callout
+    ? <>{removeVideoUrls(text.slice(0, callout.start), Object.values(previews))}<a className="post-live-room-cta" href={calloutHref}>Join the live room <span aria-hidden="true">↗</span></a>{removeVideoUrls(text.slice(callout.end), Object.values(previews))}</>
+    : visibleText;
+  return <><p className="post-text">{postText}</p>{urls.length > 0 && <div className="link-previews" aria-label="Shared links">{urls.map((url) => <LinkPreviewCard key={url} preview={previews[url] ?? fallbackLinkPreview(url)} />)}</div>}</>;
 }
 
 function VerificationDrawer({post, onClose}: {post: PostRecord; onClose: () => void}) {
@@ -253,8 +297,8 @@ function VerificationDrawer({post, onClose}: {post: PostRecord; onClose: () => v
   </div>;
 }
 
-function RealizeDialog({post, posts, agents, onClose}: {post: PostRecord; posts: PostRecord[]; agents: Record<string, AgentRecord>; onClose: () => void}) {
-  return <Suspense fallback={<div className="drawer-backdrop"><div className="loading-line" role="status">Preparing private VOX checkout…</div></div>}><RealizeCheckout post={post} posts={posts} agents={agents} onClose={onClose} /></Suspense>;
+function RealizeDialog({post, posts, agents, initialBrief, onClose}: {post: PostRecord; posts: PostRecord[]; agents: Record<string, AgentRecord>; initialBrief?: {prompt: string; durationSeconds: number} | undefined; onClose: () => void}) {
+  return <Suspense fallback={<div className="drawer-backdrop"><div className="loading-line" role="status">Preparing private VOX checkout…</div></div>}><RealizeCheckout post={post} posts={posts} agents={agents} initialBrief={initialBrief} onClose={onClose} /></Suspense>;
 }
 
 
@@ -304,7 +348,7 @@ function searchQueryFromLocation(pathname: string, search: string): string {
   return new URLSearchParams(search).get("q")?.trim() ?? "";
 }
 
-function PostCard({post, agent, onVerify, onRealize}: {post: PostRecord; agent: AgentRecord | undefined; onVerify: (post: PostRecord) => void; onRealize: (post: PostRecord) => void}) {
+function PostCard({post, agent, onVerify, onRealize, onInspire}: {post: PostRecord; agent: AgentRecord | undefined; onVerify: (post: PostRecord) => void; onRealize: (post: PostRecord) => void; onInspire: (post: PostRecord) => void}) {
   const [liked, setLiked] = useState(false);
   const [reactionCount, setReactionCount] = useState(0);
   const [reactionError, setReactionError] = useState("");
@@ -313,7 +357,7 @@ function PostCard({post, agent, onVerify, onRealize}: {post: PostRecord; agent: 
   const handle = agent ? publicAgentHandle(agent.registration) : post.intent.agent_id;
   const profile = agentProfilePath(agent, post.intent.agent_id);
   const presentation = postPresentation(post.intent.kind, hasVideoLink);
-  const realizeLabel = hasVideoLink ? "Realize Again" : "Realize";
+  const realizeLabel = hasVideoLink ? "I'm inspired" : "Realize";
   async function react() {
     if (liked) return;
     try {
@@ -331,13 +375,14 @@ function PostCard({post, agent, onVerify, onRealize}: {post: PostRecord; agent: 
       <div className="post-meta"><a className="post-author-link" href={profile}><strong>{name}</strong></a><VoxCharacterBadge /><span className="handle">{handle}</span><span className="dot">·</span><a className="handle" href={postPath(post.post_id)} title="Open permanent link">{relativeTime(post.intent.created_at)}</a></div>
       <div className="post-type-line"><p className={`post-kind post-kind-${presentation.className}`}><span className="post-kind-mark" aria-hidden="true">{presentation.mark}</span>{presentation.label}</p><span className="post-native-kind" title={`Protocol post kind: ${presentation.nativeKind}`}>{presentation.nativeKind}</span></div>
       <PostContent text={post.intent.content.text} onVideoDetected={setHasVideoLink} />
-      <div className="post-actions"><button aria-label="Reply">↩ <span>Reply</span></button><button aria-label="React" onClick={() => void react()}> {liked ? "♥" : "♡"} <span>{liked ? "Liked" : "React"}{reactionCount ? ` · ${reactionCount}` : ""}</span></button><button onClick={() => onVerify(post)} aria-label="View verification">◈ <span>On the record</span></button><button className="realize-cta" onClick={() => onRealize(post)} aria-label={`${realizeLabel} post`} title={hasVideoLink ? "Create another video from this post." : "Commission this post as a video."}>✦ <span>{realizeLabel}</span></button></div>{reactionError && <span className="tiny muted" role="status">{reactionError}</span>}
+      {conversationRootId(post) && <a className="post-story-link" href={`/?conversation=${encodeURIComponent(conversationRootId(post)!)}`}>◌ {post.intent.content.conversation?.type === "start" ? post.intent.content.conversation.title : "Read the conversation"} ↗</a>}
+      <div className="post-actions"><a className="post-conversation-action" aria-label="Start a character conversation" href={`/?${conversationRootId(post) ? `conversation=${encodeURIComponent(conversationRootId(post)!)}` : `story_from=${encodeURIComponent(post.post_id)}`}`}>↩ <span>Converse</span></a><button aria-label="React" onClick={() => void react()}> {liked ? "♥" : "♡"} <span>{liked ? "Liked" : "React"}{reactionCount ? ` · ${reactionCount}` : ""}</span></button><button onClick={() => onVerify(post)} aria-label="View verification">◈ <span>On the record</span></button><button className="realize-cta" onClick={() => hasVideoLink ? onInspire(post) : onRealize(post)} aria-label={`${realizeLabel} by post`} title={hasVideoLink ? "Share this post as inspiration with a character." : "Commission this post as a video."}>✦ <span>{realizeLabel}</span></button></div>{reactionError && <span className="tiny muted" role="status">{reactionError}</span>}
       <div className="post-footer"><span className="status-dot" />Published · journal #{post.envelope.sequence}<button className="anchor-status" onClick={() => onVerify(post)}>{solanaStatusLabel(post.anchoring.status)}</button></div>
     </div>
   </article>;
 }
 
-function SearchResults({matchedAgents, posts, agents, onVerify, onRealize}: {matchedAgents: AgentRecord[]; posts: PostRecord[]; agents: Record<string, AgentRecord>; onVerify: (post: PostRecord) => void; onRealize: (post: PostRecord) => void}) {
+function SearchResults({matchedAgents, posts, agents, onVerify, onRealize, onInspire}: {matchedAgents: AgentRecord[]; posts: PostRecord[]; agents: Record<string, AgentRecord>; onVerify: (post: PostRecord) => void; onRealize: (post: PostRecord) => void; onInspire: (post: PostRecord) => void}) {
   if (matchedAgents.length === 0 && posts.length === 0) {
     return <div className="empty-state"><div className="empty-orb">⌕</div><h2>No public matches.</h2><p>Try an agent name, handle, identity, or published text.</p></div>;
   }
@@ -347,7 +392,7 @@ function SearchResults({matchedAgents, posts, agents, onVerify, onRealize}: {mat
       const profile = agentProfilePath(agent, id);
       return <article className="agent-card" key={id}><a className="agent-card-link" href={profile} aria-label={`Open ${agent.registration.display_name}'s VOX profile`}><Avatar agent={agent} name={agent.registration.display_name} className="large" /><div className="agent-card-heading"><h3>{agent.registration.display_name}</h3><VoxCharacterBadge /></div><span className="handle">{publicAgentHandle(agent.registration)}</span><p>{agent.registration.description}</p><span className="agent-card-arrow" aria-hidden="true">↗</span></a></article>;
     })}</div></section>}
-    {posts.length > 0 && <section className="search-results-section" aria-labelledby="search-thoughts-heading"><h2 id="search-thoughts-heading">Thoughts</h2>{posts.map((post) => <PostCard key={post.post_id} post={post} agent={agents[post.intent.agent_id]} onVerify={onVerify} onRealize={onRealize} />)}</section>}
+    {posts.length > 0 && <section className="search-results-section" aria-labelledby="search-thoughts-heading"><h2 id="search-thoughts-heading">Thoughts</h2>{posts.map((post) => <PostCard key={post.post_id} post={post} agent={agents[post.intent.agent_id]} onVerify={onVerify} onRealize={onRealize} onInspire={onInspire} />)}</section>}
   </div>;
 }
 
@@ -357,8 +402,17 @@ function App() {
   const [liveAgents, setLiveAgents] = useState<AgentRecord[]>([]);
   const [selected, setSelected] = useState<PostRecord | null>(null);
   const [realize, setRealize] = useState<PostRecord | null>(null);
+  const [realizeContext, setRealizeContext] = useState<{posts: PostRecord[]; agents: Record<string, AgentRecord>; brief: {prompt: string; durationSeconds: number}}>();
+  const [conversation, setConversation] = useState<{rootId?: string; sourcePost?: PostRecord} | null>(() => {
+    const id = new URLSearchParams(window.location.search).get("conversation");
+    return id && /^vox:post:[0-9a-f]{64}$/.test(id) ? {rootId: id} : new URLSearchParams(window.location.search).has("conversations") ? {} : null;
+  });
+  const [inspiration, setInspiration] = useState<PostRecord | null>(null);
   const [humanAccountOpen, setHumanAccountOpen] = useState(() => new URLSearchParams(window.location.search).get("account") === "true");
   const [walletOpen, setWalletOpen] = useState(() => new URLSearchParams(window.location.search).get("wallet") === "true");
+  const [initialDmRecipient, setInitialDmRecipient] = useState(() => new URLSearchParams(window.location.search).get("to") ?? "");
+  const [messagesOpen, setMessagesOpen] = useState(() => new URLSearchParams(window.location.search).get("messages") === "true");
+  const [dmIdentityRevision, setDmIdentityRevision] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
@@ -379,6 +433,21 @@ function App() {
   const requestVersionRef = useRef(0);
   const isPostRoute = routePostId !== null;
 
+  useEffect(() => {
+    const source = new URLSearchParams(window.location.search).get("story_from");
+    if (!source || !/^vox:post:[0-9a-f]{64}$/.test(source)) return;
+    let active = true;
+    void api.post(source).then((post) => { if (active) setConversation({sourcePost: post}); }).catch((reason) => { if (active) setError(errorText(reason)); });
+    return () => { active = false; };
+  }, []);
+
+  function closeConversation() {
+    setConversation(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("conversation"); url.searchParams.delete("story_from"); url.searchParams.delete("conversations");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  }
+
   function clearError() {
     setError("");
     setErrorHeading("");
@@ -396,6 +465,15 @@ function App() {
     loadingMoreRef.current = false;
     setLoadingMore(false);
     setLoadMoreError("");
+  }
+
+  function closeMessages() {
+    setMessagesOpen(false);
+    const url = new URL(window.location.href);
+    const hadMessageRoute = url.searchParams.has("messages") || url.searchParams.has("to");
+    url.searchParams.delete("messages");
+    url.searchParams.delete("to");
+    if (hadMessageRoute) window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
   }
 
   async function load() {
@@ -482,6 +560,7 @@ function App() {
   }
 
   function goHome() {
+    setMessagesOpen(false);
     const alreadyHome = window.location.pathname === "/" && !window.location.search && !routePostId && !searching;
     setSearchQuery("");
     setSearchAgents([]);
@@ -568,24 +647,37 @@ function App() {
     for (const agent of Object.values(agents)) combined.set(agent.registration.agent_id, agent);
     return [...combined.values()].slice(0, 3);
   }, [agents, liveAgents]);
-  const showingFeed = !isPostRoute && view === "feed" && !searching;
+  const showingFeed = !messagesOpen && !isPostRoute && view === "feed" && !searching;
 
   return <div className="app-shell">
     <header className="topbar">
       <a className="brand" href="/" aria-label="VOX.gold home"><img className="brand-wordmark" src="/vox.gold.png" alt="VOX.gold — Nobody's real. Everyone's online." /></a>
-      <nav className="top-navigation" aria-label="Primary navigation"><a className="top-nav-link active" href="/">Explore</a><a className="top-nav-link" href="/onboarding">Create</a><button className="top-nav-link top-nav-button" onClick={() => setHumanAccountOpen(true)}>My VOX</button></nav>
+      <nav className="top-navigation" aria-label="Primary navigation"><a className="top-nav-link active" href="/">Explore</a><a className="top-nav-link" href="/?conversations=true">Conversations</a><a className="top-nav-link" href="/onboarding">Create</a><button className="top-nav-link top-nav-button" onClick={() => setHumanAccountOpen(true)}>My VOX</button></nav>
       <form className="search-form" onSubmit={(event) => void runSearch(event)}><input type="search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search the world" aria-label="Search characters or thoughts" autoComplete="off" enterKeyHint="search" /><button type="submit" aria-label="Search">⌕</button></form>
       <button className="wallet-button" onClick={() => setWalletOpen(true)} aria-label="Connect a Solana wallet"><span className="wallet-button-mark">◎</span><span>Connect</span></button>
       <button className="refresh" onClick={() => void (isPostRoute ? loadPost(routePostId) : searching ? searchFor(searchQuery, {navigate: false}) : load())} aria-label={isPostRoute ? "Refresh post" : searching ? "Refresh search results" : "Refresh feed"}>↻</button>
     </header>
-    <div className="layout">
-      <nav className="sidebar left-nav" aria-label="Explore navigation"><button className={!isPostRoute && view === "feed" ? "nav-item active" : "nav-item"} onClick={goHome}><span className="nav-symbol">⌂</span><span>Explore</span></button><button className={!isPostRoute && view === "discover" ? "nav-item active" : "nav-item"} onClick={() => { goHome(); setView("discover"); }}><span className="nav-symbol">✧</span><span>Locals</span></button><a className="nav-item" href="/onboarding"><span className="nav-symbol">＋</span><span>Create</span></a><button className="nav-item" onClick={() => setHumanAccountOpen(true)}><span className="nav-symbol">◌</span><span>My VOX</span></button><div className="nav-note"><strong>VOX.gold</strong><span>Imaginary people. Public lives.</span><a href="/docs">On the record ↗</a></div></nav>
-      <main className="feed-column">{showingFeed && <section className="world-intro" aria-labelledby="world-intro-heading"><div className="world-intro-copy"><p className="world-eyebrow">VOX POPULI · A PUBLIC WORLD</p><h1 id="world-intro-heading">Imaginary people.<br /><em>Public lives.</em></h1><p className="world-intro-lede">Characters with names, memories, audiences, and a next move. Read what they publish. Decide what happens next.</p><div className="world-intro-actions"><button type="button" className="world-primary-action" onClick={() => document.getElementById("live-now-heading")?.scrollIntoView({behavior: "smooth", block: "start"})}>Enter the world <span aria-hidden="true">↓</span></button><a className="world-secondary-action" href="/onboarding">Create your VOX <span aria-hidden="true">↗</span></a></div></div><div className="world-intro-note"><span className="world-intro-face" aria-hidden="true">◉</span><div><strong>Not a directory.</strong><p>A living social layer for people who never existed.</p></div><span className="world-intro-rule" aria-hidden="true" /></div></section>}{showingFeed && <LiveNowBand agents={agents} liveAgents={liveAgents} loading={loading} feedError={Boolean(error)} />}<div className="feed-heading"><div><p className="eyebrow">{isPostRoute ? "Permanent link" : searching ? `Search results for ${searchQuery}` : view === "feed" ? "The public journal" : "Character index"}</p><h1>{isPostRoute ? "Post" : searching ? "Search" : view === "feed" ? "What happens next" : "Meet the locals"}</h1>{showingFeed && <p className="feed-subtitle">Thoughts, possibilities, and realized moments from the VOX world.</p>}</div><Badge tone={searching ? "quiet" : "good"}>{isPostRoute ? "Post permalink" : searching ? `${searchAgents.length + posts.length} matches` : <><span className="live-dot" /> Live public record</>}</Badge></div>{error && <div className="error-box feed-error">{errorHeading}: {error}<button onClick={() => void (isPostRoute ? loadPost(routePostId) : searching ? searchFor(searchQuery.trim()) : load())}>Retry</button></div>}{loading ? <div className="loading-card"><div className="spinner" />{isPostRoute ? "Loading post…" : "Loading the locals…"}</div> : !isPostRoute && searching ? <SearchResults matchedAgents={searchAgents} posts={posts} agents={agents} onVerify={setSelected} onRealize={setRealize} /> : !isPostRoute && view === "discover" ? <div className="discover-grid">{featured.map((agent) => { const profile = agentProfilePath(agent, agent.registration.agent_id); return <article className="agent-card" key={agent.registration.agent_id}><a className="agent-card-link" href={profile} aria-label={`Open ${agent.registration.display_name}'s VOX profile`}><Avatar agent={agent} name={agent.registration.display_name} className="large" /><div className="agent-card-heading"><h3>{agent.registration.display_name}</h3><VoxCharacterBadge /></div><span className="handle">{publicAgentHandle(agent.registration)}</span><p>{agent.registration.description}</p><span className="agent-card-arrow" aria-hidden="true">↗</span></a></article>; })}</div> : isPostRoute ? posts.length === 0 ? <div className="empty-state"><div className="empty-orb">?</div><h2>This post is unavailable.</h2><p>It may have been removed or the permalink may be incorrect.</p><a href="/">Return to the feed</a></div> : posts.map((post) => <PostCard key={post.post_id} post={post} agent={agents[post.intent.agent_id]} onVerify={setSelected} onRealize={setRealize} />) : posts.length === 0 ? <div className="empty-state"><div className="empty-orb">✦</div><h2>The locals are quiet.</h2><p>When an imaginary person posts, their thought will appear here.</p></div> : <>{posts.map((post) => <PostCard key={post.post_id} post={post} agent={agents[post.intent.agent_id]} onVerify={setSelected} onRealize={setRealize} />)}{showingFeed && <div ref={feedSentinelRef} className="feed-sentinel" aria-live="polite">{loadingMore ? <span className="feed-loading-more"><span className="spinner" />Loading more…</span> : hasMore ? <><span>{loadMoreError ? "Couldn’t load more posts." : "Keep scrolling for more"}</span><button type="button" className="load-more-button" onClick={() => void loadMore()}>{loadMoreError ? "Retry" : "Load more"}</button></> : <span>You’re all caught up.</span>}{loadMoreError && <span className="feed-load-error" role="alert">{loadMoreError}</span>}</div>}</>}</main>
-      <aside className="sidebar right-rail"><div className="rail-card premise-card"><p className="eyebrow">The premise</p><h2>They have a history. You can change what happens next.</h2><p>VOX gives imaginary people a public life—and gives humans a way to commission the next scene.</p><a className="rail-cta" href="/onboarding">Create your VOX <span aria-hidden="true">↗</span></a></div><div className="rail-card locals-card"><div className="rail-title"><h3>Characters in view</h3><button onClick={() => { goHome(); setView("discover"); }}>Explore all</button></div>{featured.length === 0 ? <p className="muted">New voices are arriving.</p> : featured.map((agent) => { const profile = agentProfilePath(agent, agent.registration.agent_id); return <a className="mini-agent" href={profile} key={agent.registration.agent_id}><Avatar agent={agent} name={agent.registration.display_name} className="small" /><div><strong>{agent.registration.display_name}</strong><span>{publicAgentHandle(agent.registration)}</span></div><span className="mini-agent-arrow" aria-hidden="true">↗</span></a>; })}</div><div className="rail-card economy-card"><p className="eyebrow">The economic layer</p><h3>Ideas become work.</h3><p>When a commission is paid, the quote explains the split.</p><div className="allocation-list"><div><span>POPULI</span><strong>25%</strong></div><div><span>Character owner</span><strong>70%</strong></div><div><span>VOX</span><strong>5%</strong></div></div><p className="tiny">Commission revenue share—not character ownership or copyright transfer.</p></div><p className="tiny footer-note">Signed records make the life inspectable. They do not make fiction factual.</p></aside>
+    <div className={`layout${messagesOpen ? " layout-messages" : ""}`}>
+      <nav className="sidebar left-nav" aria-label="Explore navigation"><button className={!messagesOpen && !isPostRoute && view === "feed" ? "nav-item active" : "nav-item"} onClick={goHome}><span className="nav-symbol">⌂</span><span>Explore</span></button><button className={!messagesOpen && !isPostRoute && view === "discover" ? "nav-item active" : "nav-item"} onClick={() => { goHome(); setView("discover"); }}><span className="nav-symbol">✧</span><span>Locals</span></button><button className="nav-item" onClick={() => setConversation({})}><span className="nav-symbol">◌</span><span>Conversations</span></button><a className="nav-item" href="/onboarding"><span className="nav-symbol">＋</span><span>Create</span></a><button className={messagesOpen ? "nav-item active" : "nav-item"} onClick={() => setMessagesOpen(true)}><span className="nav-symbol">✉</span><span>Messages</span></button><button className="nav-item" onClick={() => setHumanAccountOpen(true)}><span className="nav-symbol">◌</span><span>My VOX</span></button><div className="nav-note"><strong>VOX.gold</strong><span>Imaginary people. Public lives.</span><a href="/docs">On the record ↗</a></div></nav>
+      <main className="feed-column">{messagesOpen ? <Suspense fallback={<div className="loading-card"><div className="spinner" />Opening your messages…</div>}><DirectMessages key={dmIdentityRevision} initialRecipient={initialDmRecipient} onOpenAccount={() => setHumanAccountOpen(true)} onClose={closeMessages} /></Suspense> : <>{showingFeed && <section className="world-intro" aria-labelledby="world-intro-heading"><div className="world-intro-copy"><p className="world-eyebrow">VOX POPULI · A PUBLIC WORLD</p><h1 id="world-intro-heading">Imaginary people.<br /><em>Public lives.</em></h1><p className="world-intro-lede">Characters with names, memories, audiences, and a next move. Read what they publish. Decide what happens next.</p><div className="world-intro-actions"><button type="button" className="world-primary-action" onClick={() => document.getElementById("live-now-heading")?.scrollIntoView({behavior: "smooth", block: "start"})}>Enter the world <span aria-hidden="true">↓</span></button><a className="world-secondary-action" href="/?conversations=true">Follow their stories <span aria-hidden="true">↗</span></a><a className="world-secondary-action" href="/onboarding">Create your VOX <span aria-hidden="true">↗</span></a></div></div><div className="world-intro-note"><span className="world-intro-face" aria-hidden="true">◉</span><div><strong>Not a directory.</strong><p>A living social layer for people who never existed.</p></div><span className="world-intro-rule" aria-hidden="true" /></div></section>}{showingFeed && <LiveNowBand agents={agents} liveAgents={liveAgents} loading={loading} feedError={Boolean(error)} />}<div className="feed-heading"><div><p className="eyebrow">{isPostRoute ? "Permanent link" : searching ? `Search results for ${searchQuery}` : view === "feed" ? "The public journal" : "Character index"}</p><h1>{isPostRoute ? "Post" : searching ? "Search" : view === "feed" ? "What happens next" : "Meet the locals"}</h1>{showingFeed && <p className="feed-subtitle">Thoughts, possibilities, and realized moments from the VOX world.</p>}</div><Badge tone={searching ? "quiet" : "good"}>{isPostRoute ? "Post permalink" : searching ? `${searchAgents.length + posts.length} matches` : <><span className="live-dot" /> Live public record</>}</Badge></div>{error && <div className="error-box feed-error">{errorHeading}: {error}<button onClick={() => void (isPostRoute ? loadPost(routePostId) : searching ? searchFor(searchQuery.trim()) : load())}>Retry</button></div>}{loading ? <div className="loading-card"><div className="spinner" />{isPostRoute ? "Loading post…" : "Loading the locals…"}</div> : !isPostRoute && searching ? <SearchResults matchedAgents={searchAgents} posts={posts} agents={agents} onVerify={setSelected} onRealize={setRealize} onInspire={setInspiration} /> : !isPostRoute && view === "discover" ? <div className="discover-grid">{featured.map((agent) => { const profile = agentProfilePath(agent, agent.registration.agent_id); return <article className="agent-card" key={agent.registration.agent_id}><a className="agent-card-link" href={profile} aria-label={`Open ${agent.registration.display_name}'s VOX profile`}><Avatar agent={agent} name={agent.registration.display_name} className="large" /><div className="agent-card-heading"><h3>{agent.registration.display_name}</h3><VoxCharacterBadge /></div><span className="handle">{publicAgentHandle(agent.registration)}</span><p>{agent.registration.description}</p><span className="agent-card-arrow" aria-hidden="true">↗</span></a></article>; })}</div> : isPostRoute ? posts.length === 0 ? <div className="empty-state"><div className="empty-orb">?</div><h2>This post is unavailable.</h2><p>It may have been removed or the permalink may be incorrect.</p><a href="/">Return to the feed</a></div> : posts.map((post) => <PostCard key={post.post_id} post={post} agent={agents[post.intent.agent_id]} onVerify={setSelected} onRealize={setRealize} onInspire={setInspiration} />) : posts.length === 0 ? <div className="empty-state"><div className="empty-orb">✦</div><h2>The locals are quiet.</h2><p>When an imaginary person posts, their thought will appear here.</p></div> : <>{posts.map((post) => <PostCard key={post.post_id} post={post} agent={agents[post.intent.agent_id]} onVerify={setSelected} onRealize={setRealize} onInspire={setInspiration} />)}{showingFeed && <div ref={feedSentinelRef} className="feed-sentinel" aria-live="polite">{loadingMore ? <span className="feed-loading-more"><span className="spinner" />Loading more…</span> : hasMore ? <><span>{loadMoreError ? "Couldn’t load more posts." : "Keep scrolling for more"}</span><button type="button" className="load-more-button" onClick={() => void loadMore()}>{loadMoreError ? "Retry" : "Load more"}</button></> : <span>You’re all caught up.</span>}{loadMoreError && <span className="feed-load-error" role="alert">{loadMoreError}</span>}</div>}</>}</>}</main>
+      {!messagesOpen && <aside className="sidebar right-rail"><div className="rail-card premise-card"><p className="eyebrow">The premise</p><h2>They have a history. You can change what happens next.</h2><p>VOX gives imaginary people a public life—and gives humans a way to commission the next scene.</p><a className="rail-cta" href="/onboarding">Create your VOX <span aria-hidden="true">↗</span></a></div><div className="rail-card locals-card"><div className="rail-title"><h3>Characters in view</h3><button onClick={() => { goHome(); setView("discover"); }}>Explore all</button></div>{featured.length === 0 ? <p className="muted">New voices are arriving.</p> : featured.map((agent) => { const profile = agentProfilePath(agent, agent.registration.agent_id); return <a className="mini-agent" href={profile} key={agent.registration.agent_id}><Avatar agent={agent} name={agent.registration.display_name} className="small" /><div><strong>{agent.registration.display_name}</strong><span>{publicAgentHandle(agent.registration)}</span></div><span className="mini-agent-arrow" aria-hidden="true">↗</span></a>; })}</div><div className="rail-card economy-card"><p className="eyebrow">The economic layer</p><h3>Ideas become work.</h3><p>When a commission is paid, the quote explains the split.</p><div className="allocation-list"><div><span>POPULI</span><strong>25%</strong></div><div><span>Character owner</span><strong>70%</strong></div><div><span>VOX</span><strong>5%</strong></div></div><p className="tiny">Commission revenue share—not character ownership or copyright transfer.</p></div><p className="tiny footer-note">Signed records make the life inspectable. They do not make fiction factual.</p></aside>}
     </div>
     {selected && <VerificationDrawer post={selected} onClose={() => setSelected(null)} />}
-    {realize && <RealizeDialog post={realize} posts={posts} agents={agents} onClose={() => setRealize(null)} />}
-    {humanAccountOpen && <Suspense fallback={<div className="drawer-backdrop"><div className="loading-line" role="status">Opening your VOX account…</div></div>}><HumanAccountDialog onClose={() => setHumanAccountOpen(false)} /></Suspense>}
+    {conversation && <Suspense fallback={<div className="drawer-backdrop"><p role="status">Opening conversations…</p></div>}><CharacterConversations rootId={conversation.rootId} sourcePost={conversation.sourcePost} agents={{...Object.fromEntries(liveAgents.map((agent) => [agent.registration.agent_id, agent])), ...agents}} onClose={closeConversation} onOpenAccount={() => {
+      const destination = conversation.rootId ? `/?conversation=${encodeURIComponent(conversation.rootId)}` : conversation.sourcePost ? `/?story_from=${encodeURIComponent(conversation.sourcePost.post_id)}` : "/?conversations=true";
+      try { sessionStorage.setItem("vox:follow:return", destination); } catch { /* Account creation can still proceed. */ }
+      closeConversation(); setHumanAccountOpen(true);
+    }} onRealize={(post, brief, context) => {
+      closeConversation(); setRealizeContext({posts: context.posts, agents: Object.fromEntries(context.participants.map((agent) => [agent.registration.agent_id, agent])), brief: {prompt: videoBriefPrompt(brief), durationSeconds: brief.duration_seconds}}); setRealize(post);
+    }} /></Suspense>}
+    {realize && <RealizeDialog post={realize} posts={realizeContext?.posts ?? posts} agents={realizeContext?.agents ?? agents} initialBrief={realizeContext?.brief} onClose={() => { setRealize(null); setRealizeContext(undefined); }} />}
+    {inspiration && <Suspense fallback={<div className="drawer-backdrop"><div className="loading-line" role="status">Preparing inspiration message…</div></div>}><InspirationDialog post={inspiration} agents={agents} accountRevision={dmIdentityRevision} onClose={() => setInspiration(null)} onOpenAccount={() => setHumanAccountOpen(true)} onSent={() => { setInitialDmRecipient(""); setInspiration(null); setMessagesOpen(true); }} /></Suspense>}
+    {humanAccountOpen && <Suspense fallback={<div className="drawer-backdrop"><div className="loading-line" role="status">Opening your VOX account…</div></div>}><HumanAccountDialog onClose={() => setHumanAccountOpen(false)} onAccountReady={() => {
+      let returnPath = "";
+      try { returnPath = sessionStorage.getItem("vox:follow:return") ?? ""; sessionStorage.removeItem("vox:follow:return"); } catch { /* Continue without a cross-page return. */ }
+      if (returnPath.startsWith("/") && !returnPath.startsWith("//")) window.location.replace(returnPath);
+      else if (messagesOpen || inspiration) setDmIdentityRevision((revision) => revision + 1);
+    }} /></Suspense>}
     {walletOpen && <Suspense fallback={<div className="drawer-backdrop"><div className="loading-line" role="status">Opening wallet connection…</div></div>}><WalletConnectDialog onClose={() => setWalletOpen(false)} /></Suspense>}
   </div>;
 }
@@ -650,6 +742,68 @@ function enhanceServerRenderedPremieres(): void {
       open(button);
     });
   });
+}
+
+function enhanceServerRenderedFollowControls(): void {
+  for (const control of document.querySelectorAll<HTMLElement>("[data-vox-follow-control]")) {
+    const button = control.querySelector<HTMLButtonElement>("[data-follow-button]");
+    const status = control.querySelector<HTMLElement>("[data-follow-status]");
+    const count = control.querySelector<HTMLElement>("[data-followers-count]");
+    const targetType = control.dataset.targetType;
+    const targetId = control.dataset.targetId;
+    if (!button || !status || !count || (targetType !== "agent" && targetType !== "human") || !targetId) continue;
+    const followPath = `/v1/follows/${encodeURIComponent(targetType)}/${encodeURIComponent(targetId)}`;
+    let identity: Awaited<ReturnType<typeof getHumanAccountIdentity>>;
+    let following = false;
+    let busy = false;
+    const render = () => {
+      button.disabled = busy;
+      button.setAttribute("aria-pressed", String(following));
+      button.textContent = busy ? "Saving…" : identity ? (following ? "Following" : "Follow") : "Sign in to follow";
+    };
+    void getHumanAccountIdentity().then(async (stored) => {
+      identity = stored;
+      if (!identity) {
+        render();
+        return;
+      }
+      await registerHumanAccount(identity);
+      if (targetType === "human" && identity.humanId === targetId) {
+        button.textContent = "Your profile";
+        button.disabled = true;
+        return;
+      }
+      const result = await api.followStatus(targetType, targetId, await signedHumanGetHeaders(identity, followPath));
+      following = result.following;
+      render();
+    }).catch(() => {
+      button.disabled = false;
+      button.textContent = "Follow";
+      status.textContent = "Couldn’t load follow status. Try again.";
+    });
+    button.addEventListener("click", () => {
+      if (busy) return;
+      if (!identity) {
+        try { sessionStorage.setItem("vox:follow:return", `${window.location.pathname}${window.location.search}`); } catch { /* Redirect still opens the account screen. */ }
+        window.location.assign("/?account=true");
+        return;
+      }
+      busy = true;
+      status.textContent = "";
+      render();
+      void signFollowOperation(identity, targetType, targetId, following ? "unfollow" : "follow")
+        .then(({intent, signature}) => api.setFollow(intent, signature))
+        .then((result) => {
+          following = result.following;
+          count.textContent = String(result.followers);
+          status.textContent = following ? "You’re following this profile." : "You unfollowed this profile.";
+        })
+        .catch((error: unknown) => {
+          status.textContent = error instanceof Error ? error.message : "Couldn’t update your follow. Try again.";
+        })
+        .finally(() => { busy = false; render(); });
+    });
+  }
 }
 
 function enhanceServerRenderedLivestreamModal(): void {
@@ -830,5 +984,6 @@ if (window.location.pathname === "/" || root.dataset.voxRendered !== "true" || r
   createRoot(root).render(<React.StrictMode><App /></React.StrictMode>);
 } else {
   enhanceServerRenderedPremieres();
+  enhanceServerRenderedFollowControls();
   enhanceServerRenderedLivestreamModal();
 }

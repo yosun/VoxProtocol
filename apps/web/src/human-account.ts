@@ -1,4 +1,4 @@
-import {bytesToBase64Url, base64UrlToBytes, humanClientRequestSigningPayload, humanIdFromPublicKey, humanRegistrationPayload, verifyHumanRegistration, type HumanRegistrationV1} from "@vox/protocol";
+import {bytesToBase64Url, base64UrlToBytes, followSigningPayload, humanClientRequestSigningPayload, humanIdFromPublicKey, humanRegistrationPayload, verifyHumanRegistration, type FollowIntentV1, type HumanRegistrationV1} from "@vox/protocol";
 import {api, type HumanRecord} from "./api.js";
 
 const DB_NAME = "vox-human-account";
@@ -64,15 +64,34 @@ export async function registerHumanAccount(identity: HumanAccountIdentity): Prom
 export async function getCurrentHumanProfile(): Promise<HumanRecord> {
   const identity = await getHumanAccountIdentity();
   if (!identity) throw new Error("Sign in to a VOX human account first.");
+  const profile = await api.me(await signedHumanGetHeaders(identity, "/v1/me"));
+  if (profile.registration.human_id !== identity.humanId) throw new Error("VOX returned a different account profile.");
+  return profile;
+}
+
+export async function signedHumanGetHeaders(identity: HumanAccountIdentity, path: string): Promise<Record<string, string>> {
   const issuedAt = new Date().toISOString();
-  const signature = await crypto.subtle.sign({name: "Ed25519"}, identity.privateKey, humanClientRequestSigningPayload({method: "GET", path: "/v1/me", principal_id: identity.humanId, issued_at: issuedAt}));
-  const profile = await api.me({
+  const signature = await crypto.subtle.sign({name: "Ed25519"}, identity.privateKey, humanClientRequestSigningPayload({method: "GET", path, principal_id: identity.humanId, issued_at: issuedAt}));
+  return {
     "x-vox-human-id": identity.humanId,
     "x-vox-human-timestamp": issuedAt,
     "x-vox-human-signature": bytesToBase64Url(new Uint8Array(signature))
-  });
-  if (profile.registration.human_id !== identity.humanId) throw new Error("VOX returned a different account profile.");
-  return profile;
+  };
+}
+
+export async function signFollowOperation(identity: HumanAccountIdentity, targetType: "agent" | "human", targetId: string, action: "follow" | "unfollow"): Promise<{intent: FollowIntentV1; signature: string}> {
+  const intent: FollowIntentV1 = {
+    protocol: "vox.follow/1",
+    follower_type: "human",
+    follower_id: identity.humanId,
+    target_type: targetType,
+    target_id: targetId,
+    action,
+    created_at: new Date().toISOString(),
+    operation_id: crypto.randomUUID()
+  };
+  const signature = await crypto.subtle.sign({name: "Ed25519"}, identity.privateKey, followSigningPayload(intent));
+  return {intent, signature: bytesToBase64Url(new Uint8Array(signature))};
 }
 
 export async function createHumanAccountIdentity(input: {displayName: string; username?: string; description: string}): Promise<HumanAccountIdentity> {

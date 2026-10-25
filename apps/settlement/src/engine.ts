@@ -66,6 +66,13 @@ function amount(value: string): bigint {
   return BigInt(value);
 }
 
+function mainnetPayoutWallet(destination: string): string {
+  const prefix = "solana:mainnet-beta:";
+  const wallet = destination.startsWith(prefix) ? destination.slice(prefix.length) : destination;
+  if (!isValidSolanaAddress(wallet)) throw new SettlementError(400, "invalid_destination", "every payout destination must be a Mainnet Solana wallet address");
+  return wallet;
+}
+
 export class RealizeSettlementProcessor {
   constructor(private readonly ledger: SettlementLedger, private readonly chain: MainnetSettlementChain, private readonly maxPaymentAtomic: bigint) {
     if (maxPaymentAtomic <= 0n || maxPaymentAtomic > 10_000_000_000n) throw new Error("Mainnet settlement payment limit is invalid");
@@ -78,7 +85,7 @@ export class RealizeSettlementProcessor {
     if (idempotencyKey !== instruction.settlement_id) throw new SettlementError(400, "idempotency_key_mismatch", "Idempotency-Key must match settlement_id");
     if (instruction.network_id !== "solana:mainnet-beta" || instruction.usdc_mint !== MAINNET_USDC_MINT || instruction.asset !== "USDC") throw new SettlementError(400, "unsupported_network", "settlement accepts only classic SPL USDC on Solana Mainnet");
     if (!instruction.canonical_quote_hash || instruction.settlement_program_version !== "spl-usdc-mainnet-v1") throw new SettlementError(400, "settlement_binding_missing", "settlement must bind the accepted quote and Mainnet SPL payment version");
-    if (instruction.payout_recipients.some((payout) => !isValidSolanaAddress(payout.destination))) throw new SettlementError(400, "invalid_destination", "every payout destination must be a Solana wallet address");
+    for (const payout of instruction.payout_recipients) mainnetPayoutWallet(payout.destination);
     if (amount(instruction.total_amount_usdc_atomic) > this.maxPaymentAtomic) throw new SettlementError(400, "payment_limit_exceeded", "settlement exceeds the configured payment limit");
     await this.chain.ensureTreasury();
     await this.reserve("settlement", instruction.settlement_id, instruction.payment_intent_id, instruction);
@@ -154,7 +161,9 @@ export class RealizeSettlementProcessor {
       const transfers = plan.payout_ids.map((payoutId) => {
         const payout = byId.get(payoutId);
         if (!payout) throw new SettlementError(400, "invalid_settlement", "transaction batch references an unknown payout");
-        return {payout_id: payout.payout_id, destination: payout.destination, amount_usdc_atomic: payout.amount_usdc_atomic};
+        // Keep the quote-bound instruction unchanged in the ledger. Only the
+        // chain adapter consumes the bare wallet inside its network-qualified destination.
+        return {payout_id: payout.payout_id, destination: mainnetPayoutWallet(payout.destination), amount_usdc_atomic: payout.amount_usdc_atomic};
       });
       await this.progressBatch(instruction.settlement_id, plan.transaction_index, transfers);
     }
@@ -167,7 +176,7 @@ export class RealizeSettlementProcessor {
     return {
       settlement_id: instruction.settlement_id, status,
       transaction_signatures: batches.flatMap((batch) => batch.transaction_signature ? [batch.transaction_signature] : []),
-      settled_amount_usdc_atomic: settledAmount.toString(), failed_payout_ids: failedIds,
+      settled_payout_ids: [...settledIds], settled_amount_usdc_atomic: settledAmount.toString(), failed_payout_ids: failedIds,
       updated_at: new Date().toISOString()
     };
   }

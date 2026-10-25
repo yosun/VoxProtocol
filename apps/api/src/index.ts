@@ -1,5 +1,6 @@
 export * from "./app.js";
 export * from "./avatar-store.js";
+export * from "./direct-message-media-store.js";
 export * from "./store.js";
 export * from "./types.js";
 export * from "./firestore-store.js";

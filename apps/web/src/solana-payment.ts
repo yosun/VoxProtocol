@@ -44,6 +44,7 @@ export interface SendUsdcPaymentInput {
   paymentReference: string;
   cluster: string;
   rpcUrl?: string;
+  onWalletApprovalRequested?: () => void;
   onSubmitted?: (signature: string, explorerUrl: string) => void;
 }
 
@@ -175,7 +176,7 @@ export async function sendUsdcPayment(input: SendUsdcPaymentInput): Promise<Sola
   const sourceAmount = sourceInfo ? unpackAccount(source, sourceInfo, TOKEN_PROGRAM_ID).amount : 0n;
   if (sourceInfo && !unpackAccount(source, sourceInfo, TOKEN_PROGRAM_ID).mint.equals(mint)) throw new Error("The wallet’s associated token account does not hold the authorized USDC mint.");
   if (sourceAmount < BigInt(input.amountAtomic)) {
-    throw new Error(`Insufficient USDC. This wallet has ${(Number(sourceAmount) / 1_000_000).toFixed(2)} USDC in its associated account; the quote requires ${(Number(BigInt(input.amountAtomic)) / 1_000_000).toFixed(2)} USDC.`);
+    throw new Error(`Insufficient USDC in wallet ${input.payerAddress}. It has ${(Number(sourceAmount) / 1_000_000).toFixed(2)} USDC in its associated account; the quote requires ${(Number(BigInt(input.amountAtomic)) / 1_000_000).toFixed(2)} USDC.`);
   }
 
   const transaction = new Transaction();
@@ -211,6 +212,7 @@ export async function sendUsdcPayment(input: SendUsdcPaymentInput): Promise<Sola
   }
 
   const features = walletSigningFeatures(input.wallet);
+  input.onWalletApprovalRequested?.();
   let signature: string;
   if (features[SolanaSignAndSendTransaction]) {
     const [sent] = await features[SolanaSignAndSendTransaction].signAndSendTransaction({
@@ -307,6 +309,7 @@ export async function sendRealizeEscrowPayment(input: {
   issuerPublicKey: string;
   funding: RealizeEscrowFunding;
   cluster: string;
+  onWalletApprovalRequested?: () => void;
   onSubmitted?: (signature: string, explorerUrl: string) => void;
 }): Promise<SolanaPaymentResult> {
   if (input.funding.mode !== "escrow" || input.cluster !== "devnet") throw new Error("This escrow authorization is not configured for Devnet.");
@@ -359,7 +362,7 @@ export async function sendRealizeEscrowPayment(input: {
   const sourceToken = sourceInfo ? unpackAccount(source, sourceInfo, TOKEN_PROGRAM_ID) : undefined;
   if (sourceToken && !sourceToken.mint.equals(mint)) throw new Error("The wallet’s associated account does not hold the authorized USDC mint.");
   const sourceAmount = sourceToken?.amount ?? 0n;
-  if (sourceAmount < BigInt(input.funding.amount_usdc_atomic)) throw new Error(`Insufficient USDC. This wallet has ${(Number(sourceAmount) / 1_000_000).toFixed(2)} USDC; the quote requires ${(Number(BigInt(input.funding.amount_usdc_atomic)) / 1_000_000).toFixed(2)} USDC.`);
+  if (sourceAmount < BigInt(input.funding.amount_usdc_atomic)) throw new Error(`Insufficient USDC in wallet ${input.payerAddress}. It has ${(Number(sourceAmount) / 1_000_000).toFixed(2)} USDC; the quote requires ${(Number(BigInt(input.funding.amount_usdc_atomic)) / 1_000_000).toFixed(2)} USDC.`);
 
   const sourceAta = address(source.toBase58());
   const progress = escrowInfo
@@ -447,6 +450,7 @@ export async function sendRealizeEscrowPayment(input: {
       throw new Error(`Devnet escrow simulation failed: ${details}`);
     }
     let signature: string;
+    input.onWalletApprovalRequested?.();
     if (features[SolanaSignAndSendTransaction]) {
       const [sent] = await features[SolanaSignAndSendTransaction].signAndSendTransaction({
         account: input.account,

@@ -54,7 +54,7 @@ export interface EscrowFundingAuthorization {
     quote_expires_at: string;
     refund_after: string;
   };
-  payouts: Array<{recipient: string; amount_usdc_atomic: string}>;
+  payouts: Array<{payout_id?: string; recipient: string; amount_usdc_atomic: string}>;
   progress?: EscrowProgress;
 }
 
@@ -234,7 +234,7 @@ export class DevnetRealizeEscrowClient implements RealizePaymentRail<EscrowFundi
         total: prepared.createArgs.total.toString(), recipient_count: prepared.createArgs.recipient_count,
         quote_expires_at: prepared.createArgs.quote_expires_at.toString(), refund_after: prepared.createArgs.refund_after.toString()
       },
-      payouts: prepared.payouts.map((payout) => ({recipient: payout.recipient, amount_usdc_atomic: payout.amount.toString()}))
+      payouts: prepared.payouts.map((payout, index) => ({...(input.quote.payout_recipients[index]?.payout_id ? {payout_id: input.quote.payout_recipients[index]!.payout_id} : {}), recipient: payout.recipient, amount_usdc_atomic: payout.amount.toString()}))
     };
   }
 
@@ -414,10 +414,13 @@ export class DevnetRealizeEscrowClient implements RealizePaymentRail<EscrowFundi
     }
     const settled = snapshot?.status === "Settled" && snapshot.paid_usdc_atomic === funding.amount_usdc_atomic;
     const status = settled ? "settled" as const : snapshot?.paid_usdc_atomic !== "0" ? "partial" as const : snapshot?.status === "Refundable" || snapshot?.status === "Refunded" ? "failed" as const : "processing" as const;
+    const claimedBitmap = BigInt(snapshot?.claimed_bitmap ?? "0");
+    const settledPayoutIds = funding.payouts.flatMap((payout, index) => payout.payout_id && (claimedBitmap & (1n << BigInt(index))) !== 0n ? [payout.payout_id] : []);
     return {
       settlement_id: `vox:settlement:${createHash("sha256").update(`${funding.commission_id}\u0000${funding.accepted_quote_hash}`).digest("hex")}`,
       status,
       transaction_signatures: claimSignatures,
+      settled_payout_ids: settledPayoutIds,
       settled_amount_usdc_atomic: snapshot?.paid_usdc_atomic ?? "0",
       failed_payout_ids: [],
       updated_at: new Date().toISOString()

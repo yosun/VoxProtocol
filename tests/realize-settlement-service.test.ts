@@ -80,6 +80,23 @@ function refundRequest(overrides: Partial<RefundRequest> = {}): RefundRequest {
 describe("Mainnet Realize settlement adapter", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it("settles network-qualified quote destinations without changing the reserved instruction", async () => {
+    const chain = new FakeSettlementChain();
+    const ledger = new MemorySettlementLedger();
+    const processor = new RealizeSettlementProcessor(ledger, chain, 1_000_000n);
+    const original = settlementInstruction();
+    const instruction = {...original, payout_recipients: original.payout_recipients.map((payout) => ({...payout, destination: `solana:mainnet-beta:${payout.destination}`}))};
+    expect(await processor.requestSettlement(instruction, instruction.settlement_id)).toMatchObject({status: "settled", settled_amount_usdc_atomic: "1000000"});
+    expect(chain.prepareBatch.mock.calls[0]![0].transfers).toEqual(original.payout_recipients.map(({payout_id, destination, amount_usdc_atomic}) => ({payout_id, destination, amount_usdc_atomic})));
+    expect((await ledger.get(instruction.settlement_id))?.request).toEqual(instruction);
+    await processor.requestSettlement(instruction, instruction.settlement_id);
+    expect(chain.prepareCount).toBe(1);
+
+    const wrongNetwork = {...original, settlement_id: "settlement:wrong-network", payout_recipients: original.payout_recipients.map((payout) => ({...payout, destination: `solana:devnet:${payout.destination}`}))};
+    await expect(processor.requestSettlement(wrongNetwork, wrongNetwork.settlement_id)).rejects.toMatchObject({code: "invalid_destination"});
+    expect(chain.prepareCount).toBe(1);
+  });
+
   it("authenticates, settles the exact payout plan once, and replays the stored result", async () => {
     const chain = new FakeSettlementChain();
     const processor = new RealizeSettlementProcessor(new MemorySettlementLedger(), chain, 1_000_000n);
