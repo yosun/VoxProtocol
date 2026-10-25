@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import {assertRealizeCommissionUpdate, type CommissionV1} from "@vox/protocol";
+import {assertRealizeCommissionUpdate, canTransitionRealizeCommission, type CommissionV1} from "@vox/protocol";
 
 const expired: CommissionV1 = {
   protocol_version: "realize/1", commission_id: "commission:expired", commissioner_id: "human:customer",
@@ -11,6 +11,7 @@ const expired: CommissionV1 = {
 
 describe("expired accepted payment recovery contract", () => {
   it("retains the original accepted terms and payment identity while recording capture and review before generation", () => {
+    expect(canTransitionRealizeCommission("EXPIRED", "MANUAL_REVIEW")).toBe(true);
     expect(assertRealizeCommissionUpdate(expired, {...expired, state: "AWAITING_PAYMENT", payment_state: "pending", updated_at: "2026-10-24T10:06:00.000Z"})).toMatchObject({state: "AWAITING_PAYMENT", payment_state: "pending"});
     const funded = assertRealizeCommissionUpdate(expired, {...expired, state: "FUNDED", payment_state: "captured", updated_at: "2026-10-24T10:06:00.000Z"});
     expect(assertRealizeCommissionUpdate(funded, {...funded, state: "MANUAL_REVIEW"})).toMatchObject({state: "MANUAL_REVIEW", payment_state: "captured", fulfillment_state: "not_started"});

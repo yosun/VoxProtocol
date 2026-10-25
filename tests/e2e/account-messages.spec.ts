@@ -240,3 +240,66 @@ test("loads earlier signed DM pages and retains history when a busy conversation
   await expect(page.getByText("History message 224", {exact: true})).toHaveCount(1);
   expect(requestedCursors).toContain("165");
 });
+
+test("ignores an older-page response from an earlier visit to the same conversation", async ({page}) => {
+  await seedAccounts(page);
+  const lunaId = `vox:agent:${"L".repeat(43)}`;
+  const luna = {registration: {...bob.registration, agent_id: lunaId, display_name: "Luna", username: "luna", handle: "luna"}, created_at: timestamp, updated_at: timestamp};
+  const conversationA = `vox:dm:${"a".repeat(64)}`;
+  const conversationB = `vox:dm:${"b".repeat(64)}`;
+  const history = (index: number) => ({message_id: `vox:dm:message:${index.toString(16).padStart(64, "0")}`, conversation_id: conversationA, sender_id: bobId, recipient_id: account.registration.human_id, client_message_id: `visit-${index}`, created_at: new Date(Date.parse(timestamp) + index * 1000).toISOString(), signed_at: timestamp, text: `Visit history ${index}`, attachments: [], signature: "mock-server-signature"});
+  const inbox = (id: string, peer: string, text: string) => ({conversation_id: id, participants: [account.registration.human_id, peer].sort(), updated_at: timestamp, last_message: {sender_id: peer, created_at: timestamp, text, attachment_count: 0, message_id: history(0).message_id}});
+  let latestCount = 145;
+  let releaseOlder: (() => Promise<void>) | undefined;
+  const cursors: Array<string | null> = [];
+  await page.route("**/v1/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = decodeURIComponent(url.pathname);
+    const send = (body: unknown) => route.fulfill({contentType: "application/json", body: JSON.stringify(body)});
+    if (path === "/v1/humans") return send({registration: account.registration});
+    if (path === `/v1/agents/${bobId}`) return send(bob);
+    if (path === `/v1/agents/${lunaId}`) return send(luna);
+    if (path === "/v1/dm/conversations") return send({items: [inbox(conversationA, bobId, "Bob conversation"), inbox(conversationB, lunaId, "Luna conversation")]});
+    if (path === `/v1/dm/conversations/${conversationB}/messages`) return send({items: [{...history(0), conversation_id: conversationB, sender_id: lunaId, text: "Luna latest"}]});
+    if (path === `/v1/dm/conversations/${conversationA}/messages`) {
+      expectSignedRequest(request, account);
+      const cursor = url.searchParams.get("cursor");
+      cursors.push(cursor);
+      const before = cursor === null ? latestCount : Number(cursor);
+      const start = Math.max(0, before - Number(url.searchParams.get("limit")));
+      const body = {items: Array.from({length: before - start}, (_, index) => history(start + index)), ...(start ? {next_cursor: String(start)} : {})};
+      if (cursor === "85") {
+        // Keep the original A visit's request pending through A → B → A.
+        releaseOlder = () => send(body);
+        return;
+      }
+      return send(body);
+    }
+    return send({items: []});
+  });
+  await page.goto("/?messages=true");
+  const bobConversation = page.locator(".dm-conversation").filter({hasText: "Bob"});
+  const lunaConversation = page.locator(".dm-conversation").filter({hasText: "Luna"});
+  await bobConversation.click();
+  await expect(page.locator(".dm-message")).toHaveCount(60);
+  await page.getByRole("button", {name: "Load earlier messages", exact: true}).click();
+  await expect.poll(() => Boolean(releaseOlder)).toBe(true);
+  await lunaConversation.click();
+  await expect(page.getByText("Luna latest", {exact: true})).toBeVisible();
+  latestCount = 305;
+  await bobConversation.click();
+  await expect(page.locator(".dm-message")).toHaveCount(60);
+  await expect(page.getByText("Visit history 304", {exact: true})).toHaveCount(1);
+
+  const staleResponse = page.waitForResponse((response) => new URL(response.url()).searchParams.get("cursor") === "85");
+  await releaseOlder!();
+  await staleResponse;
+  await page.waitForLoadState("networkidle");
+  await expect(page.locator(".dm-message")).toHaveCount(60);
+  await expect(page.getByText("Visit history 25", {exact: true})).toHaveCount(0);
+  await page.getByRole("button", {name: "Load earlier messages", exact: true}).click();
+  await expect(page.locator(".dm-message")).toHaveCount(120);
+  expect(cursors).toEqual([null, "85", null, "245"]);
+  await expect(page.getByText("Visit history 185", {exact: true})).toHaveCount(1);
+});

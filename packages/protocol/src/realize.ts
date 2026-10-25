@@ -326,7 +326,7 @@ export const REALIZE_COMMISSION_TRANSITIONS = Object.freeze({
   REFUNDED: Object.freeze([]),
   MANUAL_REVIEW: Object.freeze(["COMPLETED", "REFUND_PENDING"] as const),
   // Recovery retains the accepted payment binding before verification/capture.
-  EXPIRED: Object.freeze(["AWAITING_PAYMENT", "FUNDED"] as const)
+  EXPIRED: Object.freeze(["AWAITING_PAYMENT", "FUNDED", "MANUAL_REVIEW"] as const)
 } as const satisfies Readonly<Record<CommissionStateValue, readonly CommissionStateValue[]>>);
 
 export function canTransitionRealizeCommission(from: CommissionStateValue, to: CommissionStateValue): boolean {
