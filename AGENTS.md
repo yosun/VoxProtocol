@@ -11,16 +11,44 @@
   user changes, resolves conflicts, and reviews the combined diff.
 - Package a batch as one reviewable pull request to `main`. Do not merge each
   agent's work separately into `main`: the production workflow deploys on each
-  default-branch push and selects targets from the merged change set.
-- Let the required pull-request checks run on the combined result. Merge once
-  after review; this produces one production deployment for the batch. Never
-  bypass branch protection or automatically approve/merge a production PR.
-- Changes classified as production-sensitive must retain the
-  `production-sensitive` required-reviewer gate. Never initiate a Mainnet
-  payment, payout, or refund as part of batching or deployment.
+  default-branch push and releases the complete verified application snapshot.
+- Let the required pull-request checks run on the combined result. An owner
+  deployment request authorizes an agent to review and merge that release PR
+  once the checks pass. Merge the batch once; never bypass branch protection.
+- Production deployments run automatically after agent review and successful CI.
+  Keep the `production-sensitive` environment for Workload Identity Federation
+  and deployment variables; it no longer requires an owner deployment review.
+  Never initiate a Mainnet payment, payout, or refund as part of release work.
 - If independent agent tasks live in separate Codex chats or repositories and
   cannot be gathered into the current task's worktrees, ask the owner to select
   which completed branches belong in the batch rather than guessing.
+
+## Current automatic deployment policy (2026-10-26)
+
+This policy supersedes every older instruction requiring the owner to approve
+production deployments or the `production-sensitive` environment. Do not ask the
+owner for routine deployment approval again. A deployment request authorizes
+normal agent review and merge of its release PR after required checks pass;
+protected-branch rules and required checks remain mandatory.
+
+- Every push to protected `main` runs the complete `automatic-production`
+  profile: API, web/Hosting, settlement, reconciliation, anchor, additive indexes,
+  and browser checks. Manual workflow-dispatch profiles remain available on
+  `main`; local/manual deployment scripts cannot substitute for CI.
+- Production releases use the `production-sensitive` environment without
+  required human reviewers. The exact repository, protected `main` branch,
+  production workflow, successful verification, and allowed push/dispatch event
+  are required before cloud authentication. `VOX_PRODUCTION_VERIFIED=true`
+  records successful CI; it is not payment or refund authorization.
+- Production jobs share one queue with `cancel-in-progress: false`. Before cloud
+  authentication, discard stale runs whose SHA no longer matches `origin/main`.
+  The next full release covers targets from failed or skipped earlier runs.
+- Keep the separate application and index provisioning identities and their
+  existing least-privilege access. Do not change secrets, treasury ownership,
+  payout recipients, or financial approval policies as part of deployment.
+- Mainnet customer payments, payouts, and refunds still need their own explicit
+  authorization and the existing exact operator approval checks. Automatic
+  deployment does not authorize transactions or paid provider rehearsals.
 
 Read `docs/realize-staging-status.md` before working on the Realize flow or asking
 the owner about its staging credentials. Discover and verify existing GCP
@@ -99,9 +127,10 @@ browser test proves the live payment → generation → settlement flow has pass
   but the updated settlement service still needs a protected release. The source
   snapshot is published in public repository `yosun/VoxProtocol`. Its `main`
   branch requires pull requests and passing production scope/test checks. The
-  `production-sensitive` environment requires the repository owner to approve
-  the settlement release before GCP authentication. Do not bypass that gate or
-  deploy the settlement change directly; no production release has been run.
+  `production-sensitive` environment required owner approval at that historical
+  check. That deployment-review requirement is superseded by the current
+  automatic deployment policy above. The historical note is not a requirement
+  to ask for deployment approval again.
 
 ## Realize frontend verification
 

@@ -8,9 +8,9 @@ case "$DEPLOYMENT_ENV" in
   *) echo "VOX_DEPLOYMENT_ENV must be production or staging." >&2; exit 2 ;;
 esac
 # Bootstrap changes IAM, treasury wiring, and live services. Keep production
-# behind the same reviewed environment as selective application releases.
-if [[ "$DEPLOYMENT_ENV" == "production" ]] && [[ "${GITHUB_ACTIONS:-false}" != "true" || "${GITHUB_REPOSITORY:-}" != "yosun/VoxProtocol" || "${GITHUB_REF:-}" != "refs/heads/main" || "${VOX_PRODUCTION_SENSITIVE_APPROVED:-false}" != "true" ]]; then
-  echo "Production infrastructure requires the protected production-sensitive approval environment on main." >&2
+# behind the same verified workflow context as application releases.
+if [[ "$DEPLOYMENT_ENV" == "production" ]] && [[ "${VOX_PRODUCTION_VERIFIED:-false}" != "true" || "${GITHUB_ACTIONS:-false}" != "true" || "${GITHUB_REPOSITORY:-}" != "yosun/VoxProtocol" || "${GITHUB_REF:-}" != "refs/heads/main" || "${GITHUB_REF_PROTECTED:-false}" != "true" || "${GITHUB_WORKFLOW_REF:-}" != "yosun/VoxProtocol/.github/workflows/production.yml@refs/heads/main" || ( "${GITHUB_EVENT_NAME:-}" != "push" && "${GITHUB_EVENT_NAME:-}" != "workflow_dispatch" ) ]]; then
+  echo "Production infrastructure requires the verified protected main production workflow." >&2
   exit 2
 fi
 REALIZE_DEVNET_ENABLED="${VOX_REALIZE_DEVNET_ENABLED:-false}"

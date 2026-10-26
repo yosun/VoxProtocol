@@ -12,7 +12,7 @@
   ],
   "workload_identity_member": "principalSet://iam.googleapis.com/projects/588986823875/locations/global/workloadIdentityPools/vox-gh-prod/attribute.repository_id/1412704839",
   "workload_identity_provider": "projects/588986823875/locations/global/workloadIdentityPools/vox-gh-prod/providers/vox-production-release",
-  "required_provider_condition": "assertion.repository_id == '1412704839' && assertion.repository_owner_id == '909246' && assertion.ref == 'refs/heads/main' && assertion.workflow_ref == 'yosun/VoxProtocol/.github/workflows/production.yml@refs/heads/main' && assertion.environment == 'production-sensitive' && assertion.event_name == 'push'",
+  "required_provider_condition": "assertion.repository_id == '1412704839' && assertion.repository_owner_id == '909246' && assertion.ref == 'refs/heads/main' && assertion.workflow_ref == 'yosun/VoxProtocol/.github/workflows/production.yml@refs/heads/main' && assertion.environment == 'production-sensitive' && (assertion.event_name == 'push' || assertion.event_name == 'workflow_dispatch')",
   "github_environment": "production-sensitive",
   "github_variable": "VOX_GCP_INDEX_SERVICE_ACCOUNT"
 }

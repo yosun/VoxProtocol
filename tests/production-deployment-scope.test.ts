@@ -1,9 +1,10 @@
 import {execFileSync} from "node:child_process";
-import {mkdtempSync, mkdirSync, rmSync, writeFileSync} from "node:fs";
+import {mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {fileURLToPath} from "node:url";
 import {describe, expect, it} from "vitest";
+import {parse} from "yaml";
 
 const classifier = fileURLToPath(new URL("../scripts/production-deployment-scope.mjs", import.meta.url));
 
@@ -24,22 +25,31 @@ describe("production release scope", () => {
     "apps/web/src/human-account.ts",
     "packages/client/src/index.ts",
     "packages/media-provider/src/index.ts"
-  ])("retains required review for runtime changes in %s", (path) => {
+  ])("classifies sensitive runtime changes in %s", (path) => {
     const scope = classify(["--paths", path]);
     expect(scope.sensitive).toBe("true");
     expect(scope.deploy_api).toBe("true");
     expect(scope.deploy_reconcile).toBe(String(!path.startsWith("apps/web/")));
   });
 
-  it("keeps ordinary documentation and test-only updates outside deployment approval", () => {
+  it("keeps ordinary documentation and test-only pull requests outside application changes", () => {
     expect(classify(["--paths", "README.md", "tests/merkle.test.ts"])).toMatchObject({sensitive: "false", deploy_api: "false", deploy_hosting: "false", deploy_settlement: "false", deploy_reconcile: "false"});
   });
 
-  it("routes index-only changes and the explicit index profile through protected approval", () => {
+  it("routes index-only changes and the explicit index profile through the sensitive environment", () => {
     for (const args of [["--paths", "infrastructure/gcp/firestore.indexes.json"], ["--release-profile", "firestore-indexes"]]) {
       expect(classify(args)).toMatchObject({deploy_indexes: "true", sensitive: "true", deploy_api: "false", deploy_hosting: "false", deploy_settlement: "false", deploy_reconcile: "false", deploy_anchor: "false"});
     }
     expect(classify(["--release-profile", "realize-refund-settlement"])).toMatchObject({deploy_indexes: "false", sensitive: "true", deploy_settlement: "true", deploy_reconcile: "true"});
+  });
+
+  it("releases every target and browser verification in the automatic main-push profile", () => {
+    expect(classify(["--release-profile", "automatic-production"])).toEqual({deploy_api: "true", deploy_hosting: "true", run_e2e: "true", deploy_settlement: "true", deploy_reconcile: "true", deploy_anchor: "true", deploy_indexes: "true", sensitive: "true", changed_files: "0"});
+    const workflow = parse(readFileSync(new URL("../.github/workflows/production.yml", import.meta.url), "utf8"));
+    const classifyStep = workflow.jobs.scope.steps.find((step: any) => step.id === "scope");
+    expect(classifyStep.run).toContain('"$EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main"');
+    expect(classifyStep.run).toContain("node scripts/production-deployment-scope.mjs --release-profile automatic-production");
+    expect(workflow.on.workflow_dispatch.inputs.release_profile.options).toContain("automatic-production");
   });
 
   it("classifies removal of runtime source instead of silently omitting it", () => {
