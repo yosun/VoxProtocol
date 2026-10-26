@@ -62,7 +62,7 @@ async function setup() {
     getInputSchema: async () => ({type: "object", properties: {concept: {type: "string"}}}),
     getCurrentPrice: vi.fn(), requestFulfillment, getFulfillment
   };
-  app = await buildApp({store, populiRealizeClient: provider});
+  app = await buildApp({store, populiRealizeClient: provider, internalToken: "test-only-reconcile-token"});
   async function request(path: string, method: "GET" | "POST" = "GET", body?: unknown, signingPath = path) {
     const issued_at = new Date().toISOString();
     const principal_id = human.registration.human_id;
@@ -74,6 +74,29 @@ async function setup() {
 }
 
 describe("Realize API checkout integration", () => {
+  it("keeps abandoned drafts and failed records out of the reconciliation queue", async () => {
+    const {store, record, getFulfillment} = await setup();
+    for (const state of ["DRAFT", "FAILED"] as const) {
+      await store.createRealizeCommission({...record, commission: {...record.commission, commission_id: `old:${state}`, state}, updated_at: "2026-01-01T00:00:00.000Z"});
+    }
+    const response = await app!.inject({method: "POST", url: "/v1/internal/realize/reconcile", headers: {"x-vox-internal-token": "test-only-reconcile-token"}, payload: {limit: 1}});
+    expect(response.statusCode).toBe(200);
+    expect(response.json().commissions).toEqual([{commission_id: record.commission.commission_id, state: "GENERATING"}]);
+    expect(getFulfillment).toHaveBeenCalledOnce();
+  });
+
+  it("keeps manual-review records out of the active paid reconciliation slots", async () => {
+    const {store, record, getFulfillment} = await setup();
+    await store.createRealizeCommission({...record, commission: {...record.commission, commission_id: "old:manual-review", state: "MANUAL_REVIEW"}, fulfillment_request: undefined, updated_at: "2026-01-01T00:00:00.000Z"});
+    const run = () => app!.inject({method: "POST", url: "/v1/internal/realize/reconcile", headers: {"x-vox-internal-token": "test-only-reconcile-token"}, payload: {limit: 1}});
+    const first = await run();
+    expect(first.json().commissions[0]).toEqual({commission_id: record.commission.commission_id, state: "GENERATING"});
+    expect(getFulfillment).toHaveBeenCalledOnce();
+    const second = await run();
+    expect(second.json().commissions[0]).toEqual({commission_id: record.commission.commission_id, state: "GENERATING"});
+    expect(getFulfillment).toHaveBeenCalledOnce();
+  });
+
   it("returns VOX's pinned rights reference when Populi omits the optional field", async () => {
     const {creator} = await setup();
     const response = await app!.inject(`/v1/realize/creators/${encodeURIComponent(creator.registration.agent_id)}/capabilities`);
@@ -105,16 +128,16 @@ describe("Realize API checkout integration", () => {
     expect(requestFulfillment).not.toHaveBeenCalled();
   });
 
-  it("resubmits a missing provider job with the exact persisted idempotency request", async () => {
+  it("holds an unbound legacy provider request instead of resubmitting it", async () => {
     const {record, store, request, getFulfillment, requestFulfillment} = await setup();
     const storedRequest = record.fulfillment_request!;
-    getFulfillment.mockRejectedValueOnce(new RealizeProviderHttpError(404, 5_000));
+    getFulfillment.mockRejectedValueOnce(new RealizeProviderHttpError(404, 5_000, "COMMISSION_NOT_FOUND"));
     requestFulfillment.mockResolvedValueOnce({protocol_version: "realize/1", fulfillment_request_id: storedRequest.fulfillment_request_id, commission_id: record.commission.commission_id, generation_provider_id: "provider:video:example", status: "queued", outputs: []});
     const response = await request(`/v1/realize/commissions/${encodeURIComponent(record.commission.commission_id)}`);
     expect(response.status).toBe(200);
     expect(getFulfillment).toHaveBeenCalledOnce();
-    expect(requestFulfillment).toHaveBeenCalledOnce();
-    expect(requestFulfillment).toHaveBeenCalledWith(expect.anything(), storedRequest);
+    expect(requestFulfillment).not.toHaveBeenCalled();
+    expect(response.body.commission.state).toBe("MANUAL_REVIEW");
     expect(storedRequest.idempotency_key).toBe(storedRequest.fulfillment_request_id);
     const persisted = await store.getRealizeCommission(record.commission.commission_id);
     await expect(store.updateRealizeCommission({...persisted!, fulfillment_request: {...storedRequest, idempotency_key: "different-request"}}, persisted!.updated_at)).rejects.toThrow("persisted Realize provider request and idempotency key are immutable");

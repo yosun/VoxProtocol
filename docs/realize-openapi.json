@@ -405,6 +405,9 @@
       "ExternalFundingAuthorization": {
         "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/ExternalFundingAuthorization"
       },
+      "FirstPartyRealizeRightsPolicy": {
+        "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/FirstPartyRealizeRightsPolicy"
+      },
       "FulfillmentRequest": {
         "$ref": "../packages/protocol/schemas/realize-v1.schema.json#/$defs/FulfillmentRequest"
       },

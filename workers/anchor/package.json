@@ -3,6 +3,14 @@
   "version": "1.0.0",
   "type": "module",
   "private": true,
-  "scripts": {"build": "tsc -p tsconfig.json", "start": "node dist/index.js"},
-  "dependencies": {"@google-cloud/storage": "7.16.0", "@vox/merkle": "1.0.0", "@vox/protocol": "1.1.0", "@vox/solana": "1.0.0"}
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@google-cloud/storage": "7.22.0",
+    "@vox/merkle": "1.0.0",
+    "@vox/protocol": "1.1.0",
+    "@vox/solana": "1.0.0"
+  }
 }

@@ -18,6 +18,7 @@ interface EvmNetwork {
 
 const NETWORKS: Record<string, EvmNetwork> = {
   "base:mainnet": {chainId: "0x2105", chainName: "Base", rpcUrls: ["https://mainnet.base.org"], blockExplorerUrls: ["https://basescan.org"], nativeCurrency: {name: "Ether", symbol: "ETH", decimals: 18}},
+  "base:sepolia": {chainId: "0x14a34", chainName: "Base Sepolia", rpcUrls: ["https://sepolia.base.org"], blockExplorerUrls: ["https://sepolia.basescan.org"], nativeCurrency: {name: "Ether", symbol: "ETH", decimals: 18}},
   "monad:mainnet": {chainId: "0x8f", chainName: "Monad", rpcUrls: ["https://rpc.monad.xyz"], blockExplorerUrls: ["https://monadscan.com"], nativeCurrency: {name: "MON", symbol: "MON", decimals: 18}},
   "monad:testnet": {chainId: "0x279f", chainName: "Monad Testnet", rpcUrls: ["https://testnet-rpc.monad.xyz"], blockExplorerUrls: ["https://testnet.monadscan.com"], nativeCurrency: {name: "MON", symbol: "MON", decimals: 18}},
   "arbitrum:mainnet": {chainId: "0xa4b1", chainName: "Arbitrum One", rpcUrls: ["https://arb1.arbitrum.io/rpc"], blockExplorerUrls: ["https://arbiscan.io"], nativeCurrency: {name: "Ether", symbol: "ETH", decimals: 18}},

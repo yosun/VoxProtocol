@@ -11,6 +11,7 @@ on:
         options:
           - realize-paid-order-recovery
           - realize-refund-settlement
+          - firestore-indexes
         required: true
 
 permissions:
@@ -68,6 +69,7 @@ jobs:
       deploy_settlement: ${{ steps.scope.outputs.deploy_settlement }}
       deploy_reconcile: ${{ steps.scope.outputs.deploy_reconcile }}
       deploy_anchor: ${{ steps.scope.outputs.deploy_anchor }}
+      deploy_indexes: ${{ steps.scope.outputs.deploy_indexes }}
       sensitive: ${{ steps.scope.outputs.sensitive }}
     steps:
       - uses: actions/checkout@v4
@@ -94,13 +96,13 @@ jobs:
       ((github.event_name == 'push' &&
         github.ref_name == github.event.repository.default_branch) ||
        (github.event_name == 'workflow_dispatch' &&
-        (inputs.release_profile == 'realize-paid-order-recovery' ||
-         inputs.release_profile == 'realize-refund-settlement'))) &&
+        contains(fromJSON('["realize-paid-order-recovery","realize-refund-settlement","firestore-indexes"]'), inputs.release_profile))) &&
       (needs.scope.outputs.deploy_api == 'true' ||
        needs.scope.outputs.deploy_hosting == 'true' ||
        needs.scope.outputs.deploy_settlement == 'true' ||
        needs.scope.outputs.deploy_reconcile == 'true' ||
-       needs.scope.outputs.deploy_anchor == 'true')
+       needs.scope.outputs.deploy_anchor == 'true' ||
+       needs.scope.outputs.deploy_indexes == 'true')
     runs-on: ubuntu-latest
     environment:
       name: ${{ needs.scope.outputs.sensitive == 'true' && 'production-sensitive' || 'production' }}
@@ -117,6 +119,7 @@ jobs:
       VOX_DEPLOY_SETTLEMENT: ${{ needs.scope.outputs.deploy_settlement }}
       VOX_DEPLOY_RECONCILE: ${{ needs.scope.outputs.deploy_reconcile }}
       VOX_DEPLOY_ANCHOR: ${{ needs.scope.outputs.deploy_anchor }}
+      VOX_DEPLOY_INDEXES: ${{ needs.scope.outputs.deploy_indexes }}
       VOX_PRODUCTION_SENSITIVE_APPROVED: ${{ needs.scope.outputs.sensitive }}
       VOX_REALIZE_OPERATOR_HUMAN_IDS: ${{ vars.VOX_REALIZE_OPERATOR_HUMAN_IDS }}
       VOX_PRODUCTION_BASE_SHA: ${{ github.event.before }}
@@ -135,17 +138,63 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - uses: actions/download-artifact@v4
         if: needs.scope.outputs.deploy_hosting == 'true'
         with:
           name: vox-web-dist-${{ github.sha }}
           path: apps/web/dist
-      - uses: google-github-actions/auth@v3
+      - name: Require the separately approved index provisioning identity
+        if: needs.scope.outputs.deploy_indexes == 'true' || needs.scope.outputs.deploy_api == 'true' || needs.scope.outputs.deploy_reconcile == 'true'
+        env:
+          VOX_GCP_INDEX_SERVICE_ACCOUNT: ${{ vars.VOX_GCP_INDEX_SERVICE_ACCOUNT }}
+        run: |
+          if [[ ! "$VOX_GCP_INDEX_SERVICE_ACCOUNT" =~ ^[a-z][a-z0-9-]*@voxprotocol\.iam\.gserviceaccount\.com$ || "$VOX_GCP_INDEX_SERVICE_ACCOUNT" == "$VOX_GCP_DEPLOY_SERVICE_ACCOUNT" ]]; then
+            echo "Configure VOX_GCP_INDEX_SERVICE_ACCOUNT as a separate approved index provisioning identity. The application deploy identity must retain its existing limited permissions." >&2
+            exit 1
+          fi
+      - name: Authenticate only the reviewed index provisioning step
+        id: index_auth
+        if: needs.scope.outputs.deploy_indexes == 'true' || needs.scope.outputs.deploy_api == 'true' || needs.scope.outputs.deploy_reconcile == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: voxprotocol
+          workload_identity_provider: ${{ vars.VOX_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.VOX_GCP_INDEX_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+        if: needs.scope.outputs.deploy_indexes == 'true' || needs.scope.outputs.deploy_api == 'true' || needs.scope.outputs.deploy_reconcile == 'true'
+        with:
+          project_id: voxprotocol
+      - name: Add missing indexes and await readiness before app promotion
+        if: needs.scope.outputs.deploy_indexes == 'true'
+        run: |
+          node scripts/deploy-firestore-indexes.mjs --apply
+      - name: Verify required indexes for every API and reconciliation release
+        if: needs.scope.outputs.deploy_indexes == 'true' || needs.scope.outputs.deploy_api == 'true' || needs.scope.outputs.deploy_reconcile == 'true'
+        run: |
+          node scripts/check-firestore-indexes.mjs
+          echo "VOX_INDEXES_READY=true" >> "$GITHUB_ENV"
+      - name: Remove temporary index credentials before application build
+        if: always() && (needs.scope.outputs.deploy_indexes == 'true' || needs.scope.outputs.deploy_api == 'true' || needs.scope.outputs.deploy_reconcile == 'true')
+        env:
+          INDEX_CREDENTIALS_FILE: ${{ steps.index_auth.outputs.credentials_file_path }}
+        run: |
+          if [[ -z "$INDEX_CREDENTIALS_FILE" ]]; then exit 0; fi
+          case "$INDEX_CREDENTIALS_FILE" in
+            "$GITHUB_WORKSPACE"/gha-creds-*.json) rm -f -- "$INDEX_CREDENTIALS_FILE" ;;
+            *) echo "Unexpected generated credential path; refusing application promotion." >&2; exit 1 ;;
+          esac
+      - name: Restore the application release identity
+        if: needs.scope.outputs.deploy_api == 'true' || needs.scope.outputs.deploy_hosting == 'true' || needs.scope.outputs.deploy_settlement == 'true' || needs.scope.outputs.deploy_reconcile == 'true' || needs.scope.outputs.deploy_anchor == 'true'
+        uses: google-github-actions/auth@v3
         with:
           project_id: voxprotocol
           workload_identity_provider: ${{ vars.VOX_GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.VOX_GCP_DEPLOY_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@v2
+        if: needs.scope.outputs.deploy_api == 'true' || needs.scope.outputs.deploy_hosting == 'true' || needs.scope.outputs.deploy_settlement == 'true' || needs.scope.outputs.deploy_reconcile == 'true' || needs.scope.outputs.deploy_anchor == 'true'
         with:
           project_id: voxprotocol
       - name: Build and push production Cloud Run image
@@ -162,4 +211,5 @@ jobs:
           fi
           echo "VOX_PRODUCTION_IMAGE=${VOX_PRODUCTION_IMAGE%:*}@$digest" >> "$GITHUB_ENV"
       - name: Release production Cloud Run and Firebase Hosting targets
+        if: needs.scope.outputs.deploy_api == 'true' || needs.scope.outputs.deploy_hosting == 'true' || needs.scope.outputs.deploy_settlement == 'true' || needs.scope.outputs.deploy_reconcile == 'true' || needs.scope.outputs.deploy_anchor == 'true'
         run: bash scripts/deploy-production-app.sh

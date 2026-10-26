@@ -28,3 +28,6 @@ firebase-debug.log
 # Solana build output (IDL is published separately under idl/)
 /target/
 test-ledger/
+
+# Ephemeral google-github-actions/auth credentials must never enter source or build contexts.
+gha-creds-*.json

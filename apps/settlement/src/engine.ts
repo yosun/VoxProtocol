@@ -175,6 +175,8 @@ export class RealizeSettlementProcessor {
       const transfers = plan.payout_ids.map((payoutId) => {
         const payout = byId.get(payoutId);
         if (!payout) throw new SettlementError(400, "invalid_settlement", "transaction batch references an unknown payout");
+        // Keep the quote-bound instruction unchanged in the ledger. Only the
+        // chain adapter consumes the bare wallet inside its network-qualified destination.
         return {payout_id: payout.payout_id, destination: payout.destination, amount_usdc_atomic: payout.amount_usdc_atomic};
       });
       const externalTransfers = transfers.filter((transfer) => !this.chain.isTreasuryDestination(transfer.destination));
@@ -202,7 +204,7 @@ export class RealizeSettlementProcessor {
     return {
       settlement_id: instruction.settlement_id, status,
       transaction_signatures: batches.flatMap((batch) => batch.transaction_signature ? [batch.transaction_signature] : []),
-      settled_amount_usdc_atomic: settledAmount.toString(), held_amount_usdc_atomic: heldAmount.toString(), failed_payout_ids: failedIds,
+      settled_payout_ids: [...settledIds], settled_amount_usdc_atomic: settledAmount.toString(), held_amount_usdc_atomic: heldAmount.toString(), failed_payout_ids: failedIds,
       updated_at: new Date().toISOString()
     };
   }

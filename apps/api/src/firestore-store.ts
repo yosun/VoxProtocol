@@ -2,11 +2,19 @@ import {FieldValue, Firestore} from "@google-cloud/firestore";
 import {canTransitionRealizeCommission, canonicalBytes, journalEnvelopeHashHex, journalSigningPayload, signBytes, type AgentProfileUpdateV1, type AgentRegistrationV1, type AnchorObligation, type HumanRegistrationV1, type JournalEnvelopeUnsignedV1} from "@vox/protocol";
 import {createHash, randomUUID} from "node:crypto";
 import {AsyncMutex} from "./mutex.js";
+import type {CharacterConversationRecord} from "@vox/protocol";
+import {advanceConversation} from "./conversations.js";
 import {appendOnlyKeyAuthorizationRecords, type KeyAuthorizationUpdateExpectation} from "./key-history.js";
-import type {AgentProfileRecord, AgentRecord, AnchorBatchRecord, AnchorClaimInput, AnchorClaimPatch, AnchorClaimRecord, AnchorClaimResponse, AnchorClaimState, CommissionRequestEvent, CommissionRequestRecord, CommissionRequestResult, FeedPage, HumanRecord, AnchorClaimKind, AnchorClaimTier, PaymentRecord, PaymentReservationResult, PublishInput, PublishResult, QuoteRecord, ReactionRecord, RealizationPaymentInput, RealizationRecord, RealizeCommissionRecord, RealizeWebhookDeliveryRecord, RightsAgreementRecord, RightsRevenueEventInput, RightsRevenueEventResult, StoreSnapshot, StoredPost, NftMediaRecord, NftMintRecord, VoxStore} from "./types.js";
+import type {AgentProfileRecord, AgentRecord, AnchorBatchRecord, AnchorClaimInput, AnchorClaimPatch, AnchorClaimRecord, AnchorClaimResponse, AnchorClaimState, CommissionRequestEvent, CommissionRequestRecord, CommissionRequestResult, FeedPage, FollowRecord, HumanRecord, DirectMessageConversationRecord, DirectMessageRecord, AnchorClaimKind, AnchorClaimTier, PaymentRecord, PaymentReservationResult, PublishInput, PublishResult, QuoteRecord, ReactionRecord, RealizationPaymentInput, RealizationRecord, RealizeCommissionRecord, RealizeWebhookDeliveryRecord, RightsAgreementRecord, RightsRevenueEventInput, RightsRevenueEventResult, StoreSnapshot, StoredPost, NftMediaRecord, NftMintRecord, VoxStore} from "./types.js";
 import type {ProvenanceRecordV1, RealizeQuoteV1} from "@vox/protocol";
 import type {DistributionRewardV1, ReferralAttributionV1, RightsAuditEventV1, RightsRevenueAllocationV1, RightsRevenueEventV1} from "@vox/protocol";
 import type {RealizeCreatorPayoutConfigurationV1} from "./realize-engine.js";
+import {applyCharacterAccountBalanceDelta, projectCharacterAccountTransaction, type CharacterAccountBalance, type CharacterAccountTransaction} from "./character-account.js";
+
+function normalizeFollowRecord(record: FollowRecord): FollowRecord {
+  const followerType = record.follower_type ?? (record.follower_id.startsWith("vox:agent:") ? "agent" : "human");
+  return {...record, follower_type: followerType};
+}
 import {UsernameConflict} from "./errors.js";
 import {nextClaimState, registrationUsername, registrationWithoutUsername} from "./store.js";
 
@@ -74,7 +82,7 @@ function nftLeaseActive(record: NftMintRecord, nowMs: number): boolean {
 }
 
 function nftProcessingCandidate(record: NftMintRecord, nowMs: number): boolean {
-  if (!["queued", "signed", "submitted", "retryable_failure"].includes(record.state)) return false;
+  if (!["queued", "signing", "signed", "submitted", "retryable_failure"].includes(record.state)) return false;
   if (record.next_attempt_at && Date.parse(record.next_attempt_at) > nowMs) return false;
   return !nftLeaseActive(record, nowMs);
 }
@@ -141,12 +149,16 @@ export class FirestoreStore implements VoxStore {
   private readonly db: Firestore;
   private readonly agents;
   private readonly humans;
+  private readonly directMessageConversations;
+  private readonly directMessageIdempotency;
   private readonly usernames;
   private readonly posts;
+  private readonly characterConversations;
   private readonly commissionRequests;
   private readonly batches;
   private readonly realizations;
   private readonly reactions;
+  private readonly follows;
   private readonly idempotency;
   private readonly commissionRequestIdempotency;
   private readonly anchorClaims;
@@ -157,6 +169,7 @@ export class FirestoreStore implements VoxStore {
   private readonly realizeQuotes;
   private readonly realizePricingRequests;
   private readonly realizeCommissions;
+  private readonly realizeCharacterAccounts;
   private readonly realizePaymentSignatures;
   private readonly realizeProvenance;
   private readonly nftMedia;
@@ -175,12 +188,16 @@ export class FirestoreStore implements VoxStore {
     this.db = new Firestore({...(options.projectId ? {projectId: options.projectId} : {}), ...(options.databaseId ? {databaseId: options.databaseId} : {})});
     this.agents = this.db.collection("vox_agents");
     this.humans = this.db.collection("vox_humans");
+    this.directMessageConversations = this.db.collection("vox_direct_message_conversations");
+    this.directMessageIdempotency = this.db.collection("vox_direct_message_idempotency");
     this.usernames = this.db.collection("vox_usernames");
     this.posts = this.db.collection("vox_posts");
+    this.characterConversations = this.db.collection("vox_character_conversations");
     this.commissionRequests = this.db.collection("vox_commission_requests");
     this.batches = this.db.collection("vox_batches");
     this.realizations = this.db.collection("vox_realizations");
     this.reactions = this.db.collection("vox_reactions");
+    this.follows = this.db.collection("vox_follows");
     this.idempotency = this.db.collection("vox_post_idempotency");
     this.commissionRequestIdempotency = this.db.collection("vox_commission_request_idempotency");
     this.anchorClaims = this.db.collection("vox_anchor_claims");
@@ -191,6 +208,7 @@ export class FirestoreStore implements VoxStore {
     this.realizeQuotes = this.db.collection("vox_realize_quotes");
     this.realizePricingRequests = this.db.collection("vox_realize_pricing_requests");
     this.realizeCommissions = this.db.collection("vox_realize_commissions");
+    this.realizeCharacterAccounts = this.db.collection("vox_realize_character_accounts");
     this.realizePaymentSignatures = this.db.collection("vox_realize_payment_signatures");
     this.realizeProvenance = this.db.collection("vox_realize_public_provenance");
     this.nftMedia = this.db.collection("vox_nft_media");
@@ -312,6 +330,60 @@ export class FirestoreStore implements VoxStore {
     return snapshot.exists ? snapshot.data() as HumanRecord : undefined;
   }
 
+  async getDirectMessageConversation(conversationId: string): Promise<DirectMessageConversationRecord | undefined> {
+    const snapshot = await this.directMessageConversations.doc(conversationId).get();
+    return snapshot.exists ? snapshot.data() as DirectMessageConversationRecord : undefined;
+  }
+
+  async listDirectMessageConversations(principalId: string, limit: number): Promise<DirectMessageConversationRecord[]> {
+    const snapshot = await this.directMessageConversations.where("participants", "array-contains", principalId).orderBy("updated_at", "desc").limit(limit).get();
+    return snapshot.docs.map((document) => document.data() as DirectMessageConversationRecord)
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at) || right.conversation_id.localeCompare(left.conversation_id));
+  }
+
+  async getDirectMessage(conversationId: string, messageId: string): Promise<DirectMessageRecord | undefined> {
+    const snapshot = await this.directMessageConversations.doc(conversationId).collection("messages").doc(messageId).get();
+    const message = snapshot.exists ? snapshot.data() as DirectMessageRecord : undefined;
+    return message?.conversation_id === conversationId ? message : undefined;
+  }
+
+  async listDirectMessages(conversationId: string, limit: number, before?: {created_at: string; message_id: string}): Promise<DirectMessageRecord[]> {
+    let query = this.directMessageConversations.doc(conversationId).collection("messages").orderBy("created_at", "desc").orderBy("message_id", "desc");
+    if (before) query = query.startAfter(before.created_at, before.message_id);
+    const snapshot = await query.limit(limit).get();
+    return snapshot.docs.map((document) => document.data() as DirectMessageRecord).reverse();
+  }
+
+  async createDirectMessage(conversation: DirectMessageConversationRecord, message: DirectMessageRecord): Promise<{message: DirectMessageRecord; created: boolean}> {
+    const conversationRef = this.directMessageConversations.doc(conversation.conversation_id);
+    const messageRef = conversationRef.collection("messages").doc(message.message_id);
+    const reservationRef = this.directMessageIdempotency.doc(idempotencyId(message.sender_id, message.client_message_id));
+    return this.db.runTransaction(async (transaction) => {
+      const [conversationSnapshot, messageSnapshot, reservationSnapshot] = await Promise.all([transaction.get(conversationRef), transaction.get(messageRef), transaction.get(reservationRef)]);
+      const reservation = reservationSnapshot.exists ? reservationSnapshot.data() as {conversation_id: string; message_id: string} : undefined;
+      if (reservation && (reservation.conversation_id !== message.conversation_id || reservation.message_id !== message.message_id)) throw new Error("client_message_id has already been used for a different message");
+      if (reservation && !messageSnapshot.exists) throw new Error("direct message idempotency reservation points to a missing message");
+      // Older deployments stored IDs only underneath each conversation. Use an
+      // indexed exact lookup before reserving a new global sender/client ID.
+      // Two matches are already a conflict; no history scan or truncation is used.
+      const legacy = !reservation ? await transaction.get(this.db.collectionGroup("messages").where("sender_id", "==", message.sender_id).where("client_message_id", "==", message.client_message_id).limit(2)) : undefined;
+      if (legacy && (legacy.size > 1 || legacy.docs.some((document) => document.ref.path !== messageRef.path))) throw new Error("client_message_id has already been used for a different message");
+      if (messageSnapshot.exists) {
+        const existing = messageSnapshot.data() as DirectMessageRecord;
+        if (!canonicalEqual({...existing, signature: "", created_at: "", signed_at: ""}, {...message, signature: "", created_at: "", signed_at: ""})) throw new Error("direct message id conflicts with existing content");
+        if (!reservation) transaction.create(reservationRef, {sender_id: message.sender_id, client_message_id: message.client_message_id, conversation_id: message.conversation_id, message_id: message.message_id});
+        return {message: existing, created: false};
+      }
+      const current = conversationSnapshot.exists ? conversationSnapshot.data() as DirectMessageConversationRecord : undefined;
+      if (current && (current.participants[0] !== conversation.participants[0] || current.participants[1] !== conversation.participants[1])) throw new Error("direct message conversation participants conflict");
+      const nextConversation = !current || conversation.updated_at >= current.updated_at ? conversation : current;
+      transaction.create(messageRef, message);
+      transaction.create(reservationRef, {sender_id: message.sender_id, client_message_id: message.client_message_id, conversation_id: message.conversation_id, message_id: message.message_id});
+      transaction.set(conversationRef, nextConversation);
+      return {message, created: true};
+    });
+  }
+
   async getHumanByUsername(username: string): Promise<HumanRecord | undefined> {
     const normalized = username.trim().toLowerCase();
     if (!/^[a-z0-9_]{1,15}$/.test(normalized)) return undefined;
@@ -356,9 +428,17 @@ export class FirestoreStore implements VoxStore {
       if (idemSnapshot.exists) {
         const existingPostId = (idemSnapshot.data() as {post_id: string}).post_id;
         const existingPost = await transaction.get(this.posts.doc(existingPostId));
-        if (existingPost.exists) return {post: existingPost.data() as StoredPost, created: false};
+        if (existingPost.exists) throw new Error("client_post_id has already been used for a different post");
         throw new Error("idempotency record points to missing post");
       }
+      const metadata = input.signed.intent.content.conversation;
+      const conversationSnapshot = metadata?.type === "turn" ? await transaction.get(this.characterConversations.doc(metadata.root_post_id)) : undefined;
+      const currentConversation = conversationSnapshot?.exists ? conversationSnapshot.data() as CharacterConversationRecord : undefined;
+      const historySnapshots = currentConversation ? await Promise.all(currentConversation.post_ids.map((id) => transaction.get(this.posts.doc(id)))) : [];
+      const sourceId = metadata?.type === "start" ? metadata.branch_from_post_id : currentConversation?.branch_from_post_id;
+      const branchSnapshot = sourceId ? await transaction.get(this.posts.doc(sourceId)) : undefined;
+      const invitationSnapshot = metadata?.type === "start" && metadata.request_id ? await transaction.get(this.commissionRequests.doc(metadata.request_id)) : undefined;
+      const conversation = advanceConversation(input, currentConversation, historySnapshots.filter((item) => item.exists).map((item) => item.data() as StoredPost), branchSnapshot?.exists ? branchSnapshot.data() as StoredPost : undefined, invitationSnapshot?.exists ? invitationSnapshot.data() as CommissionRequestRecord : undefined);
       const agent = agentSnapshot.data() as AgentRecord;
       const sequence = agent.last_sequence + 1;
       const unsigned: JournalEnvelopeUnsignedV1 = {
@@ -377,6 +457,10 @@ export class FirestoreStore implements VoxStore {
       const anchoring: AnchorObligation = {post_id: input.post_id, authority_id: "vox:anchor:vox.blog", tier: agent.registration.anchoring_tier, status: "unanchored", attempts: 0};
       const post: StoredPost = {post_id: input.post_id, intent: input.signed.intent, signature: input.signed.signature, post_hash: input.post_hash, envelope, envelope_hash: envelopeHash, accepted_at: input.accepted_at, publication_status: "published", anchoring};
       transaction.create(postRef, post);
+      if (conversation) {
+        transaction.set(this.characterConversations.doc(conversation.root_post_id), conversation);
+        if (metadata?.type === "start" && metadata.request_id) transaction.update(this.commissionRequests.doc(metadata.request_id), {conversation_pending: false, conversation_id: conversation.root_post_id});
+      }
       transaction.create(idemRef, {post_id: input.post_id, created_at: input.accepted_at});
       transaction.update(agentRef, {last_sequence: sequence, last_event_hash: envelopeHash, updated_at: input.accepted_at});
       return {post, created: true};
@@ -386,6 +470,25 @@ export class FirestoreStore implements VoxStore {
   async getPost(postId: string): Promise<StoredPost | undefined> {
     const snapshot = await this.posts.doc(postId).get();
     return snapshot.exists ? snapshot.data() as StoredPost : undefined;
+  }
+
+  async getCharacterConversation(rootPostId: string): Promise<CharacterConversationRecord | undefined> {
+    const snapshot = await this.characterConversations.doc(rootPostId).get();
+    return snapshot.exists ? snapshot.data() as CharacterConversationRecord : undefined;
+  }
+
+  async listCharacterConversations(limit: number, filters: {agent_id?: string; next_agent_id?: string; parent_conversation_id?: string} = {}): Promise<CharacterConversationRecord[]> {
+    let query: FirebaseFirestore.Query = this.characterConversations;
+    if (filters.agent_id) query = query.where("participant_ids", "array-contains", filters.agent_id);
+    if (filters.next_agent_id) query = query.where("next_agent_id", "==", filters.next_agent_id);
+    if (filters.parent_conversation_id) query = query.where("parent_conversation_id", "==", filters.parent_conversation_id);
+    const snapshot = await query.orderBy("updated_at", "desc").orderBy("root_post_id", "desc").limit(limit).get();
+    return snapshot.docs.map((doc) => doc.data() as CharacterConversationRecord);
+  }
+
+  async listConversationInvitations(agentId: string, limit: number): Promise<CommissionRequestRecord[]> {
+    const snapshot = await this.commissionRequests.where("intent.target_agent_id", "==", agentId).where("conversation_pending", "==", true).orderBy("accepted_at", "desc").orderBy("request_id", "desc").limit(limit).get();
+    return snapshot.docs.map((doc) => doc.data() as CommissionRequestRecord);
   }
 
   private async page(query: FirebaseFirestore.Query, limit: number, cursor?: string): Promise<FeedPage> {
@@ -1046,6 +1149,9 @@ export class FirestoreStore implements VoxStore {
 
   async updateRealizeCommission(record: RealizeCommissionRecord, expectedUpdatedAt: string): Promise<RealizeCommissionRecord> {
     const ref = this.realizeCommissions.doc(Buffer.from(record.commission.commission_id).toString("base64url"));
+    const accountRef = this.realizeCharacterAccounts.doc(Buffer.from(record.commission.creator_id).toString("base64url"));
+    const accountEntryRef = accountRef.collection("transactions").doc(Buffer.from(record.commission.commission_id).toString("base64url"));
+    const quoteRef = record.commission.quote_id ? this.realizeQuotes.doc(Buffer.from(record.commission.quote_id).toString("base64url")) : undefined;
     return this.db.runTransaction(async (transaction) => {
       const snapshot = await transaction.get(ref);
       if (!snapshot.exists) throw new Error("Realize commission not found");
@@ -1057,6 +1163,8 @@ export class FirestoreStore implements VoxStore {
       if (current.nft_publication_consent === true && (record.nft_publication_consent !== true || record.nft_publication_consent_at !== current.nft_publication_consent_at)) throw new Error("Realize NFT publication consent is immutable");
       if (current.commission.quote_id && current.commission.quote_id !== record.commission.quote_id) throw new Error("commission quote id is immutable after issuance");
       if (current.commission.accepted_quote_hash && current.commission.accepted_quote_hash !== record.commission.accepted_quote_hash) throw new Error("accepted quote hash is immutable");
+      if (current.commission.accepted_quote_hash && Boolean(current.nft_publication_consent) !== Boolean(record.nft_publication_consent)) throw new Error("Realize NFT publication consent is immutable after quote acceptance");
+      if (current.nft_publication_consent_at && current.nft_publication_consent_at !== record.nft_publication_consent_at) throw new Error("Realize NFT publication consent time is immutable");
       if (current.commission.state !== record.commission.state && !canTransitionRealizeCommission(current.commission.state, record.commission.state)) throw new Error("invalid Realize commission state transition");
       const priorEvents = current.resolution_events ?? [];
       const nextEvents = record.resolution_events ?? [];
@@ -1072,7 +1180,23 @@ export class FirestoreStore implements VoxStore {
       if (record.resolution_outcome === "fulfilled" && (!["COMPLETED", "SETTLED"].includes(record.commission.state) || !nextEvents.some((event) => event.action === "generation_completed"))) throw new Error("fulfilled outcome requires completed generation and its audit event");
       if (record.resolution_outcome === "refunded" && (record.commission.state !== "REFUNDED" || !nextEvents.some((event) => event.action === "refund_finalized"))) throw new Error("refunded outcome requires finalized refund and its audit event");
       if (record.resolution_outcome === "manual_review" && (!["MANUAL_REVIEW", "REFUND_PENDING"].includes(record.commission.state) || !nextEvents.some((event) => event.action === "manual_review_required"))) throw new Error("manual-review outcome requires its review state and audit event");
+      const [quoteSnapshot, accountSnapshot, accountEntrySnapshot] = await Promise.all([
+        quoteRef ? transaction.get(quoteRef) : Promise.resolve(undefined),
+        transaction.get(accountRef),
+        transaction.get(accountEntryRef)
+      ]);
+      if (quoteRef && !quoteSnapshot?.exists) throw new Error("accepted Realize quote is missing while updating its character account");
+      const quote = quoteSnapshot?.exists ? quoteSnapshot.data() as RealizeQuoteV1 : undefined;
+      const priorAccountEntry = accountEntrySnapshot.exists ? accountEntrySnapshot.data() as CharacterAccountTransaction : undefined;
+      const nextAccountEntry = projectCharacterAccountTransaction(record, quote, process.env.VOX_REALIZE_MAINNET_TREASURY_OWNER?.trim(), record.updated_at);
+      const account = accountSnapshot.exists ? accountSnapshot.data() as {balances?: CharacterAccountBalance[]} : undefined;
+      const balances = applyCharacterAccountBalanceDelta(account?.balances ?? [], priorAccountEntry, nextAccountEntry);
       transaction.set(ref, record);
+      if (nextAccountEntry || priorAccountEntry) {
+        transaction.set(accountRef, {character_id: record.commission.creator_id, ledger_version: 1, balances, updated_at: record.updated_at}, {merge: true});
+        if (nextAccountEntry) transaction.set(accountEntryRef, nextAccountEntry);
+        else transaction.delete(accountEntryRef);
+      }
       return record;
     });
   }
@@ -1132,6 +1256,37 @@ export class FirestoreStore implements VoxStore {
   async listRealizeCommissionsForHuman(humanId: string, limit: number): Promise<RealizeCommissionRecord[]> {
     const snapshot = await this.realizeCommissions.where("commission.commissioner_id", "==", humanId).orderBy("updated_at", "desc").limit(limit).get();
     return snapshot.docs.map((doc) => doc.data() as RealizeCommissionRecord);
+  }
+
+  async listRealizeCommissionsForCreator(creatorId: string): Promise<RealizeCommissionRecord[]> {
+    const snapshot = await this.realizeCommissions.where("commission.creator_id", "==", creatorId).get();
+    return snapshot.docs.map((doc) => doc.data() as RealizeCommissionRecord);
+  }
+
+  async getRealizeCharacterAccount(creatorId: string, treasuryOwner?: string): Promise<{balances: CharacterAccountBalance[]; transactions: CharacterAccountTransaction[]}> {
+    const accountRef = this.realizeCharacterAccounts.doc(Buffer.from(creatorId).toString("base64url"));
+    const accountSnapshot = await accountRef.get();
+    if (accountSnapshot.get("backfill_complete") !== true) {
+      const records = await this.listRealizeCommissionsForCreator(creatorId);
+      for (const record of records) {
+        if (!record.commission.quote_id) continue;
+        try { await this.updateRealizeCommission(record, record.updated_at); }
+        catch {
+          const latest = await this.getRealizeCommission(record.commission.commission_id);
+          if (!latest?.commission.quote_id) throw new Error("character account backfill lost a quoted commission");
+          await this.updateRealizeCommission(latest, latest.updated_at);
+        }
+      }
+      await accountRef.set({character_id: creatorId, ledger_version: 1, backfill_complete: true, updated_at: new Date().toISOString()}, {merge: true});
+    }
+    const [account, entries] = await Promise.all([
+      accountRef.get(),
+      accountRef.collection("transactions").orderBy("created_at", "desc").get()
+    ]);
+    return {
+      balances: (account.get("balances") as CharacterAccountBalance[] | undefined) ?? [],
+      transactions: entries.docs.map((doc) => doc.data() as CharacterAccountTransaction)
+    };
   }
 
   async createRealizeProvenance(record: ProvenanceRecordV1): Promise<ProvenanceRecordV1> {
@@ -1216,9 +1371,24 @@ export class FirestoreStore implements VoxStore {
   }
 
   async listNftMintsForProcessing(limit: number, now = new Date().toISOString()): Promise<NftMintRecord[]> {
-    const snapshot = await this.nftMints.where("state", "in", ["queued", "signing", "signed", "submitted", "retryable_failure"]).limit(Math.min(Math.max(limit * 4, 1), 400)).get();
+    const boundedLimit = Math.min(Math.max(limit, 1), 100);
+    const pageSize = Math.min(Math.max(boundedLimit * 4, 40), 400);
+    const query = this.nftMints.where("state", "in", ["queued", "signing", "signed", "submitted", "retryable_failure"]).orderBy("updated_at", "asc").limit(pageSize);
     const nowMs = Date.parse(now);
-    return snapshot.docs.map((doc) => doc.data() as NftMintRecord).filter((record) => nftProcessingCandidate(record, nowMs)).sort((left, right) => left.updated_at.localeCompare(right.updated_at) || left.mint_id.localeCompare(right.mint_id)).slice(0, Math.min(Math.max(limit, 1), 100));
+    const candidates: NftMintRecord[] = [];
+    let page = await query.get();
+    while (!page.empty) {
+      for (const doc of page.docs) {
+        const record = doc.data() as NftMintRecord;
+        if (nftProcessingCandidate(record, nowMs)) candidates.push(record);
+        if (candidates.length >= boundedLimit) return candidates;
+      }
+      if (page.size < pageSize) break;
+      // A complete page can consist only of leased or backoff records. Continue
+      // after it instead of hiding all later due mints on every scheduler run.
+      page = await query.startAfter(page.docs[page.docs.length - 1]!).get();
+    }
+    return candidates;
   }
 
   async claimNftMint(mintId: string, ownerId: string, leaseSeconds: number): Promise<NftMintRecord | undefined> {
@@ -1295,28 +1465,89 @@ export class FirestoreStore implements VoxStore {
     return {post_id: postId, reaction, count: countSnapshot.size, reacted: true};
   }
 
-  async search(query: string, limit: number): Promise<{agents: AgentRecord[]; posts: StoredPost[]}> {
+  private followDocumentId(followerId: string, targetType: "agent" | "human", targetId: string): string {
+    return Buffer.from(`${followerId}\0${targetType}\0${targetId}`).toString("base64url");
+  }
+
+  async setFollow(record: FollowRecord): Promise<FollowRecord> {
+    const followerRef = (record.follower_type === "agent" ? this.agents : this.humans).doc(record.follower_id);
+    const targetRef = (record.target_type === "agent" ? this.agents : this.humans).doc(record.target_id);
+    const ref = this.follows.doc(this.followDocumentId(record.follower_id, record.target_type, record.target_id));
+    return this.db.runTransaction(async (transaction) => {
+      const followerSnapshot = await transaction.get(followerRef);
+      const targetSnapshot = await transaction.get(targetRef);
+      const existingSnapshot = await transaction.get(ref);
+      if (!followerSnapshot.exists) throw new Error("Follower account not found");
+      if (!targetSnapshot.exists) throw new Error("Follow target not found");
+      if (record.follower_id === record.target_id) throw new Error("Cannot follow your own profile");
+      const existing = existingSnapshot.exists ? normalizeFollowRecord(existingSnapshot.data() as FollowRecord) : undefined;
+      if (existing?.operation_id === record.operation_id) return existing;
+      if (existing && Date.parse(record.updated_at) <= Date.parse(existing.updated_at)) throw new Error("Follow operation is stale");
+      const updated: FollowRecord = existing ? {...record, created_at: existing.created_at} : record;
+      transaction.set(ref, {...updated, following_key: `${record.target_type}:${record.target_id}`});
+      return updated;
+    });
+  }
+
+  async getFollow(followerType: "agent" | "human", followerId: string, targetType: "agent" | "human", targetId: string): Promise<FollowRecord | undefined> {
+    const snapshot = await this.follows.doc(this.followDocumentId(followerId, targetType, targetId)).get();
+    if (!snapshot.exists) return undefined;
+    const record = normalizeFollowRecord(snapshot.data() as FollowRecord);
+    return record.follower_type === followerType ? record : undefined;
+  }
+
+  async getFollowCounts(targetType: "agent" | "human", targetId: string): Promise<{followers: number; following: number}> {
+    const followerQuery = this.follows.where("following_key", "==", `${targetType}:${targetId}`).get();
+    const followingQuery = this.follows.where("follower_id", "==", targetId).get();
+    const [followers, following] = await Promise.all([followerQuery, followingQuery]);
+    return {
+      followers: followers.docs.filter((doc) => (doc.data() as FollowRecord).active).length,
+      following: following.docs.map((doc) => normalizeFollowRecord(doc.data() as FollowRecord)).filter((record) => record.active && record.follower_type === targetType).length
+    };
+  }
+
+  async listFollowers(targetType: "agent" | "human", targetId: string, limit: number): Promise<FollowRecord[]> {
+    const snapshot = await this.follows.where("following_key", "==", `${targetType}:${targetId}`).get();
+    return snapshot.docs.map((doc) => normalizeFollowRecord(doc.data() as FollowRecord))
+      .filter((record) => record.active)
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at) || left.follower_id.localeCompare(right.follower_id))
+      .slice(0, Math.min(Math.max(Math.trunc(limit) || 20, 1), 100));
+  }
+
+  async listFollowing(followerType: "agent" | "human", followerId: string, limit: number): Promise<FollowRecord[]> {
+    const snapshot = await this.follows.where("follower_id", "==", followerId).get();
+    return snapshot.docs.map((doc) => normalizeFollowRecord(doc.data() as FollowRecord))
+      .filter((record) => record.active && record.follower_type === followerType)
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at) || left.target_id.localeCompare(right.target_id))
+      .slice(0, Math.min(Math.max(Math.trunc(limit) || 20, 1), 100));
+  }
+
+  async search(query: string, limit: number): Promise<{agents: AgentRecord[]; humans: HumanRecord[]; posts: StoredPost[]}> {
     const needle = query.trim().toLowerCase();
-    if (!needle) return {agents: [], posts: []};
-    const [agentSnapshot, postSnapshot] = await Promise.all([
+    if (!needle) return {agents: [], humans: [], posts: []};
+    const [agentSnapshot, humanSnapshot, postSnapshot] = await Promise.all([
       this.agents.limit(Math.min(limit * 10, 1000)).get(),
+      this.humans.limit(Math.min(limit * 10, 1000)).get(),
       this.posts.where("publication_status", "==", "published").orderBy("accepted_at", "desc").orderBy("post_id", "desc").limit(Math.min(limit * 20, 2000)).get()
     ]);
     const agents = agentSnapshot.docs.map((doc) => doc.data() as AgentRecord).filter((agent) => [agent.registration.display_name, agent.registration.username ?? "", agent.registration.handle, agent.registration.description, agent.registration.agent_id].some((value) => value.toLowerCase().includes(needle))).slice(0, limit);
+    const humans = humanSnapshot.docs.map((doc) => doc.data() as HumanRecord).filter((human) => [human.registration.display_name, human.registration.username ?? "", human.registration.handle, human.registration.description, human.registration.human_id].some((value) => value.toLowerCase().includes(needle))).slice(0, limit);
     const posts = postSnapshot.docs.map((doc) => doc.data() as StoredPost).filter((post) => [post.intent.content.text, post.intent.agent_id].some((value) => value.toLowerCase().includes(needle))).slice(0, limit);
-    return {agents, posts};
+    return {agents, humans, posts};
   }
 
   async snapshot(): Promise<StoreSnapshot> {
-    const [agents, humans, posts, commissionRequests, batches, realizations, reactions, anchorClaims, quotes, payments, realizePayoutConfigurations, realizeQuotes, realizeCommissions, realizePaymentSignatures, realizeProvenance, realizeWebhookDeliveries, nftMedia, nftMints, rightsAgreements, rightsRevenueEvents, rightsAllocations, referralAttributions, distributionRewards, rightsAudit] = await Promise.all([this.agents.get(), this.humans.get(), this.posts.get(), this.commissionRequests.get(), this.batches.get(), this.realizations.get(), this.reactions.get(), this.anchorClaims.get(), this.quotes.get(), this.payments.get(), this.realizePayoutConfigurations.get(), this.realizeQuotes.get(), this.realizeCommissions.get(), this.realizePaymentSignatures.get(), this.realizeProvenance.get(), this.realizeWebhookDeliveries.get(), this.nftMedia.get(), this.nftMints.get(), this.rightsAgreements.get(), this.rightsRevenueEvents.get(), this.rightsAllocations.get(), this.referralAttributions.get(), this.distributionRewards.get(), this.rightsAudit.get()]);
+    const [agents, humans, posts, commissionRequests, batches, realizations, reactions, follows, anchorClaims, quotes, payments, realizePayoutConfigurations, realizeQuotes, realizeCommissions, realizePaymentSignatures, realizeProvenance, realizeWebhookDeliveries, nftMedia, nftMints, rightsAgreements, rightsRevenueEvents, rightsAllocations, referralAttributions, distributionRewards, rightsAudit] = await Promise.all([this.agents.get(), this.humans.get(), this.posts.get(), this.commissionRequests.get(), this.batches.get(), this.realizations.get(), this.reactions.get(), this.follows.get(), this.anchorClaims.get(), this.quotes.get(), this.payments.get(), this.realizePayoutConfigurations.get(), this.realizeQuotes.get(), this.realizeCommissions.get(), this.realizePaymentSignatures.get(), this.realizeProvenance.get(), this.realizeWebhookDeliveries.get(), this.nftMedia.get(), this.nftMints.get(), this.rightsAgreements.get(), this.rightsRevenueEvents.get(), this.rightsAllocations.get(), this.referralAttributions.get(), this.distributionRewards.get(), this.rightsAudit.get()]);
     return {
       agents: agents.docs.map((doc) => doc.data() as AgentRecord),
       humans: humans.docs.map((doc) => doc.data() as HumanRecord),
       posts: posts.docs.map((doc) => doc.data() as StoredPost),
+      character_conversations: (await this.characterConversations.get()).docs.map((doc) => doc.data() as CharacterConversationRecord),
       commission_requests: commissionRequests.docs.map((doc) => doc.data() as CommissionRequestRecord),
       batches: batches.docs.map((doc) => doc.data() as AnchorBatchRecord),
       realizations: realizations.docs.map((doc) => doc.data() as RealizationRecord),
       reactions: reactions.docs.map((doc) => doc.data() as ReactionRecord),
+      follows: follows.docs.map((doc) => normalizeFollowRecord(doc.data() as FollowRecord)),
       anchor_claims: anchorClaims.docs.map((doc) => doc.data() as AnchorClaimRecord),
       quotes: quotes.docs.map((doc) => doc.data() as QuoteRecord),
       payments: payments.docs.map((doc) => doc.data() as PaymentRecord),

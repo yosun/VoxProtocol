@@ -3,6 +3,16 @@ set -euo pipefail
 
 CONFIG="${VOX_GCP_PROJECT_CONFIG:-.kiro/gcp-project.json}"
 DEPLOYMENT_ENV="${VOX_DEPLOYMENT_ENV:-production}"
+case "$DEPLOYMENT_ENV" in
+  production|staging) ;;
+  *) echo "VOX_DEPLOYMENT_ENV must be production or staging." >&2; exit 2 ;;
+esac
+# Bootstrap changes IAM, treasury wiring, and live services. Keep production
+# behind the same reviewed environment as selective application releases.
+if [[ "$DEPLOYMENT_ENV" == "production" ]] && [[ "${GITHUB_ACTIONS:-false}" != "true" || "${GITHUB_REPOSITORY:-}" != "yosun/VoxProtocol" || "${GITHUB_REF:-}" != "refs/heads/main" || "${VOX_PRODUCTION_SENSITIVE_APPROVED:-false}" != "true" ]]; then
+  echo "Production infrastructure requires the protected production-sensitive approval environment on main." >&2
+  exit 2
+fi
 REALIZE_DEVNET_ENABLED="${VOX_REALIZE_DEVNET_ENABLED:-false}"
 REALIZE_MAINNET_ENABLED="${VOX_REALIZE_MAINNET_ENABLED:-false}"
 NFT_ENABLED="${VOX_NFT_ENABLED:-false}"
@@ -259,19 +269,20 @@ if [[ "$NFT_ENABLED" == "true" ]]; then
   API_NFT_ENV="|VOX_NFT_ENABLED=true|VOX_NFT_CHAINS=$NFT_CHAINS|VOX_NFT_MAINNET_ENABLED=$NFT_MAINNET_ENABLED|VOX_CONFIRM_NFT_MAINNET=$NFT_CONFIRM_MAINNET|VOX_DEPLOYMENT_ENV=$DEPLOYMENT_ENV"
   IFS=',' read -r -a NFT_CHAIN_LIST <<< "$NFT_CHAINS"
   for chain in "${NFT_CHAIN_LIST[@]}"; do
-    key="${chain^^}"
+    key="$(printf '%s' "$chain" | tr '[:lower:]' '[:upper:]')"
     key="${key//:/_}"
     key="${key//-/_}"
+    key_lower="$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')"
     rpc_var="VOX_NFT_${key}_RPC_URL"
     signer_name_var="VOX_NFT_${key}_SIGNER_SECRET_NAME"
     rpc_url="${!rpc_var:-}"
-    signer_name="${!signer_name_var:-vox-nft-${key,,}-signer}"
+    signer_name="${!signer_name_var:-vox-nft-${key_lower}-signer}"
     if [[ -z "$rpc_url" || ! "$rpc_url" =~ ^https:// ]]; then
       echo "$rpc_var must be an HTTPS URL when NFT minting is enabled." >&2
       exit 2
     fi
     require_secret_version "$signer_name"
-    signer_path="/run/secrets/vox-nft/${key,,}/signer"
+    signer_path="/run/secrets/vox-nft/$key_lower/signer"
     API_SECRETS="${API_SECRETS},${signer_path}=${signer_name}:latest"
     API_SECRET_NAMES+=("$signer_name")
     API_NFT_ENV="${API_NFT_ENV}|VOX_NFT_${key}_RPC_URL=$rpc_url|VOX_NFT_${key}_SIGNER_KEY_PATH=$signer_path"
@@ -335,7 +346,8 @@ for ((index = 0; index < INDEX_COUNT; index += 1)); do
     field_config="$(INDEX_INDEX="$index" FIELD_INDEX="$field" node -e 'const f=require("./infrastructure/gcp/firestore.indexes.json").indexes[Number(process.env.INDEX_INDEX)].fields[Number(process.env.FIELD_INDEX)]; process.stdout.write(f.order ? `field-path=${f.fieldPath},order=${f.order.toLowerCase()}` : `field-path=${f.fieldPath},array-config=${f.arrayConfig.toLowerCase()}`)')"
     field_args+=(--field-config="$field_config")
   done
-  INDEX_OUTPUT="$(gcloud firestore indexes composite create --collection-group="$collection_group" --database="(default)" --project="$PROJECT_ID" "${field_args[@]}" 2>&1)" || {
+  query_scope="$(INDEX_INDEX="$index" node -e 'const c=require("./infrastructure/gcp/firestore.indexes.json").indexes[Number(process.env.INDEX_INDEX)]; if (!["COLLECTION", "COLLECTION_GROUP"].includes(c.queryScope)) process.exit(2); process.stdout.write(c.queryScope === "COLLECTION_GROUP" ? "collection-group" : "collection")')"
+  INDEX_OUTPUT="$(gcloud firestore indexes composite create --collection-group="$collection_group" --query-scope="$query_scope" --database="(default)" --project="$PROJECT_ID" "${field_args[@]}" 2>&1)" || {
     if [[ "$INDEX_OUTPUT" != *"already exists"* && "$INDEX_OUTPUT" != *"ALREADY_EXISTS"* ]]; then
       echo "$INDEX_OUTPUT" >&2
       exit 1
@@ -346,7 +358,7 @@ INDEX_READY_TIMEOUT_SECONDS="${VOX_INDEX_READY_TIMEOUT_SECONDS:-900}"
 INDEX_DEADLINE="$(( $(date +%s) + INDEX_READY_TIMEOUT_SECONDS ))"
 while true; do
   INDEX_STATE="$(gcloud firestore indexes composite list --database="(default)" --project="$PROJECT_ID" --format=json)"
-  INDEX_READINESS="$(INDEX_STATE="$INDEX_STATE" node -e 'const wanted=require("./infrastructure/gcp/firestore.indexes.json").indexes; const raw=JSON.parse(process.env.INDEX_STATE || "[]"); const actual=Array.isArray(raw) ? raw : raw.indexes || []; const ready=actual.filter((index) => index.state === "READY"); const matches=(expected) => ready.some((index) => { const collectionGroup=index.collectionGroup || index.name?.match(/collectionGroups\/([^/]+)/)?.[1]; return collectionGroup === expected.collectionGroup && expected.fields.every((field) => index.fields.some((candidate) => candidate.fieldPath === field.fieldPath && (field.order ? candidate.order === field.order : candidate.arrayConfig === field.arrayConfig))); }); process.stdout.write(wanted.every(matches) ? "ready" : "pending");')"
+  INDEX_READINESS="$(INDEX_STATE="$INDEX_STATE" node --input-type=module -e 'import {readFileSync} from "node:fs"; import {missingReadyIndexes} from "./scripts/check-firestore-indexes.mjs"; const wanted=JSON.parse(readFileSync("./infrastructure/gcp/firestore.indexes.json", "utf8")).indexes; const raw=JSON.parse(process.env.INDEX_STATE || "[]"); const actual=Array.isArray(raw) ? raw : raw.indexes || []; process.stdout.write(missingReadyIndexes(wanted, actual).length === 0 ? "ready" : "pending");')"
   if [[ "$INDEX_READINESS" == "ready" ]]; then
     break
   fi
@@ -423,7 +435,7 @@ fi
 
 # Bootstrap the API so the worker can receive its stable API URL. The second API
 # deployment below adds the worker URL after the worker service is created.
-gcloud run deploy "$SERVICE" --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID" --platform=managed --port=8080 --service-account="$API_SA" --min-instances=0 --max-instances=5 --concurrency=40 --cpu=1 --memory=512Mi --allow-unauthenticated --set-env-vars="^|^GOOGLE_CLOUD_PROJECT=$PROJECT_ID|VOX_STORAGE=firestore|VOX_FIRESTORE_DATABASE=(default)|VOX_GCS_BUCKET=$BUCKET|VOX_AVATAR_BUCKET=$AVATAR_BUCKET$PAYMENT_ENV$API_REALIZE_ENV$API_NFT_ENV$PUBLIC_BASE_ENV|VOX_INSTANCE_ID=$INSTANCE_ID|VOX_ANCHOR_MODE=$ANCHOR_MODE|SOLANA_RPC_URL=$SOLANA_RPC_URL|VOX_CORS_ORIGIN=$CORS_ORIGINS|VOX_TASKS_LOCATION=$REGION|VOX_TASKS_QUEUE=$TASK_QUEUE|VOX_TASKS_SERVICE_ACCOUNT=$TASKS_SA" --set-secrets="$API_SECRETS"
+gcloud run deploy "$SERVICE" --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID" --platform=managed --port=8080 --service-account="$API_SA" --min-instances=0 --max-instances=5 --concurrency=4 --cpu=1 --memory=1Gi --allow-unauthenticated --set-env-vars="^|^GOOGLE_CLOUD_PROJECT=$PROJECT_ID|VOX_STORAGE=firestore|VOX_FIRESTORE_DATABASE=(default)|VOX_GCS_BUCKET=$BUCKET|VOX_AVATAR_BUCKET=$AVATAR_BUCKET$PAYMENT_ENV$API_REALIZE_ENV$API_NFT_ENV$PUBLIC_BASE_ENV|VOX_INSTANCE_ID=$INSTANCE_ID|VOX_ANCHOR_MODE=$ANCHOR_MODE|SOLANA_RPC_URL=$SOLANA_RPC_URL|VOX_CORS_ORIGIN=$CORS_ORIGINS|VOX_TASKS_LOCATION=$REGION|VOX_TASKS_QUEUE=$TASK_QUEUE|VOX_TASKS_SERVICE_ACCOUNT=$TASKS_SA" --set-secrets="$API_SECRETS"
 API_URL="$(gcloud run services describe "$SERVICE" --region="$REGION" --project="$PROJECT_ID" --format='value(status.url)')"
 if [[ "$DEPLOYMENT_ENV" == "staging" && -z "${VOX_PUBLIC_BASE_URL:-}" ]]; then
   # Populi callbacks need a reachable VOX origin. The Cloud Run URL is only
@@ -444,7 +456,7 @@ gcloud run services add-iam-policy-binding "$ANCHOR_SERVICE" --region="$REGION" 
 
 # Redeploy the API with the now-known worker URL so publication tasks use the
 # same IAM/OIDC path as Scheduler.
-gcloud run deploy "$SERVICE" --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID" --platform=managed --port=8080 --service-account="$API_SA" --min-instances=0 --max-instances=5 --concurrency=40 --cpu=1 --memory=512Mi --allow-unauthenticated --set-env-vars="^|^GOOGLE_CLOUD_PROJECT=$PROJECT_ID|VOX_STORAGE=firestore|VOX_FIRESTORE_DATABASE=(default)|VOX_GCS_BUCKET=$BUCKET|VOX_AVATAR_BUCKET=$AVATAR_BUCKET$PAYMENT_ENV$API_REALIZE_ENV$API_NFT_ENV$PUBLIC_BASE_ENV|VOX_INSTANCE_ID=$INSTANCE_ID|VOX_ANCHOR_MODE=$ANCHOR_MODE|SOLANA_RPC_URL=$SOLANA_RPC_URL|VOX_CORS_ORIGIN=$CORS_ORIGINS|VOX_TASKS_LOCATION=$REGION|VOX_TASKS_QUEUE=$TASK_QUEUE|VOX_TASKS_SERVICE_ACCOUNT=$TASKS_SA|VOX_ANCHOR_WORKER_URL=$WORKER_URL|VOX_ANCHOR_WORKER_AUDIENCE=$WORKER_BASE_URL" --set-secrets="$API_SECRETS"
+gcloud run deploy "$SERVICE" --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID" --platform=managed --port=8080 --service-account="$API_SA" --min-instances=0 --max-instances=5 --concurrency=4 --cpu=1 --memory=1Gi --allow-unauthenticated --set-env-vars="^|^GOOGLE_CLOUD_PROJECT=$PROJECT_ID|VOX_STORAGE=firestore|VOX_FIRESTORE_DATABASE=(default)|VOX_GCS_BUCKET=$BUCKET|VOX_AVATAR_BUCKET=$AVATAR_BUCKET$PAYMENT_ENV$API_REALIZE_ENV$API_NFT_ENV$PUBLIC_BASE_ENV|VOX_INSTANCE_ID=$INSTANCE_ID|VOX_ANCHOR_MODE=$ANCHOR_MODE|SOLANA_RPC_URL=$SOLANA_RPC_URL|VOX_CORS_ORIGIN=$CORS_ORIGINS|VOX_TASKS_LOCATION=$REGION|VOX_TASKS_QUEUE=$TASK_QUEUE|VOX_TASKS_SERVICE_ACCOUNT=$TASKS_SA|VOX_ANCHOR_WORKER_URL=$WORKER_URL|VOX_ANCHOR_WORKER_AUDIENCE=$WORKER_BASE_URL" --set-secrets="$API_SECRETS"
 
 if [[ "$REALIZE_MAINNET_ENABLED" == "true" ]]; then
   gcloud run jobs deploy vox-realize-reconcile --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID" --service-account="$RECONCILE_JOB_SA" --tasks=1 --parallelism=1 --max-retries=2 --task-timeout=300 --command=node --args=apps/api/dist/realize-reconcile-job.js --set-env-vars="VOX_API_URL=$API_URL,VOX_REALIZE_RECONCILE_LIMIT=10" --set-secrets="VOX_INTERNAL_TOKEN=vox-internal-token:latest"

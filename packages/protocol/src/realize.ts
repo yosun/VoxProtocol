@@ -325,9 +325,7 @@ export const REALIZE_COMMISSION_TRANSITIONS = Object.freeze({
   REFUND_PENDING: Object.freeze(["REFUNDED", "FAILED", "MANUAL_REVIEW"] as const),
   REFUNDED: Object.freeze([]),
   MANUAL_REVIEW: Object.freeze(["COMPLETED", "REFUND_PENDING"] as const),
-  // A payer may submit a signature after expiry while recovering a transfer
-  // that was already broadcast. Reopen only into payment verification; the API
-  // decides from finalized chain time whether it can fulfill or needs review.
+  // Recovery retains the accepted payment binding before verification/capture.
   EXPIRED: Object.freeze(["AWAITING_PAYMENT", "FUNDED", "MANUAL_REVIEW"] as const)
 } as const satisfies Readonly<Record<CommissionStateValue, readonly CommissionStateValue[]>>);
 

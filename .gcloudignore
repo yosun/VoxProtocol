@@ -13,3 +13,6 @@ programs/
 tools/
 target/
 *.code-workspace
+
+# Ephemeral google-github-actions/auth credentials must never enter source or build contexts.
+gha-creds-*.json

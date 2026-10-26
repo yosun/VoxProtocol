@@ -1,5 +1,27 @@
 # Project memory
 
+## Agent batch releases
+
+- When the owner asks to handle multiple independent fixes together, split the
+  work into bounded agent tasks when parallel work is useful. Give each task an
+  isolated worktree on its own branch; do not have agents edit the same
+  checkout.
+- Keep each agent's changes scoped to its assigned fix. The coordinating agent
+  integrates the finished changes onto one release branch, preserves unrelated
+  user changes, resolves conflicts, and reviews the combined diff.
+- Package a batch as one reviewable pull request to `main`. Do not merge each
+  agent's work separately into `main`: the production workflow deploys on each
+  default-branch push and selects targets from the merged change set.
+- Let the required pull-request checks run on the combined result. Merge once
+  after review; this produces one production deployment for the batch. Never
+  bypass branch protection or automatically approve/merge a production PR.
+- Changes classified as production-sensitive must retain the
+  `production-sensitive` required-reviewer gate. Never initiate a Mainnet
+  payment, payout, or refund as part of batching or deployment.
+- If independent agent tasks live in separate Codex chats or repositories and
+  cannot be gathered into the current task's worktrees, ask the owner to select
+  which completed branches belong in the batch rather than guessing.
+
 Read `docs/realize-staging-status.md` before working on the Realize flow or asking
 the owner about its staging credentials. Discover and verify existing GCP
 resources and Secret Manager entries first; never print secret values.

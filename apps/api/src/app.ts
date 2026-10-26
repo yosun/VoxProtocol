@@ -30,6 +30,9 @@ import {
   SignedAgentProfileUpdateV1Schema,
   SignedCommissionRequestV1Schema,
   SignedPostV1Schema,
+  agentDirectMessageRequestSigningPayload,
+  followSigningPayload,
+  followViewerSigningPayload,
   commissionRequestHashHex,
   commissionRequestIdFromIntent,
   verifyCommissionRequestSignature,
@@ -38,6 +41,7 @@ import {
   bytesToBase64Url,
   bytesToHex,
   canonicalBytes,
+  canonicalize,
   canTransitionRealizeCommission,
   computeRevenueRightsAgreementHash,
   computeRealizeQuoteHash,
@@ -82,11 +86,14 @@ import { dependencyHttpError, HttpError, UsernameConflict } from "./errors.js";
 import { decodeCursor, encodeCursor } from "./cursor.js";
 import { FileStore, MemoryStore } from "./store.js";
 import { createDefaultAvatarAssetStore, type AvatarAssetStore } from "./avatar-store.js";
+import { createDefaultDirectMessageMediaStore, type DirectMessageMediaStore } from "./direct-message-media-store.js";
 import { AVATAR_MAX_UPLOAD_BYTES, processAvatar } from "./avatar-processing.js";
 import { KeyHistoryConflict } from "./key-history.js";
-import type {AgentProfileRecord, AnchorBatchRecord, AnchorClaimPatch, AvatarAssetReference, CommissionRequestEvent, CommissionRequestRecord, PaymentRecord, QuoteRecord, RealizationRecord, RealizeCommissionRecord, RealizeFailureEvidence, RealizeRefundApproval, RealizeResolutionAuditEvent, RightsAgreementRecord, StoredPost, VoxStore} from "./types.js";
+import type {AgentProfileRecord, AnchorBatchRecord, AnchorClaimPatch, AvatarAssetReference, CommissionRequestEvent, CommissionRequestRecord, FollowRecord, PaymentRecord, QuoteRecord, RealizationRecord, RealizeCommissionRecord, RealizeFailureEvidence, RealizeRefundApproval, RealizeResolutionAuditEvent, RightsAgreementRecord, StoredPost, VoxStore} from "./types.js";
 import { verifyProofBundle, type ProofBundle } from "./verifier.js";
 import { AsyncMutex } from "./mutex.js";
+import {ConversationConflict, registerConversationRoutes, validateConversationPost} from "./conversations.js";
+import {decodeDirectMessageCursor, encodeDirectMessageCursor} from "./direct-message-pagination.js";
 import { createAnchorTaskDispatcherFromEnv, type AnchorTaskDispatcher } from "./tasks.js";
 import { registerPublicRoutes, defaultDocsDir, defaultWebDistDir } from "./public.js";
 import { canonicalUsername, isReservedUsername } from "./usernames.js";
@@ -94,13 +101,14 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto
 import { dirname, join } from "node:path";
 import { mkdir } from "node:fs/promises";
 import {Readable} from "node:stream";
+
 import {
   HttpPopuliRealizeClient,
   RealizeProviderHttpError,
   HttpSolanaRealizeSettlementClient,
   RealizeCreatorPayoutConfigurationV1Schema,
   DEFAULT_MAINNET_PRICING_POLICY,
-  requiresExplicitMainnetDisbursementApproval,
+  requiresExplicitMainnetRefundApproval,
   FIRST_PARTY_RIGHTS_REFERENCE_PREFIX,
   createFirstPartyRealizeRightsPolicy,
   buildRealizeQuote,
@@ -118,6 +126,36 @@ import {
 import {configuredDevnetRealizeEscrow, type DevnetRealizeEscrowClient} from "./realize-solana-devnet.js";
 import {configuredNftService, fulfillmentOutputToNftInput, legacyRealizationToNftInput, NftMintService, verifyNftWalletProof} from "./nft.js";
 import {configuredMainnetRealizePaymentRail, isManagedRealizeSettlementConfigured, type MainnetSplUsdcFundingAuthorization, type RealizePaymentRail} from "./realize-payment.js";
+import {summarizeCharacterAccount} from "./character-account.js";
+
+const DIRECT_MESSAGE_MAX_TEXT_LENGTH = 280;
+const DIRECT_MESSAGE_MAX_ATTACHMENTS = 4;
+const DIRECT_MESSAGE_MAX_MEDIA_BYTES = 25_000_000;
+const DIRECT_MESSAGE_MEDIA_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif", "audio/mpeg", "audio/mp4", "audio/webm", "audio/ogg", "video/mp4", "video/webm", "video/quicktime"]);
+const DirectMessageAttachmentSchema = z.object({
+  asset_hash: z.string().regex(/^[0-9a-f]{64}$/),
+  file_name: z.string().min(1).max(180).refine((value) => value.trim().length > 0),
+  media_type: z.string().refine((value) => DIRECT_MESSAGE_MEDIA_TYPES.has(value), "unsupported media type"),
+  byte_length: z.number().int().positive().max(DIRECT_MESSAGE_MAX_MEDIA_BYTES),
+  kind: z.enum(["image", "audio", "video"])
+}).strict();
+const DirectMessageRequestSchema = z.object({
+  recipient_id: z.string().regex(/^vox:(?:human|agent):[A-Za-z0-9_-]{43}$/),
+  client_message_id: z.string().uuid(),
+  created_at: z.string().datetime({offset: true}),
+  text: z.string().max(DIRECT_MESSAGE_MAX_TEXT_LENGTH),
+  attachments: z.array(DirectMessageAttachmentSchema).max(DIRECT_MESSAGE_MAX_ATTACHMENTS),
+  source_post_id: z.string().regex(/^vox:post:[0-9a-f]{64}$/).optional(),
+  bid_amount_usdc_atomic: z.string().regex(/^[1-9][0-9]{0,10}$/).optional()
+}).strict().superRefine((message, context) => {
+  if (message.bid_amount_usdc_atomic && BigInt(message.bid_amount_usdc_atomic) > 10_000_000_000n) context.addIssue({code: "custom", path: ["bid_amount_usdc_atomic"], message: "bid exceeds the 10,000 USDC limit"});
+  if (message.text.trim().length === 0 && message.attachments.length === 0) context.addIssue({code: "custom", path: ["text"], message: "a message needs text or an attachment"});
+  if (message.attachments.reduce((total, attachment) => total + attachment.byte_length, 0) > DIRECT_MESSAGE_MAX_MEDIA_BYTES) context.addIssue({code: "custom", path: ["attachments"], message: "attachments exceed the 25 MB message limit"});
+  if (new Set(message.attachments.map((attachment) => attachment.asset_hash)).size !== message.attachments.length) context.addIssue({code: "custom", path: ["attachments"], message: "duplicate attachments are not allowed"});
+  for (const attachment of message.attachments) {
+    if (attachment.media_type.split("/", 1)[0] !== attachment.kind) context.addIssue({code: "custom", path: ["attachments"], message: "attachment kind must match its media type"});
+  }
+});
 
 export interface AppOptions {
   store?: VoxStore;
@@ -131,6 +169,7 @@ export interface AppOptions {
   webDistDir?: string;
   docsDir?: string;
   avatarStore?: AvatarAssetStore;
+  directMessageMediaStore?: DirectMessageMediaStore;
   populiRealizeClient?: PopuliRealizeClient;
   solanaRealizeSettlementClient?: SolanaRealizeSettlementClient;
   devnetRealizeEscrowClient?: DevnetRealizeEscrowClient;
@@ -141,6 +180,7 @@ export interface AppOptions {
 interface AppContext {
   store: VoxStore;
   avatarStore: AvatarAssetStore;
+  directMessageMediaStore: DirectMessageMediaStore;
   publicBaseUrl: string;
   instanceId: string;
   instanceSecretKey: Uint8Array;
@@ -149,6 +189,8 @@ interface AppContext {
   internalToken: string | undefined;
   publishTimes: Map<string, number[]>;
   avatarUploadTimes: Map<string, number[]>;
+  directMessageSendTimes: Map<string, number[]>;
+  directMessageMediaUploadTimes: Map<string, number[]>;
   media: MockMediaProvider;
   populiRealizeClient: PopuliRealizeClient;
   solanaRealizeSettlementClient: SolanaRealizeSettlementClient;
@@ -212,9 +254,9 @@ function bytesToBase64UrlSafe(value: Uint8Array): string {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
-function parseBody<T>(schema: {safeParse(value: unknown): {success: true; data: T} | {success: false; error: {issues: Array<{path: (string | number)[]; message: string}>}}}, body: unknown): T {
+function parseBody<T>(schema: {safeParse(value: unknown): {success: true; data: T} | {success: false; error: {issues: Array<{path: PropertyKey[]; message: string}>}}}, body: unknown): T {
   const parsed = schema.safeParse(body);
-  if (!parsed.success) throw new HttpError(400, "invalid_request", parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; "));
+  if (!parsed.success) throw new HttpError(400, "invalid_request", parsed.error.issues.map((issue) => `${issue.path.map(String).join(".")}: ${issue.message}`).join("; "));
   return parsed.data;
 }
 
@@ -342,6 +384,24 @@ const ReactionRequestSchema = z.object({
   actor_id: z.string().regex(/^[A-Za-z0-9._:-]{1,160}$/).optional()
 }).strict();
 
+const FollowIntentSchema = z.object({
+  protocol: z.literal("vox.follow/1"),
+  follower_type: z.enum(["agent", "human"]),
+  follower_id: z.string().regex(/^vox:(?:agent|human):[A-Za-z0-9_-]{43}$/),
+  target_type: z.enum(["agent", "human"]),
+  target_id: z.string().min(1).max(160),
+  action: z.enum(["follow", "unfollow"]),
+  created_at: z.string().datetime({offset: true}),
+  operation_id: z.string().uuid()
+}).strict().superRefine((intent, issue) => {
+  const followerPrefix = intent.follower_type === "agent" ? "vox:agent:" : "vox:human:";
+  if (!intent.follower_id.startsWith(followerPrefix)) issue.addIssue({code: z.ZodIssueCode.custom, path: ["follower_id"], message: "follower_id does not match follower_type"});
+  const prefix = intent.target_type === "agent" ? "vox:agent:" : "vox:human:";
+  if (!new RegExp(`^${prefix}[A-Za-z0-9_-]{43}$`).test(intent.target_id)) issue.addIssue({code: z.ZodIssueCode.custom, path: ["target_id"], message: "target_id does not match target_type"});
+});
+
+const FollowRequestSchema = z.object({intent: FollowIntentSchema, signature: z.string().min(64).max(128)}).strict();
+
 const AnchorRunRequestSchema = z.object({
   epoch: z.string().regex(/^\d{4}-\d{2}-\d{2}(?:T\d{2})?Z$/).optional(),
   limit: z.number().int().min(1).max(5000).default(500)
@@ -371,8 +431,8 @@ const AcceptRealizeQuoteRequestSchema = z.object({
   canonical_quote_hash: z.string().regex(/^[0-9a-f]{64}$/),
   payer_wallet: z.string().min(32).max(64).refine(isValidSolanaAddress, "must be a valid Solana wallet"),
   rights_reviewed: z.literal(true),
-  nft_publication_consent: z.boolean().optional(),
-  public_attribution: z.string().trim().min(1).max(120).optional()
+  public_attribution: z.string().trim().min(1).max(120).optional(),
+  nft_publication_consent: z.boolean().optional()
 }).strict();
 const FundRealizeCommissionRequestSchema = z.object({
   payer_wallet: z.string().min(32).max(64).refine(isValidSolanaAddress, "must be a valid Solana wallet"),
@@ -419,6 +479,24 @@ async function authorizeRealizeHuman(context: AppContext, headers: Record<string
   return principalId;
 }
 
+async function authorizeAgentDirectMessage(context: AppContext, headers: Record<string, unknown>, method: "GET" | "POST", path: string, body?: unknown): Promise<string> {
+  const principalId = requiredHeader(headers, "x-vox-agent-id");
+  const issuedAt = requiredHeader(headers, "x-vox-agent-timestamp");
+  const issuedAtMs = Date.parse(issuedAt);
+  if (!Number.isFinite(issuedAtMs) || Math.abs(Date.now() - issuedAtMs) > 5 * 60_000) throw new HttpError(401, "signature_expired", "agent DM signature timestamp is outside the five-minute window");
+  const agent = await context.store.getAgent(principalId);
+  if (!agent) throw new HttpError(401, "unauthorized", "a registered VOX agent identity is required");
+  const signature = requiredHeader(headers, "x-vox-agent-signature");
+  const payload = agentDirectMessageRequestSigningPayload({method, path, principal_id: principalId, issued_at: issuedAt, ...(body === undefined ? {} : {body})});
+  if (!verifyBytes(payload, signature, agent.registration.identity_public_key)) throw new HttpError(401, "invalid_signature", "agent DM request signature is invalid");
+  return principalId;
+}
+
+async function authorizeDirectMessagePrincipal(context: AppContext, headers: Record<string, unknown>, method: "GET" | "POST", path: string, body?: unknown): Promise<string> {
+  if (typeof headers["x-vox-realize-human-id"] === "string") return authorizeRealizeHuman(context, headers, undefined, method, path, body);
+  return authorizeAgentDirectMessage(context, headers, method, path, body);
+}
+
 async function authorizeHumanRequest(context: AppContext, headers: Record<string, unknown>, method: "GET", path: string): Promise<string> {
   const principalId = requiredHeader(headers, "x-vox-human-id");
   const issuedAt = requiredHeader(headers, "x-vox-human-timestamp");
@@ -432,16 +510,38 @@ async function authorizeHumanRequest(context: AppContext, headers: Record<string
   return principalId;
 }
 
+async function authorizeFollowViewer(context: AppContext, headers: Record<string, unknown>, path: string): Promise<{followerType: "agent" | "human"; followerId: string}> {
+  // Keep the existing browser account signature valid while also allowing agents
+  // to read their own follow state using a root identity signature.
+  if (typeof headers["x-vox-human-id"] === "string") {
+    return {followerType: "human", followerId: await authorizeHumanRequest(context, headers, "GET", path)};
+  }
+  const followerType = requiredHeader(headers, "x-vox-follower-type");
+  if (followerType !== "agent" && followerType !== "human") throw new HttpError(400, "invalid_follower_type", "follower type must be agent or human");
+  const followerId = requiredHeader(headers, "x-vox-follower-id");
+  if (!followerId.startsWith(followerType === "agent" ? "vox:agent:" : "vox:human:")) throw new HttpError(400, "invalid_follower_id", "follower id does not match follower type");
+  const issuedAt = requiredHeader(headers, "x-vox-follower-timestamp");
+  const issuedAtMs = Date.parse(issuedAt);
+  if (!Number.isFinite(issuedAtMs) || Math.abs(Date.now() - issuedAtMs) > 5 * 60_000) throw new HttpError(401, "signature_expired", "Follow viewer signature timestamp is outside the five-minute window");
+  const principal = followerType === "agent" ? await context.store.getAgent(followerId) : await context.store.getHuman(followerId);
+  if (!principal) throw new HttpError(401, "unauthorized", "a registered VOX identity is required");
+  const signature = requiredHeader(headers, "x-vox-follower-signature");
+  const payload = followViewerSigningPayload({method: "GET", path, principal_type: followerType, principal_id: followerId, issued_at: issuedAt});
+  if (!verifyBytes(payload, signature, principal.registration.identity_public_key)) throw new HttpError(401, "invalid_signature", "Follow viewer signature is invalid");
+  return {followerType, followerId};
+}
+
 function requireRealizeAdmin(context: AppContext, headers: Record<string, unknown>): void {
   if (!context.internalToken) throw new HttpError(503, "realize_admin_auth_unconfigured", "Realize payout configuration requires VOX_INTERNAL_TOKEN");
   if (!internalAuthorized({headers}, context.internalToken)) throw new HttpError(401, "unauthorized", "internal token required");
 }
 
 function configuredRealizeOperatorIds(): string[] {
-  return (process.env.VOX_REALIZE_OPERATOR_HUMAN_IDS ?? "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value) => /^vox:human:[A-Za-z0-9_-]{43}$/.test(value));
+  return (process.env.VOX_REALIZE_OPERATOR_HUMAN_IDS ?? "").split(",").map((value) => value.trim()).filter((value) => /^vox:human:[A-Za-z0-9_-]{43}$/.test(value));
+}
+
+function isRealizeOperatorApprovalsConfigured(): boolean {
+  return configuredRealizeOperatorIds().length > 0;
 }
 
 async function authorizeRealizeOperator(context: AppContext, request: {headers: Record<string, unknown>}, path: string, body: unknown): Promise<{operatorId: string; approvedAt: string; signature: string; payloadHash: string}> {
@@ -877,7 +977,7 @@ async function runRealizeRefund(context: AppContext, input: RealizeCommissionRec
   if (current.commission.state !== "REFUND_PENDING") return current;
   const quote = current.commission.quote_id ? await context.store.getRealizeQuote(current.commission.quote_id) : undefined;
   if (!quote?.network_id || !quote.usdc_mint) return current;
-  const mainnet = requiresExplicitMainnetDisbursementApproval(quote.network_id);
+  const mainnet = requiresExplicitMainnetRefundApproval(quote.network_id);
   if (mainnet && !current.refund_approval) return current;
   if (stagingNoRenderFailureEnabled(context) && current.no_render_failure_armed && !current.refund_approval) return current;
   try {
@@ -944,7 +1044,7 @@ async function confirmRealizeFulfillmentFailure(context: AppContext, record: Rea
 
 async function processRealizeSettlement(context: AppContext, input: RealizeCommissionRecord): Promise<RealizeCommissionRecord> {
   let current = await context.store.getRealizeCommission(input.commission.commission_id) ?? input;
-  if (current.commission.state !== "COMPLETED" || !current.payment_intent || !current.commission.quote_id) return current;
+  if (current.commission.state !== "COMPLETED" || current.commission.payment_state !== "captured" || !current.payment_intent || !current.commission.quote_id || !current.funding_signature || !current.funding_verified_at || current.fulfillment_result?.status !== "completed" || !current.provenance_record_id) return current;
   const quote = await context.store.getRealizeQuote(current.commission.quote_id);
   if (!quote) throw new Error("accepted Realize quote not found during settlement");
   const configuration = quote.payout_configuration_version ? await context.store.getRealizePayoutConfiguration(current.commission.creator_id, quote.payout_configuration_version) : undefined;
@@ -955,10 +1055,10 @@ async function processRealizeSettlement(context: AppContext, input: RealizeCommi
     instruction = createRealizeSettlementInstruction({quote, commissionId: current.commission.commission_id, paymentIntentId: current.payment_intent.payment_intent_id, createdAt: new Date().toISOString()});
     current = await context.store.updateRealizeCommission(updatedRealizeCommission(current, {}, {settlement_instruction: instruction, settlement_status: "pending"}), current.updated_at);
   }
-  // Persist the exact provider/owner/VOX allocation as a treasury liability.
-  // Mainnet payout transactions require separate explicit approval; storing the
-  // instruction records the allocation without signing or submitting transfers.
-  if (requiresExplicitMainnetDisbursementApproval(quote.network_id ?? "")) return current;
+  // The accepted quote pins every recipient and amount. After VOX verifies the
+  // finalized customer payment and completed provider output, the configured
+  // settlement service pays those recipients. Mainnet refunds remain separately
+  // approval-gated.
   try {
     if (!current.settlement_response) {
       if (context.devnetRealizeEscrowClient && current.escrow_funding && current.fulfillment_result) {
@@ -970,26 +1070,39 @@ async function processRealizeSettlement(context: AppContext, input: RealizeCommi
       }
     }
     if (context.devnetRealizeEscrowClient && current.escrow_funding) await context.devnetRealizeEscrowClient.claimUnclaimedPayouts(current.escrow_funding);
-    const response = context.devnetRealizeEscrowClient && current.escrow_funding
-      ? await context.devnetRealizeEscrowClient.getSettlement(current.escrow_funding)
+    const escrowFunding = current.escrow_funding && context.devnetRealizeEscrowClient
+      ? {...current.escrow_funding, payouts: current.escrow_funding.payouts.map((payout, index) => ({...payout, ...(instruction.payout_recipients[index]?.payout_id ? {payout_id: instruction.payout_recipients[index]!.payout_id} : {})}))}
+      : undefined;
+    const response = escrowFunding
+      ? await context.devnetRealizeEscrowClient!.getSettlement(escrowFunding)
       : await context.solanaRealizeSettlementClient.getSettlement(instruction.settlement_id);
     if (response.settlement_id !== instruction.settlement_id) throw new Error("settlement adapter returned a different settlement id");
     const settledAmount = response.settled_amount_usdc_atomic === undefined ? undefined : BigInt(response.settled_amount_usdc_atomic);
     const quoteTotal = BigInt(quote.total_amount_usdc_atomic);
     const payoutIds = new Set(quote.payout_recipients.map((recipient) => recipient.payout_id));
-    if (response.failed_payout_ids.some((payoutId) => !payoutIds.has(payoutId)) || settledAmount !== undefined && settledAmount > quoteTotal) throw new Error("settlement adapter response names an unknown payout or exceeds the quote total");
+    const failedIds = new Set(response.failed_payout_ids);
+    const reportedSettledIds = response.settled_payout_ids ?? [];
+    const settledPayoutIds = reportedSettledIds.length > 0
+      ? reportedSettledIds
+      : response.status === "settled" && settledAmount === quoteTotal && response.failed_payout_ids.length === 0
+        ? quote.payout_recipients.map((recipient) => recipient.payout_id)
+        : [];
+    const settledIds = new Set(settledPayoutIds);
+    const settledAmountFromIds = quote.payout_recipients.filter((recipient) => settledIds.has(recipient.payout_id)).reduce((total, recipient) => total + BigInt(recipient.amount_usdc_atomic), 0n);
+    if (response.failed_payout_ids.some((payoutId) => !payoutIds.has(payoutId)) || settledPayoutIds.some((payoutId) => !payoutIds.has(payoutId)) || settledIds.size !== settledPayoutIds.length || [...settledIds].some((payoutId) => failedIds.has(payoutId)) || settledPayoutIds.length > 0 && settledAmount !== settledAmountFromIds || settledAmount !== undefined && settledAmount > quoteTotal || settledAmount !== undefined && settledAmount > 0n && settledPayoutIds.length === 0) throw new Error("settlement adapter response names an unknown, duplicate, conflicting, or incorrectly valued payout, or omits payout evidence for a positive settled amount");
+    const normalizedResponse = {...response, settled_payout_ids: settledPayoutIds};
     if (response.status === "settled" && settledAmount === quoteTotal && response.failed_payout_ids.length === 0) {
-      const updated = updatedRealizeCommission(current, {state: "SETTLED", payment_state: "settled", fulfillment_state: "completed"}, {settlement_response: response, settlement_status: "settled", failure_reason: ""});
+      const updated = updatedRealizeCommission(current, {state: "SETTLED", payment_state: "settled", fulfillment_state: "completed"}, {settlement_response: normalizedResponse, settlement_status: "settled", failure_reason: ""});
       return await context.store.updateRealizeCommission(updated, current.updated_at);
     }
     if (response.status === "failed" && settledAmount === 0n) {
-      const updated = updatedRealizeCommission(current, {state: "REFUND_PENDING", payment_state: "refund_pending"}, {settlement_response: response, settlement_status: "failed", failure_reason: "settlement failed before any recipient payout was confirmed"});
+      const updated = updatedRealizeCommission(current, {state: "REFUND_PENDING", payment_state: "refund_pending"}, {settlement_response: normalizedResponse, settlement_status: "failed", failure_reason: "settlement failed before any recipient payout was confirmed"});
       const saved = await context.store.updateRealizeCommission(updated, current.updated_at);
       return runRealizeRefund(context, saved);
     }
     const partial = response.status === "partial" || response.status === "failed" || settledAmount !== undefined && settledAmount !== 0n;
     const mismatch = response.status === "settled" && settledAmount !== quoteTotal;
-    const updated = updatedRealizeCommission(current, {payment_state: "captured"}, {settlement_response: response, settlement_status: partial ? "partial" : "pending", ...(mismatch ? {failure_reason: "settlement adapter reported a total different from the accepted quote"} : {})});
+    const updated = updatedRealizeCommission(current, {payment_state: "captured"}, {settlement_response: normalizedResponse, settlement_status: partial ? "partial" : "pending", ...(mismatch ? {failure_reason: "settlement adapter reported a total different from the accepted quote"} : {})});
     return await context.store.updateRealizeCommission(updated, current.updated_at);
   } catch (error) {
     const updated = updatedRealizeCommission(current, {}, {failure_reason: errorMessage(error)});
@@ -1087,6 +1200,7 @@ async function startRealizeFulfillment(context: AppContext, input: RealizeCommis
   if (!current.rights_reviewed_at) throw new HttpError(409, "rights_acceptance_required", "generation requires the commissioner to accept the displayed rights terms");
   const quote = await context.store.getRealizeQuote(current.commission.quote_id);
   if (!quote) throw new Error("accepted Realize quote not found before generation");
+  if (Date.parse(quote.expires_at) <= Date.now() && current.funding_timing_status !== "within_quote_window") return markRealizeManualReview(context, current, "The captured payment requires review because its provider quote has expired.", "payment_verified_after_quote_expiry", current.funding_signature);
   const configuration = quote.payout_configuration_version ? await context.store.getRealizePayoutConfiguration(current.commission.creator_id, quote.payout_configuration_version) : undefined;
   if (!configuration) throw new Error("pinned payout configuration not found before generation");
   assertRealizeQuoteConfiguration(context, quote, configuration);
@@ -1150,6 +1264,67 @@ async function startRealizeFulfillment(context: AppContext, input: RealizeCommis
   }
 }
 
+async function recoverMissingRealizeFulfillment(context: AppContext, input: RealizeCommissionRecord): Promise<RealizeCommissionRecord> {
+  let current = await context.store.getRealizeCommission(input.commission.commission_id) ?? input;
+  const eligible = (record: RealizeCommissionRecord) => record.commission.state === "GENERATING" && record.commission.payment_state === "captured" && !record.resolution_outcome && !record.failure_evidence && !record.refund_approval && !record.refund_response && !record.settlement_instruction && !record.fulfillment_completion_claimed;
+  if (!eligible(current)) return current;
+  // A previously observed job disappearing is an integrity problem, not
+  // permission to create a fresh provider job under a missing ledger entry.
+  if (current.fulfillment_result) return markRealizeManualReview(context, current, "provider no longer reports a previously acknowledged job", "provider_record_missing_after_acceptance");
+  const quote = current.commission.quote_id ? await context.store.getRealizeQuote(current.commission.quote_id) : undefined;
+  const configuration = quote?.payout_configuration_version ? await context.store.getRealizePayoutConfiguration(current.commission.creator_id, quote.payout_configuration_version) : undefined;
+  if (!quote || !configuration) return markRealizeManualReview(context, current, "pinned submission configuration is unavailable", "provider_submission_binding_unavailable");
+  if (Date.parse(quote.expires_at) <= Date.now() || !current.fulfillment_deadline_at || Date.parse(current.fulfillment_deadline_at) <= Date.now()) return markRealizeManualReview(context, current, "provider job is missing after its authorized submission window", "provider_submission_window_expired");
+  const attempts = current.fulfillment_submission_recovery_attempts ?? 0;
+  if (!Number.isInteger(attempts) || attempts < 0 || attempts >= 3) return markRealizeManualReview(context, current, "provider submission recovery limit reached; no new job or refund was authorized", "provider_submission_recovery_exhausted");
+  try {
+    assertRealizeQuoteConfiguration(context, quote, configuration);
+    const request = ProviderFulfillmentRequestV1Schema.parse(current.fulfillment_request);
+    const intent = current.payment_intent;
+    const funding = current.escrow_funding ?? current.direct_funding;
+    const authorization = request.funding_authorization;
+    const expectedId = `vox:fulfillment:${createHash("sha256").update(`${current.commission.commission_id}\u0000${quote.canonical_quote_hash}`).digest("hex")}`;
+    const expectedIntentId = `vox:payment-intent:${createHash("sha256").update(`${current.commission.commission_id}\u0000${quote.canonical_quote_hash}`).digest("hex")}`;
+    const expectedAuthorizationId = `vox:funding-authorization:${createHash("sha256").update(`${current.commission.commission_id}\u0000${quote.canonical_quote_hash}\u0000${current.funding_signature}`).digest("hex")}`;
+    const parametersMatch = generationParametersHash(request.requested_generation_parameters) === generationParametersHash(quote.requested_generation_parameters) && generationParametersHash(request.requested_generation_parameters) === generationParametersHash(current.commission.requested_generation_parameters);
+    const paymentMatches = intent && current.funding_signature && current.funding_verified_at && current.funded_at && current.rights_reviewed_at && current.payer_wallet &&
+      current.funding_network_id === quote.network_id && intent.status === "captured" && intent.payment_intent_id === expectedIntentId && current.commission.payment_intent_id === expectedIntentId &&
+      intent.commission_id === current.commission.commission_id && intent.quote_id === quote.quote_id && intent.accepted_quote_hash === quote.canonical_quote_hash &&
+      intent.amount_usdc_atomic === quote.total_amount_usdc_atomic && intent.network_id === quote.network_id && current.commission.accepted_quote_hash === quote.canonical_quote_hash;
+    const fundingMatches = funding && intent && funding.commission_id === current.commission.commission_id && funding.quote_id === quote.quote_id &&
+      funding.accepted_quote_hash === quote.canonical_quote_hash && funding.amount_usdc_atomic === intent.amount_usdc_atomic && funding.network_id === quote.network_id && funding.usdc_mint === quote.usdc_mint &&
+      funding.payer_wallet === current.payer_wallet && (funding.mode !== "direct" || funding.destination_token_account === configuration.funding_destination_token_account);
+    const requestMatches = request.fulfillment_request_id === expectedId && current.commission.fulfillment_request_id === expectedId && request.idempotency_key === expectedId &&
+      request.commission_id === current.commission.commission_id && request.quote_id === quote.quote_id && request.accepted_quote_hash === quote.canonical_quote_hash &&
+      request.generation_provider_id === quote.generation_provider_id && request.provider_quote_id === quote.provider_price_quote_id && parametersMatch &&
+      canonicalize(request.output_media_types) === canonicalize(quote.output_media_types ?? ["video/mp4"]) && Date.parse(request.created_at) >= Date.parse(quote.issued_at) && Date.parse(request.created_at) <= Date.parse(quote.expires_at);
+    const authorizationMatches = intent && authorization.authorization_id === expectedAuthorizationId && authorization.commission_id === current.commission.commission_id &&
+      authorization.payment_intent_id === expectedIntentId && authorization.accepted_quote_hash === quote.canonical_quote_hash && authorization.total_amount_usdc_atomic === intent.amount_usdc_atomic &&
+      authorization.provider_amount_usdc_atomic === (quote.provider_cost_usdc_atomic ?? quote.provider_base_price_usdc_atomic) && authorization.network_id === quote.network_id &&
+      authorization.payment_reference === `vox:realize:payment:${expectedIntentId}:${quote.canonical_quote_hash}` && authorization.verified_by === context.instanceId && authorization.verified_at === current.funded_at;
+    if (!paymentMatches || !fundingMatches || !requestMatches || !authorizationMatches) throw new Error("persisted provider submission does not match the verified accepted payment");
+    await activeRealizeRightsAgreement(context, configuration, current.commission.commissioner_id, current.commission.commission_id);
+    const latest = await context.store.getRealizeCommission(current.commission.commission_id);
+    if (!latest || latest.updated_at !== current.updated_at || !eligible(latest)) return latest ?? current;
+    if (Date.parse(quote.expires_at) <= Date.now()) return markRealizeManualReview(context, latest, "provider quote expired before recovery could submit", "provider_submission_window_expired");
+    current = await context.store.updateRealizeCommission(updatedRealizeCommission(latest, {}, {fulfillment_submission_recovery_attempts: attempts + 1, provider_poll_not_before: new Date(Date.now() + 30_000).toISOString()}), latest.updated_at);
+    // Populi durably binds this exact canonical body/idempotency key, provider
+    // quote and funding authorization to one job. Never rebuild its timestamps.
+    if (Date.parse(quote.expires_at) <= Date.now() || current.fulfillment_deadline_at && Date.parse(current.fulfillment_deadline_at) <= Date.now()) return markRealizeManualReview(context, current, "provider submission window expired while recovery was being recorded", "provider_submission_window_expired");
+    const result = await context.populiRealizeClient.requestFulfillment(configuration, request);
+    return handleRealizeFulfillmentResult(context, current, result, "create_response");
+  } catch (error) {
+    const latest = await context.store.getRealizeCommission(current.commission.commission_id) ?? current;
+    if (!eligible(latest) || latest.updated_at !== current.updated_at) return latest;
+    if (error instanceof RealizeProviderHttpError && [409, 410].includes(error.status)) return markRealizeManualReview(context, latest, "provider submission could not be recovered under its original authorization", "provider_submission_rejected");
+    if ((latest.fulfillment_submission_recovery_attempts ?? 0) === attempts) return markRealizeManualReview(context, latest, "persisted provider submission cannot be safely retried", "provider_submission_binding_invalid");
+    // A lost response is ambiguous. Keep the captured payment and original
+    // request for another GET lookup; never fabricate terminal failure evidence.
+    const delay = error instanceof RealizeProviderHttpError && [429, 503].includes(error.status) ? error.retryAfterMs : 5_000;
+    return context.store.updateRealizeCommission(updatedRealizeCommission(latest, {}, {failure_reason: errorMessage(error), provider_poll_not_before: new Date(Date.now() + delay).toISOString()}), latest.updated_at);
+  }
+}
+
 async function reconcileRealizeCommission(context: AppContext, record: RealizeCommissionRecord): Promise<RealizeCommissionRecord> {
   let current = await context.store.getRealizeCommission(record.commission.commission_id) ?? record;
   if (["QUOTED", "AWAITING_PAYMENT"].includes(current.commission.state) && current.commission.quote_id) {
@@ -1192,18 +1367,7 @@ async function reconcileRealizeCommission(context: AppContext, record: RealizeCo
       const result = await context.populiRealizeClient.getFulfillment(configuration, fulfillmentRequestId);
       return handleRealizeFulfillmentResult(context, current, result, "provider_status");
     } catch (error) {
-      if (current.commission.state === "GENERATING" && error instanceof RealizeProviderHttpError && error.status === 404 && (!current.fulfillment_deadline_at || Date.parse(current.fulfillment_deadline_at) > Date.now())) {
-        const request = current.fulfillment_request ? ProviderFulfillmentRequestV1Schema.parse(current.fulfillment_request) : undefined;
-        if (!request || request.fulfillment_request_id !== fulfillmentRequestId || request.idempotency_key !== fulfillmentRequestId || request.commission_id !== current.commission.commission_id || request.quote_id !== current.commission.quote_id || request.accepted_quote_hash !== current.commission.accepted_quote_hash) throw new Error("persisted provider request is not bound to the paid commission and fulfillment idempotency key");
-        try {
-          // A missing provider job after a lost create response is safe to retry
-          // only with the exact request persisted before the original POST.
-          const result = await context.populiRealizeClient.requestFulfillment(configuration, request);
-          return handleRealizeFulfillmentResult(context, current, result, "create_response");
-        } catch (submissionError) {
-          error = submissionError;
-        }
-      }
+      if (error instanceof RealizeProviderHttpError && error.status === 404 && error.code === "COMMISSION_NOT_FOUND") return recoverMissingRealizeFulfillment(context, current);
       if (error instanceof RealizeProviderHttpError && [429, 503].includes(error.status)) {
         const latest = await context.store.getRealizeCommission(current.commission.commission_id) ?? current;
         if (latest.fulfillment_deadline_at && Date.parse(latest.fulfillment_deadline_at) <= Date.now()) return markRealizeManualReview(context, latest, "provider status could not be reconciled after the generation deadline", "provider_status_ambiguous_after_deadline");
@@ -1244,10 +1408,10 @@ async function provisionRealizeNfts(context: AppContext, current: RealizeCommiss
       ...(current.source_post_id ? {sourcePostId: current.source_post_id} : {}),
       ...(sourcePost ? {sourceContent: sourcePost.intent.content.text} : {}),
       requestParameters: current.commission.requested_generation_parameters,
+      publicationConsent: true,
       ...(provenanceRecordId ? {provenanceRecordId} : {}),
       result,
       outputIndex,
-      publicationConsent: true,
       publicBaseUrl: context.publicBaseUrl
     });
     const media = await context.nftService.ensureMedia(context.store, input);
@@ -1354,6 +1518,35 @@ async function checkAvatarUploadRateLimit(context: AppContext, agentId: string):
   });
 }
 
+async function checkDirectMessageMediaUploadRateLimit(context: AppContext, principalId: string): Promise<void> {
+  const now = Date.now();
+  await context.rateMutex.runExclusive(async () => {
+    const current = (context.directMessageMediaUploadTimes.get(principalId) ?? []).filter((time) => now - time < 60 * 60_000);
+    if (current.length >= 60) throw new HttpError(429, "dm_media_rate_limited", "direct message media upload rate limit exceeded");
+    current.push(now);
+    context.directMessageMediaUploadTimes.set(principalId, current);
+  });
+}
+
+async function checkDirectMessageSendRateLimit(context: AppContext, principalId: string): Promise<void> {
+  const now = Date.now();
+  await context.rateMutex.runExclusive(async () => {
+    const current = (context.directMessageSendTimes.get(principalId) ?? []).filter((time) => now - time < 60 * 60_000);
+    if (current.length >= 300) throw new HttpError(429, "dm_send_rate_limited", "direct message send rate limit exceeded");
+    current.push(now);
+    context.directMessageSendTimes.set(principalId, current);
+  });
+}
+
+function directMessageConversationId(firstHumanId: string, secondHumanId: string): string {
+  const participants = [firstHumanId, secondHumanId].sort();
+  return `vox:dm:${createHash("sha256").update(participants.join("\0")).digest("hex")}`;
+}
+
+function directMessageId(humanId: string, clientMessageId: string): string {
+  return `vox:dm:message:${createHash("sha256").update(`${humanId}\0${clientMessageId}`).digest("hex")}`;
+}
+
 export async function buildApp(options: AppOptions = {}): Promise<FastifyInstance> {
   const keys = createInstanceKeys(options);
   const publicBaseUrl = (options.publicBaseUrl ?? process.env.VOX_PUBLIC_BASE_URL ?? "http://localhost:8787").replace(/\/+$/, "");
@@ -1363,6 +1556,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   const context: AppContext = {
     store: options.store ?? await createDefaultStore(),
     avatarStore: options.avatarStore ?? createDefaultAvatarAssetStore(),
+    directMessageMediaStore: options.directMessageMediaStore ?? createDefaultDirectMessageMediaStore(undefined, keys.secretKey),
     publicBaseUrl,
     instanceId: options.instanceId ?? process.env.VOX_INSTANCE_ID ?? "vox.blog.local",
     instanceSecretKey: keys.secretKey,
@@ -1371,6 +1565,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     internalToken: options.internalToken ?? process.env.VOX_INTERNAL_TOKEN,
     publishTimes: new Map(),
     avatarUploadTimes: new Map(),
+    directMessageSendTimes: new Map(),
+    directMessageMediaUploadTimes: new Map(),
     media: new MockMediaProvider(),
     populiRealizeClient: options.populiRealizeClient ?? new HttpPopuliRealizeClient(),
     solanaRealizeSettlementClient: options.solanaRealizeSettlementClient ?? new HttpSolanaRealizeSettlementClient(),
@@ -1382,7 +1578,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   };
 
   const app = Fastify({logger: process.env.NODE_ENV === "production" ? {level: process.env.LOG_LEVEL ?? "info"} : false, bodyLimit: 256 * 1024});
-  for (const contentType of ["application/octet-stream", "image/jpeg", "image/png", "image/webp"]) {
+  for (const contentType of ["application/octet-stream", "image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif", "audio/mpeg", "audio/mp4", "audio/webm", "audio/ogg", "video/mp4", "video/webm", "video/quicktime"]) {
     app.addContentTypeParser(contentType, {parseAs: "buffer"}, (_request, body, done) => done(null, body));
   }
   await app.register(cors, {origin: corsOrigins(options.corsOrigin ?? process.env.VOX_CORS_ORIGIN)});
@@ -1682,6 +1878,226 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     return reply.send(record);
   });
 
+  app.get("/v1/dm/conversations", async (request, reply) => {
+    const query = z.object({limit: z.coerce.number().int().min(1).max(100).default(40)}).strict().safeParse(request.query);
+    if (!query.success) throw new HttpError(400, "invalid_request", "limit must be between 1 and 100");
+    const path = request.raw.url ?? "/v1/dm/conversations";
+    const principalId = await authorizeDirectMessagePrincipal(context, request.headers as Record<string, unknown>, "GET", path);
+    return reply.send({items: await context.store.listDirectMessageConversations(principalId, query.data.limit)});
+  });
+
+  app.get("/v1/dm/conversations/:id/messages", async (request, reply) => {
+    const query = z.object({limit: z.coerce.number().int().min(1).max(100).default(60), cursor: z.string().min(1).max(512).optional()}).strict().safeParse(request.query);
+    if (!query.success) throw new HttpError(400, "invalid_request", "limit must be between 1 and 100 and cursor must be a bounded string");
+    const {id} = request.params as {id: string};
+    const path = request.raw.url ?? `/v1/dm/conversations/${encodeURIComponent(id)}/messages`;
+    const principalId = await authorizeDirectMessagePrincipal(context, request.headers as Record<string, unknown>, "GET", path);
+    const conversation = await context.store.getDirectMessageConversation(id);
+    if (!conversation || !conversation.participants.includes(principalId)) throw new HttpError(404, "conversation_not_found", "conversation not found");
+    const before = decodeDirectMessageCursor(query.data.cursor, id);
+    const candidates = await context.store.listDirectMessages(id, query.data.limit + 1, before);
+    const items = candidates.slice(-query.data.limit);
+    const oldest = items[0];
+    return reply.send({items, ...(candidates.length > query.data.limit && oldest ? {next_cursor: encodeDirectMessageCursor(id, oldest)} : {})});
+  });
+
+  app.post("/v1/dm/messages", async (request, reply) => {
+    const body = parseBody(DirectMessageRequestSchema, request.body);
+    const path = request.raw.url ?? "/v1/dm/messages";
+    const senderId = await authorizeDirectMessagePrincipal(context, request.headers as Record<string, unknown>, "POST", path, body);
+    if (senderId === body.recipient_id) throw new HttpError(400, "invalid_recipient", "you cannot message your own account");
+    const getPrincipal = (id: string) => id.startsWith("vox:agent:") ? context.store.getAgent(id) : context.store.getHuman(id);
+    const [sender, recipient] = await Promise.all([getPrincipal(senderId), getPrincipal(body.recipient_id)]);
+    if (!sender || !recipient) throw new HttpError(404, "participant_not_found", "both message participants must have a registered VOX account or character");
+    const createdAt = Date.parse(body.created_at);
+    if (!Number.isFinite(createdAt) || Math.abs(Date.now() - createdAt) > 5 * 60_000) throw new HttpError(400, "invalid_timestamp", "message timestamp must be within five minutes of server time");
+    const verifiedAttachments = await Promise.all(body.attachments.map(async (attachment) => {
+      if (!await context.directMessageMediaStore.canAttach(attachment.asset_hash, senderId)) throw new HttpError(403, "dm_attachment_forbidden", "upload an attachment from this account before sharing it");
+      const stored = await context.directMessageMediaStore.get(attachment.asset_hash);
+      if (!stored || stored.bytes.byteLength !== attachment.byte_length || stored.mediaType !== attachment.media_type || createHash("sha256").update(stored.bytes).digest("hex") !== attachment.asset_hash) {
+        throw new HttpError(400, "dm_attachment_unavailable", "an attachment is missing or does not match its signed metadata");
+      }
+      return attachment;
+    }));
+    if (body.source_post_id) {
+      const sourcePost = await context.store.getPost(body.source_post_id);
+      if (!sourcePost || sourcePost.publication_status !== "published") throw new HttpError(404, "source_post_not_found", "the inspiration post is not publicly available");
+    }
+    await checkDirectMessageSendRateLimit(context, senderId);
+    const conversationId = directMessageConversationId(senderId, body.recipient_id);
+    const participants = [senderId, body.recipient_id].sort() as [string, string];
+    const messageId = directMessageId(senderId, body.client_message_id);
+    const agentSender = senderId.startsWith("vox:agent:");
+    const signature = requiredHeader(request.headers as Record<string, unknown>, agentSender ? "x-vox-agent-signature" : "x-vox-realize-signature");
+    const signedAt = requiredHeader(request.headers as Record<string, unknown>, agentSender ? "x-vox-agent-timestamp" : "x-vox-realize-timestamp");
+    const message = {
+      message_id: messageId,
+      conversation_id: conversationId,
+      sender_id: senderId,
+      recipient_id: body.recipient_id,
+      client_message_id: body.client_message_id,
+      created_at: body.created_at,
+      signed_at: signedAt,
+      text: body.text,
+      attachments: verifiedAttachments,
+      ...(body.source_post_id ? {source_post_id: body.source_post_id} : {}),
+      ...(body.bid_amount_usdc_atomic ? {bid_amount_usdc_atomic: body.bid_amount_usdc_atomic} : {}),
+      signature
+    };
+    const conversation = {
+      conversation_id: conversationId,
+      participants,
+      updated_at: body.created_at,
+      last_message: {sender_id: senderId, created_at: body.created_at, text: body.text.slice(0, 160), attachment_count: verifiedAttachments.length, message_id: messageId, ...(body.source_post_id ? {source_post_id: body.source_post_id} : {}), ...(body.bid_amount_usdc_atomic ? {bid_amount_usdc_atomic: body.bid_amount_usdc_atomic} : {})}
+    };
+    try {
+      const result = await context.store.createDirectMessage(conversation, message);
+      return reply.code(result.created ? 201 : 200).send(result.message);
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      throw new HttpError(409, "dm_message_conflict", errorMessage(error));
+    }
+  });
+
+  app.post("/v1/dm/media/:hash", {bodyLimit: DIRECT_MESSAGE_MAX_MEDIA_BYTES}, async (request, reply) => {
+    const {hash} = request.params as {hash: string};
+    if (!/^[0-9a-f]{64}$/.test(hash) || !Buffer.isBuffer(request.body)) throw new HttpError(400, "invalid_dm_media", "valid raw media bytes are required");
+    const bytes = request.body;
+    const headers = request.headers as Record<string, unknown>;
+    const mediaType = requiredHeader(headers, "x-vox-dm-media-type").toLowerCase();
+    const byteLength = Number(requiredHeader(headers, "x-vox-dm-byte-length"));
+    let fileName: string;
+    try { fileName = decodeURIComponent(requiredHeader(headers, "x-vox-dm-file-name")); }
+    catch { throw new HttpError(400, "invalid_dm_media", "file name encoding is invalid"); }
+    const contentType = requiredHeader(headers, "content-type").split(";", 1)[0]!.trim().toLowerCase();
+    if (!DIRECT_MESSAGE_MEDIA_TYPES.has(mediaType) || contentType !== mediaType || !Number.isSafeInteger(byteLength) || byteLength !== bytes.byteLength || byteLength > DIRECT_MESSAGE_MAX_MEDIA_BYTES || fileName.length > 180) throw new HttpError(400, "invalid_dm_media", "media metadata is invalid or exceeds 25 MB");
+    const mediaMetadata = {asset_hash: hash, file_name: fileName, media_type: mediaType, byte_length: byteLength};
+    const path = request.raw.url ?? `/v1/dm/media/${hash}`;
+    const principalId = await authorizeDirectMessagePrincipal(context, headers, "POST", path, mediaMetadata);
+    if (createHash("sha256").update(bytes).digest("hex") !== hash) throw new HttpError(400, "dm_media_hash_mismatch", "media bytes do not match their signed hash");
+    await checkDirectMessageMediaUploadRateLimit(context, principalId);
+    await context.directMessageMediaStore.put(hash, mediaType, bytes, principalId);
+    return reply.code(201).send({asset_hash: hash, file_name: fileName, media_type: mediaType, byte_length: byteLength});
+  });
+
+  app.get("/v1/dm/media/:hash", async (request, reply) => {
+    const {hash} = request.params as {hash: string};
+    const query = z.object({conversation_id: z.string().min(1).max(128), message_id: z.string().regex(/^vox:dm:message:[0-9a-f]{64}$/).optional()}).strict().safeParse(request.query);
+    if (!/^[0-9a-f]{64}$/.test(hash) || !query.success) throw new HttpError(400, "invalid_dm_media", "a media hash and conversation id are required");
+    const path = request.raw.url ?? `/v1/dm/media/${hash}?conversation_id=${encodeURIComponent(query.data.conversation_id)}`;
+    const principalId = await authorizeDirectMessagePrincipal(context, request.headers as Record<string, unknown>, "GET", path);
+    const conversation = await context.store.getDirectMessageConversation(query.data.conversation_id);
+    if (!conversation || !conversation.participants.includes(principalId)) throw new HttpError(404, "dm_media_not_found", "media not found");
+    let sharedInConversation = false;
+    if (query.data.message_id) {
+      const message = await context.store.getDirectMessage(conversation.conversation_id, query.data.message_id);
+      sharedInConversation = message?.attachments.some((attachment) => attachment.asset_hash === hash) ?? false;
+    } else {
+      // Retain older clients' URLs without limiting reads to the latest 1,000
+      // messages. Current clients provide message_id for a single record read.
+      let before: {created_at: string; message_id: string} | undefined;
+      while (!sharedInConversation) {
+        const page = await context.store.listDirectMessages(conversation.conversation_id, 1000, before);
+        sharedInConversation = page.some((message) => message.attachments.some((attachment) => attachment.asset_hash === hash));
+        if (page.length < 1000 || sharedInConversation) break;
+        before = page[0];
+      }
+    }
+    if (!sharedInConversation) throw new HttpError(404, "dm_media_not_found", "media not found");
+    const media = await context.directMessageMediaStore.get(hash);
+    if (!media) throw new HttpError(404, "dm_media_not_found", "media not found");
+    return reply.type(media.mediaType).header("cache-control", "private, no-store").header("x-content-type-options", "nosniff").send(media.bytes);
+  });
+
+  app.get("/v1/profiles/:type/:id/follow-stats", async (request, reply) => {
+    const {type, id} = request.params as {type: string; id: string};
+    if (type !== "agent" && type !== "human") throw new HttpError(400, "invalid_profile_type", "profile type must be agent or human");
+    const profile = type === "agent" ? await context.store.getAgent(id) : await context.store.getHuman(id);
+    if (!profile) throw new HttpError(404, "not_found", "profile not found");
+    return reply.send(await context.store.getFollowCounts(type, id));
+  });
+
+  app.get("/v1/profiles/:type/:id/followers", async (request, reply) => {
+    const {type, id} = request.params as {type: string; id: string};
+    if (type !== "agent" && type !== "human") throw new HttpError(400, "invalid_profile_type", "profile type must be agent or human");
+    const profile = type === "agent" ? await context.store.getAgent(id) : await context.store.getHuman(id);
+    if (!profile) throw new HttpError(404, "not_found", "profile not found");
+    const query = request.query as {limit?: string};
+    const limit = Math.min(Math.max(Number.parseInt(query.limit ?? "30", 10) || 30, 1), 100);
+    const edges = await context.store.listFollowers(type, id, limit);
+    const followers = await Promise.all(edges.map(async (edge) => ({edge, profile: edge.follower_type === "agent" ? await context.store.getAgent(edge.follower_id) : await context.store.getHuman(edge.follower_id)})));
+    const items = followers.flatMap(({edge, profile}) => {
+      if (!profile) return [];
+      const registration = profile.registration;
+      const id = edge.follower_id;
+      const type = edge.follower_type;
+      const fallbackPath = type === "agent" ? `/agents/${encodeURIComponent(id.replace(/^vox:agent:/, ""))}` : `/humans/${encodeURIComponent(id)}`;
+      return [{follower_type: type, follower_id: id, ...(type === "human" ? {human_id: id} : {}), display_name: registration.display_name, username: registration.username, handle: registration.username ? `@${registration.username}` : registration.handle, profile_url: registration.username ? `/${encodeURIComponent(registration.username)}` : fallbackPath}];
+    });
+    return reply.send({items, count: (await context.store.getFollowCounts(type, id)).followers});
+  });
+
+  app.get("/v1/profiles/:type/:id/following", async (request, reply) => {
+    const {type, id} = request.params as {type: string; id: string};
+    if (type !== "agent" && type !== "human") throw new HttpError(400, "invalid_profile_type", "profile type must be agent or human");
+    const profile = type === "agent" ? await context.store.getAgent(id) : await context.store.getHuman(id);
+    if (!profile) throw new HttpError(404, "not_found", `${type} profile not found`);
+    const query = request.query as {limit?: string};
+    const limit = Math.min(Math.max(Number.parseInt(query.limit ?? "30", 10) || 30, 1), 100);
+    const edges = await context.store.listFollowing(type, id, limit);
+    const items = await Promise.all(edges.map(async (edge) => {
+      if (edge.target_type === "human") {
+        const target = await context.store.getHuman(edge.target_id);
+        return target ? {target_type: edge.target_type, target_id: edge.target_id, display_name: target.registration.display_name, username: target.registration.username, handle: target.registration.username ? `@${target.registration.username}` : target.registration.handle, profile_url: target.registration.username ? `/${encodeURIComponent(target.registration.username)}` : `/humans/${encodeURIComponent(edge.target_id)}`} : undefined;
+      }
+      const target = await context.store.getAgent(edge.target_id);
+      return target ? {target_type: edge.target_type, target_id: edge.target_id, display_name: target.registration.display_name, username: target.registration.username, handle: target.registration.username ? `@${target.registration.username}` : target.registration.handle, profile_url: target.registration.username ? `/${encodeURIComponent(target.registration.username)}` : `/agents/${encodeURIComponent(edge.target_id.replace(/^vox:agent:/, ""))}`} : undefined;
+    }));
+    return reply.send({items: items.filter((item): item is NonNullable<typeof item> => !!item), count: (await context.store.getFollowCounts(type, id)).following});
+  });
+
+  app.get("/v1/follows/:type/:id", async (request, reply) => {
+    const {type, id} = request.params as {type: string; id: string};
+    if (type !== "agent" && type !== "human") throw new HttpError(400, "invalid_profile_type", "profile type must be agent or human");
+    const path = `/v1/follows/${encodeURIComponent(type)}/${encodeURIComponent(id)}`;
+    const {followerType, followerId} = await authorizeFollowViewer(context, request.headers as Record<string, unknown>, path);
+    const target = type === "agent" ? await context.store.getAgent(id) : await context.store.getHuman(id);
+    if (!target) throw new HttpError(404, "not_found", "follow target not found");
+    const follow = await context.store.getFollow(followerType, followerId, type, id);
+    return reply.send({following: follow?.active ?? false});
+  });
+
+  app.post("/v1/follows", async (request, reply) => {
+    const {intent, signature} = parseBody(FollowRequestSchema, request.body);
+    const issuedAt = Date.parse(intent.created_at);
+    if (!Number.isFinite(issuedAt) || Math.abs(Date.now() - issuedAt) > 5 * 60_000) throw new HttpError(401, "signature_expired", "Follow signature timestamp is outside the five-minute window");
+    const follower = intent.follower_type === "agent" ? await context.store.getAgent(intent.follower_id) : await context.store.getHuman(intent.follower_id);
+    if (!follower || !verifyBytes(followSigningPayload(intent), signature, follower.registration.identity_public_key)) throw new HttpError(401, "invalid_signature", "Follow signature is invalid");
+    const target = intent.target_type === "agent" ? await context.store.getAgent(intent.target_id) : await context.store.getHuman(intent.target_id);
+    if (!target) throw new HttpError(404, "not_found", "follow target not found");
+    if (intent.follower_id === intent.target_id) throw new HttpError(400, "cannot_follow_self", "You cannot follow your own profile");
+    const now = intent.created_at;
+    const follow: FollowRecord = {
+      follower_type: intent.follower_type,
+      follower_id: intent.follower_id,
+      target_type: intent.target_type,
+      target_id: intent.target_id,
+      active: intent.action === "follow",
+      operation_id: intent.operation_id,
+      created_at: now,
+      updated_at: now
+    };
+    try {
+      const saved = await context.store.setFollow(follow);
+      const counts = await context.store.getFollowCounts(intent.target_type, intent.target_id);
+      return reply.send({following: saved.active, followers: counts.followers, following_count: counts.following});
+    } catch (error) {
+      const message = errorMessage(error);
+      if (message.includes("stale")) throw new HttpError(409, "stale_follow_operation", message);
+      throw new HttpError(409, "follow_update_conflict", message);
+    }
+  });
+
   app.put("/v1/agents/:id/avatar", {bodyLimit: AVATAR_MAX_UPLOAD_BYTES}, async (request, reply) => {
     const agentId = (request.params as {id: string}).id;
     if (!Buffer.isBuffer(request.body)) {
@@ -1887,6 +2303,11 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     const postHashValue = bytesToHex(postHashBytes);
     const postId = postIdFromIntent(signed.intent);
     const existing = await context.store.getPost(postId);
+    if (!existing) await validateConversationPost(context.store, signed.intent);
+    if (!existing && signed.intent.kind === "reply") {
+      const parent = await context.store.getPost(signed.intent.content.parent_id!);
+      if (!parent || parent.publication_status !== "published") throw new HttpError(404, "reply_target_not_found", "reply target post is not publicly available");
+    }
     if (!existing) await checkAgentRateLimit(context, signed.intent.agent_id);
     try {
       const result = await context.store.publish({signed, post_hash: postHashValue, post_id: postId, accepted_at: new Date().toISOString(), instance_id: context.instanceId, instance_public_key: context.instancePublicKey, instance_secret_key: context.instanceSecretKey});
@@ -1900,10 +2321,13 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       const dependency = dependencyHttpError(error);
       if (dependency) throw dependency;
       const message = errorMessage(error);
+      if (error instanceof ConversationConflict) throw new HttpError(409, "conversation_conflict", message);
       if (message.includes("client_post_id")) throw new HttpError(409, "duplicate_client_post_id", message);
       throw new HttpError(409, "publish_conflict", message);
     }
   });
+
+  registerConversationRoutes(app, context.store);
 
   app.get("/v1/posts/:id", async (request, reply) => {
     const post = await context.store.getPost((request.params as {id: string}).id);
@@ -1952,10 +2376,16 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     if (!Number.isFinite(createdAt) || createdAt > Date.now() + 10 * 60_000) throw new HttpError(400, "invalid_timestamp", "created_at is too far in the future");
     const target = await context.store.getAgent(signed.intent.target_agent_id);
     if (!target) throw new HttpError(404, "agent_not_found", "target agent not found");
+    const conversationSeed = signed.intent.content.conversation;
+    if (conversationSeed) {
+      if (conversationSeed.participant_ids[0] !== signed.intent.target_agent_id) throw new HttpError(400, "invalid_cast", "the invited character must be first in the cast");
+      const cast = await Promise.all(conversationSeed.participant_ids.map((id) => context.store.getAgent(id)));
+      if (cast.some((agent) => !agent)) throw new HttpError(404, "character_not_found", "every conversation participant must be registered");
+    }
     if (signed.intent.content.source_post_id) {
       const sourcePost = await context.store.getPost(signed.intent.content.source_post_id);
       if (!sourcePost || sourcePost.publication_status !== "published") throw new HttpError(404, "source_post_not_found", "source post not found");
-      if (sourcePost.intent.agent_id !== signed.intent.target_agent_id) throw new HttpError(409, "source_post_mismatch", "source post does not belong to the target agent");
+      if (!conversationSeed && sourcePost.intent.agent_id !== signed.intent.target_agent_id) throw new HttpError(409, "source_post_mismatch", "source post does not belong to the target agent");
     }
     const requestHash = commissionRequestHashHex(signed.intent);
     const requestId = commissionRequestIdFromIntent(signed.intent);
@@ -1967,6 +2397,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       request_hash: requestHash,
       accepted_at: acceptedAt,
       status: "requested",
+      ...(conversationSeed ? {conversation_pending: true} : {}),
       events: [{event_id: `${requestId}:requested`, kind: "requested", status: "requested", created_at: acceptedAt}]
     };
     try {
@@ -2118,8 +2549,27 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       if (!rights || rights.status !== "active" || rights.terms_hash !== body.rights_agreement_hash || computeRevenueRightsAgreementHash(rights.agreement) !== rights.terms_hash) throw new HttpError(409, "rights_agreement_required", "payout configuration must reference an active, accepted rights agreement and its exact terms hash");
       if (rights.agreement.artifact_scope.subject_type === "commission" || rights.agreement.artifact_scope.subject_id !== body.rights_subject_id || !rights.agreement.eligible_transaction_types.includes("commission") || !rights.agreement.grant.rights.includes("generate")) throw new HttpError(409, "rights_agreement_required", "rights agreement must authorize commission generation for the configured subject");
     }
+    // Provision the character ledger during Realize onboarding so every enrolled
+    // character has an account view before its first funded commission.
+    await context.store.getRealizeCharacterAccount(creatorId, process.env.VOX_REALIZE_MAINNET_TREASURY_OWNER?.trim());
     const saved = await context.store.createRealizePayoutConfiguration(body);
     return reply.code(201).send(saved);
+  });
+
+  app.get("/v1/internal/realize/creators/:creatorId/account", async (request, reply) => {
+    requireRealizeAdmin(context, request.headers as Record<string, unknown>);
+    const creatorId = (request.params as {creatorId: string}).creatorId;
+    if (!await context.store.getAgent(creatorId)) throw new HttpError(404, "creator_not_found", "creator not found");
+    const account = await context.store.getRealizeCharacterAccount(creatorId, process.env.VOX_REALIZE_MAINNET_TREASURY_OWNER?.trim());
+    const computed = summarizeCharacterAccount(creatorId, account.transactions);
+    return reply.send({
+      ...computed,
+      balances: account.balances,
+      reconciliation: {
+        summary_matches_transactions: JSON.stringify(account.balances) === JSON.stringify(computed.balances),
+        on_chain_treasury_balance_checked: false
+      }
+    });
   });
 
   app.get("/v1/realize/creators/:creatorId/capabilities", async (request, reply) => {
@@ -2304,6 +2754,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     const rail = paymentRailForNetwork(context, quote.network_id ?? "", quote.usdc_mint);
     if (!rail) throw new HttpError(503, "payment_not_configured", "no verified payment rail is enabled for this quote's network and USDC mint");
     if (quote.network_id === "solana:mainnet-beta" && !isManagedRealizeSettlementConfigured()) throw new HttpError(503, "settlement_not_configured", "Mainnet payments require the backend-managed settlement and refund adapter before checkout can accept funds");
+    if (quote.network_id === "solana:mainnet-beta" && !isRealizeOperatorApprovalsConfigured()) throw new HttpError(503, "realize_operator_auth_unconfigured", "Mainnet checkout is paused until a VOX refund operator is configured");
     if (current.commission.state === "AWAITING_PAYMENT" && current.payment_intent && current.commission.accepted_quote_hash === quote.canonical_quote_hash) {
       if (current.payer_wallet !== body.payer_wallet) throw new HttpError(409, "quote_acceptance_conflict", "this quote was already accepted for another payer wallet");
       if ((current.public_attribution ?? "") !== (body.public_attribution ?? "")) throw new HttpError(409, "quote_acceptance_conflict", "this quote was already accepted with different public attribution consent");
@@ -2348,6 +2799,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       return reply.send(current.commission);
     }
     if (current.direct_funding) {
+      if (body.payer_wallet !== current.payer_wallet) throw new HttpError(409, "payment_intent_mismatch", "payer wallet differs from the accepted funding authorization");
       const attempt = await verifyAndRecordMainnetFunding(context, current, body.transaction_signature);
       current = attempt.record;
       if (attempt.status === "pending") throw new HttpError(409, "payment_pending", "Mainnet payment signature is saved and will be checked again until its finalized status is known");
@@ -2359,11 +2811,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     const configuration = quote?.payout_configuration_version ? await context.store.getRealizePayoutConfiguration(current.commission.creator_id, quote.payout_configuration_version) : undefined;
     if (!quote || !configuration || !quote.usdc_mint || !quote.network_id) throw new HttpError(409, "quote_invalid", "accepted quote settlement binding is unavailable");
     assertRealizeQuoteConfiguration(context, quote, configuration);
-    if (Date.parse(current.payment_intent.expires_at) <= Date.now()) {
-      const expired = updatedRealizeCommission(current, {state: "EXPIRED", payment_state: "failed"});
-      await context.store.updateRealizeCommission(expired, current.updated_at);
-      throw new HttpError(409, "quote_expired", "payment intent has expired");
-    }
+    // An expired quote does not prove that its transfer never reached the treasury.
+    // Verify and durably capture the original payment before deciding its outcome.
     const funding = current.escrow_funding ?? current.direct_funding;
     const rail = paymentRailForNetwork(context, quote.network_id, quote.usdc_mint);
     if (!rail || !funding || funding.payer_wallet !== body.payer_wallet || funding.accepted_quote_hash !== quote.canonical_quote_hash || current.payer_wallet !== body.payer_wallet) throw new HttpError(503, "payment_authorization_missing", "backend-authorized payment funding is unavailable");
@@ -2381,6 +2830,10 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       const latest = await context.store.getRealizeCommission(commissionId);
       if (latest?.funding_signature === body.transaction_signature) return reply.send(latest.commission);
       throw error;
+    }
+    if (Date.parse(quote.expires_at) <= Date.now()) {
+      const review = await markRealizeManualReview(context, saved, "The original payment was verified after quote expiry. Review the captured funds before any generation or refund.", "payment_verified_after_quote_expiry", body.transaction_signature);
+      return reply.code(202).send(review.commission);
     }
     const generating = await startRealizeFulfillment(context, saved);
     return reply.code(202).send(generating.commission);
@@ -2415,6 +2868,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     return reply.send({items: records.map((record) => ({
       commission: record.commission,
       ...(record.fulfillment_result ? {fulfillment_result: record.fulfillment_result} : {}),
+      ...(record.nft_media_ids ? {nft_media_ids: record.nft_media_ids} : {}),
       settlement_status: record.settlement_status
     }))});
   });
@@ -2565,7 +3019,10 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     const outcomes: Array<{commission_id: string; state: string; error?: string}> = [];
     for (const record of pending) {
       try {
-        const updated = await reconcileRealizeCommission(context, record);
+        // Rotate the oldest-first queue even when review/approval is pending or
+        // an adapter fails, so one blocked commission cannot starve later work.
+        const attempted = await context.store.updateRealizeCommission(updatedRealizeCommission(record, {}), record.updated_at);
+        const updated = await reconcileRealizeCommission(context, attempted);
         outcomes.push({commission_id: record.commission.commission_id, state: updated.commission.state});
       } catch (error) {
         outcomes.push({commission_id: record.commission.commission_id, state: record.commission.state, error: errorMessage(error)});
@@ -2573,6 +3030,28 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     }
     const nft = context.nftService ? await context.nftService.processPending(context.store, body.limit, `realize-reconcile:${request.id}`) : [];
     return reply.send({processed: outcomes.length, commissions: outcomes, nfts: nft});
+  });
+
+  app.post("/v1/internal/realize/commissions/:commissionId/settlement", async (request, reply) => {
+    requireRealizeAdmin(context, request.headers as Record<string, unknown>);
+    const commissionId = (request.params as {commissionId: string}).commissionId;
+    const current = await context.store.getRealizeCommission(commissionId);
+    if (!current) throw new HttpError(404, "commission_not_found", "commission not found");
+    if (current.commission.state === "SETTLED" && current.settlement_status === "settled") {
+      return reply.send({commission_id: commissionId, commission_state: current.commission.state, settlement_status: current.settlement_status, ...(current.settlement_response ? {settlement_response: current.settlement_response} : {})});
+    }
+    if (current.commission.state !== "COMPLETED" || current.commission.payment_state !== "captured" || !current.funding_signature || !current.funding_verified_at || current.fulfillment_result?.status !== "completed" || !current.provenance_record_id) {
+      throw new HttpError(409, "realize_settlement_not_ready", "settlement requires a finalized verified payment and a verified completed fulfillment");
+    }
+    const updated = await processRealizeSettlement(context, current);
+    return reply.send({
+      commission_id: commissionId,
+      commission_state: updated.commission.state,
+      payment_state: updated.commission.payment_state,
+      settlement_status: updated.settlement_status,
+      ...(updated.settlement_response ? {settlement_response: updated.settlement_response} : {}),
+      ...(updated.failure_reason ? {failure_reason: updated.failure_reason} : {})
+    });
   });
 
   app.post("/v1/internal/realize/commissions/:commissionId/arm-no-render-failure", async (request, reply) => {
@@ -2626,14 +3105,16 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     let current = await context.store.getRealizeCommission(commissionId);
     if (!current) throw new HttpError(404, "commission_not_found", "commission not found");
     const quote = current.commission.quote_id ? await context.store.getRealizeQuote(current.commission.quote_id) : undefined;
-    const mainnet = Boolean(quote && requiresExplicitMainnetDisbursementApproval(quote.network_id ?? ""));
+    const mainnet = Boolean(quote && requiresExplicitMainnetRefundApproval(quote.network_id ?? ""));
     const stagingTest = Boolean(quote && !mainnet && stagingNoRenderFailureEnabled(context) && current.no_render_failure_armed && current.failure_evidence?.source === "staging_no_render_test");
     if (!quote || !mainnet && !stagingTest) throw new HttpError(409, "refund_approval_unavailable", "approval is available only for quote-bound Mainnet refunds or the isolated staging no-render rehearsal");
     if (!["REFUND_PENDING", "MANUAL_REVIEW"].includes(current.commission.state)) throw new HttpError(409, "refund_unavailable", "commission has no confirmed refundable failure");
     if (current.resolution_outcome === "fulfilled" || current.resolution_outcome === "refunded") throw new HttpError(409, "resolution_final", "commission already has a final resolution");
     const settlementFailureConfirmed = current.settlement_status === "failed" && current.settlement_response?.status === "failed" && current.settlement_response.settled_amount_usdc_atomic === "0";
-    const unsafeFundingTimingConfirmed = current.funding_signature && ["late_payment_after_quote_expiry", "funding_time_ambiguous_at_expiry", "funding_time_unavailable"].includes(current.resolution_reason ?? "");
-    if (!current.failure_evidence && !settlementFailureConfirmed && !unsafeFundingTimingConfirmed) throw new HttpError(409, "failure_unconfirmed", "a signed Populi terminal failure, unsafe finalized payment timing, or reconciled settlement failure is required before refund approval");
+    const noProviderRequest = !current.fulfillment_request && !current.commission.fulfillment_request_id && !current.fulfillment_result;
+    const unsafeTimingReasons = ["late_payment_after_quote_expiry", "funding_time_ambiguous_at_expiry", "funding_time_unavailable", "payment_verified_after_quote_expiry"];
+    const unsafeFundingTimingConfirmed = current.funding_signature && noProviderRequest && current.resolution_events?.some((event) => event.action === "manual_review_required" && unsafeTimingReasons.includes(event.reason_code ?? ""));
+    if (!current.failure_evidence && !settlementFailureConfirmed && !unsafeFundingTimingConfirmed) throw new HttpError(409, "failure_unconfirmed", "a signed provider failure, unsafe finalized payment timing with no provider request, or reconciled settlement failure is required before refund approval");
     const expected = {
       payer_wallet: current.payer_wallet,
       funding_signature: current.funding_signature,

@@ -2,7 +2,7 @@
 
 This is the interface VOX needs Populi to implement. VOX owns the final commission quote, owner markup, platform fee, beneficiary payouts, payment verification, commission lifecycle, rights agreement, and settlement orchestration. Populi owns the authoritative provider price reservation and generation job. No Populi source code is part of this deliverable.
 
-**Verified staging status (2026-10-12):** Populi staging implements the `/v1` capabilities, provider pricing, externally funded fulfillment, status, and callback contract below. VOX now has an isolated staging service and Bob test payout policy. The owner-approved live rehearsal finalized a 1.00 Devnet test-USDC escrow payment, completed one real six-second video, independently verified artifact bytes and signed provenance, and finalized all three payouts. The public, read-only `GET /api/cost` remains an estimate, not an authoritative quote or reconciled provider invoice. Production Realize remains disabled; live failure/refund coverage and production commercial rights/payouts are separate work. See [verified staging memory and proof](realize-staging-status.md).
+**Verified staging status (2026-10-12):** Populi staging implements the `/v1` capabilities, provider pricing, externally funded fulfillment, status, and callback contract below. VOX now has an isolated staging service and Bob test payout policy. The owner-approved live rehearsal finalized a 1.00 Devnet test-USDC escrow payment, completed one real six-second video, independently verified artifact bytes and signed provenance, and finalized all three payouts. The public, read-only `GET /api/cost` remains an estimate, not an authoritative quote or reconciled provider invoice. Production Mainnet Realize is enabled, but no real customer quote, payment, provider render, settlement, or refund has been submitted or verified. The 2026-10-13 source update adds automatic quote-bound settlement after verified fulfillment and a protected retry endpoint; it has not been deployed and remains subject to the existing production-sensitive release gate. See [verified staging memory and proof](realize-staging-status.md).
 
 VOX owns the canonical contract source in `@vox/protocol`. Populi should consume the versioned, standalone `@vox/realize-contracts` package rather than copying DTOs or depending on VOX's monorepo. The package exports TypeScript/runtime contracts, JSON Schema, OpenAPI, fixtures, and this handoff. Pin the exact same package version in Populi and VOX; the package build checks that its version matches `@vox/protocol` and regenerates derived files from that source. This keeps one source of truth while allowing independent releases and access control.
 
@@ -23,6 +23,18 @@ Copyable wire examples live in [the fixture directory](../packages/protocol/fixt
 | VOX | `POST /v1/realize/webhooks/populi` | `FulfillmentResultV1` | `200 WebhookAcknowledgmentV1` |
 
 The callback URL is the VOX origin plus `/v1/realize/webhooks/populi`, supplied as `callback_uri` on fulfillment submission. Polling must remain available when callbacks are lost. Route names match the provider paths in VOX's `HttpPopuliRealizeClient`; the external-funding submission profile is the full target payload for that adapter.
+
+## Provider payout settlement
+
+VOX owns provider payout configuration and settlement. Each provider must be registered in a versioned creator payout configuration with a VOX-approved destination before VOX will issue a quote for it. The customer accepts a signed quote that binds the provider price, payout recipients, amounts, network, and USDC mint. The provider must not include or override treasury or beneficiary destinations in its price or fulfillment response.
+
+Under the current Mainnet pricing policy, the final Realize checkout total is `max(1 USDC, 4 × Populi's current provider quote)`, subject to the 10,000 USDC ceiling. The full checkout total is split 25% to the generation platform provider (Populi), 70% to the character owner, and 5% to VOX. Populi's generation cost is a separate input used to set a larger checkout total; it is not the denominator for the split. The provider allocation must cover Populi's quoted cost. Customers fund the quote in USDC.
+
+After VOX independently verifies finalized customer funding, output bytes, and the signed completed fulfillment result, VOX automatically submits the accepted quote's exact payout list to its configured settlement service. Settlement is idempotent and can span several Solana transactions. VOX reports a commission as `SETTLED` only after the settlement adapter confirms the full quoted amount; `processing` or `partial` is not a completed payout. A signed fulfillment callback means generation completed, not that a payout transaction finalized.
+
+The current settlement adapter supports Solana USDC transfers only. It does not convert Populi's 25% allocation to fiat or send fiat to a bank destination. A fiat payout adapter and an approved, provider-managed destination are required before VOX can mark that leg paid in fiat; until then, do not describe the provider share as fiat-settled.
+
+This flow applies to existing and future Realize platform providers. A provider's integration consists of the capabilities, pricing, fulfillment, status, and callback endpoints below; VOX handles the payout transaction. The internal `POST /v1/internal/realize/commissions/{commissionId}/settlement` endpoint is reserved for protected VOX reconciliation after verified completion and is not a provider-facing route. Mainnet refunds remain separately operator-approved.
 
 ## 1. Discovery
 
@@ -86,5 +98,16 @@ Retry callbacks with the same delivery ID and body, a fresh timestamp/signature,
 Populi's new endpoints return `RealizeErrorV1`, using the stable codes in the main protocol. `400` covers schema/unsupported-version errors; `401` authentication; `403` authorization; `404` absent creators/capabilities/jobs; `409` idempotency, replay, immutable-binding, or state conflicts; `410 QUOTE_EXPIRED`; `422` payment amount or settlement mismatch; `429 RATE_LIMITED`; and `503` transient provider unavailability. Existing hosted VOX routes return `{code, error}` with lowercase compatibility codes as documented in `docs/openapi.yaml`; map them to the normalized shared vocabulary (for example `webhook_replayed` → `WEBHOOK_REPLAYED`).
 
 Transport retries reuse IDs and canonical bodies. A failed generation stays failed under the same job ID; creating another billable attempt requires a new provider reservation, new fulfillment ID, and explicit VOX funding authorization. Populi may retry internal transient generation work under the existing job only when it does not charge again or deliver duplicate jobs. VOX owns refund decisions and payment state; a failed generation callback never claims funds were refunded.
+
+VOX first looks up the stored fulfillment ID during submission recovery. Only a
+schema-valid `404 COMMISSION_NOT_FOUND` can trigger a bounded retry of its exact
+persisted fulfillment body and idempotency key, including the original creation
+and funding timestamps. The accepted quote must still be current, its payment
+must remain captured and verified, and its rights must remain active. A prior
+provider acknowledgment, terminal/refund state, expired window, binding mismatch,
+or exhausted three-retry limit blocks another submission. An ambiguous POST
+response remains captured for lookup; it is not terminal failure or refund
+evidence. Recovery depends on Populi's durable idempotency and one-job funding
+constraints described above and does not authorize a replacement paid render.
 
 This handoff specifies contracts. Deployment, blockchain transfers, Populi job execution, and existing Stripe behavior are separate implementation work.

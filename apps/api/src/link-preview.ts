@@ -1,5 +1,7 @@
 import {lookup} from "node:dns/promises";
 import {isIP} from "node:net";
+import {request as requestHttp, type IncomingMessage} from "node:http";
+import {request as requestHttps, type RequestOptions} from "node:https";
 
 export type LinkPreviewKind = "website" | "video";
 
@@ -121,47 +123,72 @@ function fallbackPreview(url: string): LinkPreview {
 async function fetchHtmlDocument(startUrl: string): Promise<{html: string; finalUrl: string} | null> {
   let currentUrl = startUrl;
   for (let attempt = 0; attempt <= MAX_REDIRECTS; attempt += 1) {
-    if (!(await isSafeFetchTarget(currentUrl))) return null;
-    const response = await fetch(currentUrl, {
-      headers: {
-        accept: "text/html,application/xhtml+xml;q=0.9,text/plain;q=0.5",
-        "user-agent": "VOX-LinkPreview/1.0"
-      },
-      redirect: "manual",
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
-    });
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get("location");
+    const destination = await safeFetchDestination(currentUrl);
+    if (!destination) return null;
+    const response = await requestPreviewDocument(currentUrl, destination);
+    const status = response.statusCode ?? 0;
+    if (status >= 300 && status < 400) {
+      const location = response.headers.location;
+      response.destroy();
       const redirected = location ? normalizeHttpUrl(new URL(location, currentUrl).href) : null;
       if (!redirected) return null;
       currentUrl = redirected;
       continue;
     }
-    if (!response.ok) return null;
-    const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
-    if (!contentType.includes("text/html") && !contentType.includes("application/xhtml+xml") && !contentType.startsWith("text/plain")) return null;
-    const contentLength = Number(response.headers.get("content-length") ?? "");
-    if (Number.isFinite(contentLength) && contentLength > MAX_DOCUMENT_BYTES) return null;
+    if (status < 200 || status >= 300) { response.destroy(); return null; }
+    const contentType = response.headers["content-type"]?.toLowerCase() ?? "";
+    if (!contentType.includes("text/html") && !contentType.includes("application/xhtml+xml") && !contentType.startsWith("text/plain")) { response.destroy(); return null; }
+    const contentLength = Number(response.headers["content-length"] ?? "");
+    if (Number.isFinite(contentLength) && contentLength > MAX_DOCUMENT_BYTES) { response.destroy(); return null; }
     return {html: await readLimitedText(response), finalUrl: currentUrl};
   }
   return null;
 }
 
-async function isSafeFetchTarget(value: string): Promise<boolean> {
+interface FetchDestination {address: string; family: 4 | 6}
+
+function requestPreviewDocument(value: string, destination: FetchDestination): Promise<IncomingMessage> {
+  const url = new URL(value);
+  const hostname = url.hostname.replace(/^\[|\]$/g, "");
+  const options: RequestOptions = {
+    headers: {accept: "text/html,application/xhtml+xml;q=0.9,text/plain;q=0.5", "accept-encoding": "identity", "user-agent": "VOX-LinkPreview/1.0"},
+    // Resolve once, validate every answer, then bind this request's connection
+    // to that validated address. Keep the original URL/Host and TLS server name
+    // so certificate verification still authenticates the requested hostname.
+    agent: false,
+    family: destination.family,
+    lookup: (_hostname, lookupOptions, callback) => {
+      if (lookupOptions.all) callback(null, [destination]);
+      else callback(null, destination.address, destination.family);
+    },
+    ...(url.protocol === "https:" && !isIP(hostname) ? {servername: hostname} : {}),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
+  };
+  return new Promise((resolve, reject) => {
+    const request = (url.protocol === "https:" ? requestHttps : requestHttp)(url, options, resolve);
+    request.on("error", reject);
+    request.end();
+  });
+}
+
+async function safeFetchDestination(value: string): Promise<FetchDestination | null> {
   const parsed = new URL(value);
   const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local") || hostname.endsWith(".internal")) return false;
-  if (isIP(hostname)) return !isPrivateIp(hostname);
+  if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local") || hostname.endsWith(".internal")) return null;
+  const family = isIP(hostname);
+  if (family === 4 || family === 6) return isPrivateIp(hostname) ? null : {address: hostname, family};
   try {
     const addresses = await lookup(hostname, {all: true, verbatim: true});
-    return addresses.length > 0 && addresses.every((address) => !isPrivateIp(address.address));
+    if (addresses.length === 0 || addresses.some((address) => isPrivateIp(address.address) || address.family !== 4 && address.family !== 6)) return null;
+    const address = addresses[0]!;
+    return {address: address.address, family: address.family as 4 | 6};
   } catch {
-    return false;
+    return null;
   }
 }
 
 function isPrivateIp(address: string): boolean {
-  const normalized = address.toLowerCase().split("%")[0]!;
+  let normalized = address.toLowerCase().split("%")[0]!;
   const version = isIP(normalized);
   if (version === 4) {
     const parts = normalized.split(".").map(Number);
@@ -176,35 +203,42 @@ function isPrivateIp(address: string): boolean {
       (first === 198 && (second === 18 || second === 19));
   }
   if (version === 6) {
+    // DNS answers are not necessarily compressed like URL literals are.
+    normalized = new URL(`http://[${normalized}]/`).hostname.replace(/^\[|\]$/g, "");
     if (normalized.startsWith("::ffff:")) {
       const mapped = normalized.slice("::ffff:".length);
       if (isIP(mapped) === 4) return isPrivateIp(mapped);
+      // WHATWG URL normalizes mapped IPv4 literals to hexadecimal IPv6 groups
+      // (127.0.0.1 becomes ::ffff:7f00:1). Check those embedded IPv4 bytes too.
+      const groups = mapped.split(":");
+      if (groups.length === 2 && groups.every((group) => /^[0-9a-f]{1,4}$/.test(group))) {
+        const high = Number.parseInt(groups[0]!, 16);
+        const low = Number.parseInt(groups[1]!, 16);
+        return isPrivateIp(`${high >>> 8}.${high & 255}.${low >>> 8}.${low & 255}`);
+      }
+      return true;
     }
-    return normalized === "::" || normalized === "::1" || normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe8") || normalized.startsWith("fe9") || normalized.startsWith("fea") || normalized.startsWith("feb") || normalized.startsWith("ff") || normalized.startsWith("2001:db8") || normalized.startsWith("2001:10");
+    return normalized.startsWith("::") || normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe8") || normalized.startsWith("fe9") || normalized.startsWith("fea") || normalized.startsWith("feb") || normalized.startsWith("ff") || normalized.startsWith("2001:db8") || normalized.startsWith("2001:10");
   }
   return true;
 }
 
-async function readLimitedText(response: Response): Promise<string> {
-  if (!response.body) return "";
-  const reader = response.body.getReader();
+async function readLimitedText(response: IncomingMessage): Promise<string> {
   const decoder = new TextDecoder();
   let total = 0;
   let text = "";
   try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      total += chunk.value.byteLength;
+    for await (const chunk of response) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += bytes.byteLength;
       if (total > MAX_DOCUMENT_BYTES) {
-        await reader.cancel();
         throw new Error("link preview document is too large");
       }
-      text += decoder.decode(chunk.value, {stream: true});
+      text += decoder.decode(bytes, {stream: true});
     }
     return text + decoder.decode();
   } finally {
-    reader.releaseLock();
+    response.destroy();
   }
 }
 

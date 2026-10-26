@@ -49,19 +49,34 @@
     "@vitejs/plugin-react": "4.4.1",
     "tsx": "4.19.4",
     "typescript": "5.8.3",
-    "vite": "6.3.5",
-    "vitest": "3.1.2"
+    "vite": "6.4.5",
+    "vitest": "4.1.12"
   },
   "dependencies": {
     "@fastify/cors": "11.0.1",
     "@google-cloud/firestore": "7.11.0",
-    "@google-cloud/storage": "7.16.0",
+    "@google-cloud/storage": "7.22.0",
     "@google-cloud/tasks": "6.2.0",
     "@solana/web3.js": "1.98.4",
-    "fastify": "5.3.3",
+    "fastify": "5.12.7",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "tweetnacl": "1.0.3",
-    "zod": "3.25.20"
+    "zod": "4.6.7"
+  },
+  "overrides": {
+    "bigint-buffer": "npm:@exodus/bigint-buffer@1.1.5-exodus.1",
+    "@solana/web3.js": {
+      "jayson": "5.0.0"
+    },
+    "google-gax": {
+      "uuid": "11.1.1"
+    },
+    "gaxios": {
+      "uuid": "11.1.1"
+    },
+    "teeny-request": {
+      "uuid": "11.1.1"
+    }
   }
 }

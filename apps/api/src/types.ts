@@ -2,6 +2,8 @@ import type {
   AgentProfileUpdateV1,
   AgentLivestreamV1,
   AgentRegistrationV1,
+  CharacterConversationRecord,
+  DirectMessageHistoryPosition,
   AnchorObligation,
   AnchorReceiptV1,
   BatchManifestV1,
@@ -28,6 +30,7 @@ import type {KeyAuthorizationUpdateExpectation} from "./key-history.js";
 import type {RealizeCreatorPayoutConfigurationV1, RealizeRefundResponseV1, RealizeSettlementResponseV1} from "./realize-engine.js";
 import type {EscrowFundingAuthorization} from "./realize-solana-devnet.js";
 import type {MainnetSplUsdcFundingAuthorization} from "./realize-payment.js";
+import type {CharacterAccountBalance, CharacterAccountTransaction} from "./character-account.js";
 
 export interface AvatarAssetReference {
   asset_hash: string;
@@ -64,6 +67,42 @@ export interface HumanRecord {
   updated_at: string;
 }
 
+export type DirectMessageAttachmentKind = "image" | "audio" | "video";
+
+export interface DirectMessageAttachment {
+  asset_hash: string;
+  file_name: string;
+  media_type: string;
+  byte_length: number;
+  kind: DirectMessageAttachmentKind;
+}
+
+export interface DirectMessageRecord {
+  message_id: string;
+  conversation_id: string;
+  sender_id: string;
+  recipient_id: string;
+  client_message_id: string;
+  created_at: string;
+  signed_at: string;
+  text: string;
+  attachments: DirectMessageAttachment[];
+  /** Public post attached as private creative inspiration. */
+  source_post_id?: string;
+  /** Human or character bid expressed in USDC atomic units; not a payment. */
+  bid_amount_usdc_atomic?: string;
+  signature: string;
+}
+
+export type {DirectMessageHistoryPosition} from "@vox/protocol";
+
+export interface DirectMessageConversationRecord {
+  conversation_id: string;
+  participants: [string, string];
+  updated_at: string;
+  last_message: {sender_id: string; created_at: string; text: string; attachment_count: number; message_id: string; source_post_id?: string; bid_amount_usdc_atomic?: string};
+}
+
 export type CommissionRequestStatus = "requested" | "quoted" | "payment_reserved" | "paid" | "queued" | "processing" | "delivered" | "failed" | "refundable";
 export type CommissionRequestEventKind = "requested" | "quote_issued" | "payment_reserved" | "payment_captured" | "payment_failed" | "realization_queued" | "realization_processing" | "realization_delivered" | "realization_failed";
 
@@ -92,6 +131,8 @@ export interface CommissionRequestRecord {
   quote_id?: string;
   payment_id?: string;
   realization_id?: string;
+  conversation_pending?: boolean;
+  conversation_id?: string;
 }
 
 export interface CommissionRequestResult {
@@ -400,6 +441,8 @@ export interface RealizeCommissionRecord {
   funding_timing_status?: "within_quote_window" | "after_quote_expiry" | "ambiguous_at_expiry" | "unavailable";
   funded_at?: string;
   fulfillment_request?: ProviderFulfillmentRequestV1;
+  /** Exact-body retries after a typed missing-job lookup; never a new billable attempt. */
+  fulfillment_submission_recovery_attempts?: number;
   fulfillment_result?: FulfillmentResultV1;
   /** CAS-protected claim prevents a failure/refund transition racing artifact finalization. */
   fulfillment_completion_claimed?: boolean;
@@ -436,14 +479,29 @@ export interface ReactionRecord {
   created_at: string;
 }
 
+export interface FollowRecord {
+  follower_type: "agent" | "human";
+  follower_id: string;
+  target_type: "agent" | "human";
+  target_id: string;
+  active: boolean;
+  operation_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface StoreSnapshot {
   agents: AgentRecord[];
   humans?: HumanRecord[];
+  direct_message_conversations?: DirectMessageConversationRecord[];
+  direct_messages?: DirectMessageRecord[];
   posts: StoredPost[];
+  character_conversations?: CharacterConversationRecord[];
   commission_requests?: CommissionRequestRecord[];
   batches: AnchorBatchRecord[];
   realizations: RealizationRecord[];
   reactions: ReactionRecord[];
+  follows?: FollowRecord[];
   anchor_claims?: AnchorClaimRecord[];
   quotes?: QuoteRecord[];
   payments?: PaymentRecord[];
@@ -516,6 +574,11 @@ export interface VoxStore {
   getAgent(agentId: string): Promise<AgentRecord | undefined>;
   listPopuliLivestreamAgents(limit: number): Promise<AgentRecord[]>;
   getHuman(humanId: string): Promise<HumanRecord | undefined>;
+  getDirectMessageConversation(conversationId: string): Promise<DirectMessageConversationRecord | undefined>;
+  listDirectMessageConversations(principalId: string, limit: number): Promise<DirectMessageConversationRecord[]>;
+  listDirectMessages(conversationId: string, limit: number, before?: DirectMessageHistoryPosition): Promise<DirectMessageRecord[]>;
+  getDirectMessage(conversationId: string, messageId: string): Promise<DirectMessageRecord | undefined>;
+  createDirectMessage(conversation: DirectMessageConversationRecord, message: DirectMessageRecord): Promise<{message: DirectMessageRecord; created: boolean}>;
   updateAgentProfile(agentId: string, update: AgentProfileUpdateV1, profileHash: string, profile: AgentProfileRecord): Promise<AgentRecord>;
   getAgentByUsername(username: string): Promise<AgentRecord | undefined>;
   getHumanByUsername(username: string): Promise<HumanRecord | undefined>;
@@ -525,6 +588,9 @@ export interface VoxStore {
   appendCommissionRequestEvent(requestId: string, event: CommissionRequestEvent): Promise<CommissionRequestRecord>;
   addKeyAuthorization(agentId: string, registration: AgentRegistrationV1, expectation?: KeyAuthorizationUpdateExpectation): Promise<AgentRecord>;
   publish(input: PublishInput): Promise<PublishResult>;
+  getCharacterConversation(rootPostId: string): Promise<CharacterConversationRecord | undefined>;
+  listCharacterConversations(limit: number, filters?: {agent_id?: string; next_agent_id?: string; parent_conversation_id?: string}): Promise<CharacterConversationRecord[]>;
+  listConversationInvitations(agentId: string, limit: number): Promise<CommissionRequestRecord[]>;
   getPost(postId: string): Promise<StoredPost | undefined>;
   listAgentPosts(agentId: string, limit: number, cursor?: string): Promise<FeedPage>;
   feed(limit: number, cursor?: string): Promise<FeedPage>;
@@ -556,6 +622,8 @@ export interface VoxStore {
   reserveRealizePaymentSignature(signature: string, commissionId: string): Promise<boolean>;
   listRealizeCommissions(limit: number): Promise<RealizeCommissionRecord[]>;
   listRealizeCommissionsForHuman(humanId: string, limit: number): Promise<RealizeCommissionRecord[]>;
+  listRealizeCommissionsForCreator(creatorId: string): Promise<RealizeCommissionRecord[]>;
+  getRealizeCharacterAccount(creatorId: string, treasuryOwner?: string): Promise<{balances: CharacterAccountBalance[]; transactions: CharacterAccountTransaction[]}>;
   createRealizeProvenance(record: ProvenanceRecordV1): Promise<ProvenanceRecordV1>;
   getRealizeProvenance(provenanceRecordId: string): Promise<ProvenanceRecordV1 | undefined>;
   createNftMedia(record: NftMediaRecord): Promise<NftMediaRecord>;
@@ -586,6 +654,11 @@ export interface VoxStore {
   listDistributionRewards(): Promise<DistributionRewardV1[]>;
   listRightsAudit(agreementId?: string): Promise<RightsAuditEventV1[]>;
   react(postId: string, actorId: string, reaction: "like"): Promise<{post_id: string; reaction: "like"; count: number; reacted: boolean}>;
-  search(query: string, limit: number): Promise<{agents: AgentRecord[]; posts: StoredPost[]}>;
+  setFollow(record: FollowRecord): Promise<FollowRecord>;
+  getFollow(followerType: "agent" | "human", followerId: string, targetType: "agent" | "human", targetId: string): Promise<FollowRecord | undefined>;
+  getFollowCounts(targetType: "agent" | "human", targetId: string): Promise<{followers: number; following: number}>;
+  listFollowers(targetType: "agent" | "human", targetId: string, limit: number): Promise<FollowRecord[]>;
+  listFollowing(followerType: "agent" | "human", followerId: string, limit: number): Promise<FollowRecord[]>;
+  search(query: string, limit: number): Promise<{agents: AgentRecord[]; humans: HumanRecord[]; posts: StoredPost[]}>;
   snapshot(): Promise<StoreSnapshot>;
 }

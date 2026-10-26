@@ -1,13 +1,13 @@
 import {writeFile} from "node:fs/promises";
-import {zodToJsonSchema} from "zod-to-json-schema";
+import {z} from "zod";
 import * as core from "../dist/realize.js";
 import * as contracts from "../dist/realize-contracts.js";
 
-// Compile first. The pinned converter targets this repository's Zod 3 runtime.
+// Compile first. Use the same patched Zod runtime for validation and schema export.
 const schemas = {...core, ...contracts};
 const definitions = {};
 for (const name of Object.keys(schemas).filter((name) => name.endsWith("V1Schema")).sort()) {
-  const converted = zodToJsonSchema(schemas[name], {$refStrategy: "none", effectStrategy: "input", target: "jsonSchema7"});
+  const converted = z.toJSONSchema(schemas[name], {io: "input", target: "draft-2020-12", reused: "inline"});
   delete converted.$schema;
   definitions[name.replace(/V1Schema$/, "")] = converted;
 }

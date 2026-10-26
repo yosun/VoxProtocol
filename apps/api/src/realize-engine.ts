@@ -8,6 +8,7 @@ import {
   ProviderPricingRequestV1Schema,
   ProviderFulfillmentRequestV1Schema,
   RealizeQuoteV1Schema,
+  RealizeErrorV1Schema,
   SettlementInstructionV1Schema,
   REALIZE_MAX_COMPUTE_UNITS_PER_TRANSACTION,
   REALIZE_MAX_RECIPIENTS_PER_TRANSACTION,
@@ -95,10 +96,13 @@ export const DEFAULT_MAINNET_PRICING_POLICY = Object.freeze({
   platform_basis_points: 500
 });
 
-/** Mainnet disbursements require a separate explicit approval and are never automatic. */
-export function requiresExplicitMainnetDisbursementApproval(networkId: string): boolean {
+/** Mainnet customer refunds require a separate explicit operator approval. */
+export function requiresExplicitMainnetRefundApproval(networkId: string): boolean {
   return networkId === "solana:mainnet-beta";
 }
+
+/** @deprecated Use requiresExplicitMainnetRefundApproval. Payout settlement is automatic after verified fulfillment. */
+export const requiresExplicitMainnetDisbursementApproval = requiresExplicitMainnetRefundApproval;
 
 export const RealizeCreatorPayoutConfigurationV1Schema = z.object({
   protocol_version: z.literal("realize/1"),
@@ -177,11 +181,16 @@ export const RealizeSettlementResponseV1Schema = z.object({
   settlement_id: id,
   status: z.enum(["accepted", "processing", "partial", "settled", "failed"]),
   transaction_signatures: z.array(z.string().min(32).max(128)).max(64).default([]),
+  settled_payout_ids: z.array(id).max(64).default([]),
   settled_amount_usdc_atomic: atomic.optional(),
   held_amount_usdc_atomic: atomic.optional(),
   failed_payout_ids: z.array(id).max(64).default([]),
   updated_at: z.string().datetime({offset: true})
-}).strict();
+}).strict().superRefine((response, context) => {
+  if (new Set(response.settled_payout_ids).size !== response.settled_payout_ids.length) context.addIssue({code: z.ZodIssueCode.custom, path: ["settled_payout_ids"], message: "settled payout IDs must be unique"});
+  if (new Set(response.failed_payout_ids).size !== response.failed_payout_ids.length) context.addIssue({code: z.ZodIssueCode.custom, path: ["failed_payout_ids"], message: "failed payout IDs must be unique"});
+  if (response.settled_payout_ids.some((payoutId) => response.failed_payout_ids.includes(payoutId))) context.addIssue({code: z.ZodIssueCode.custom, path: ["settled_payout_ids"], message: "a payout cannot be both settled and failed"});
+});
 export type RealizeSettlementResponseV1 = z.infer<typeof RealizeSettlementResponseV1Schema>;
 
 export const RealizeRefundResponseV1Schema = z.object({
@@ -221,7 +230,7 @@ function assertProviderUrl(value: string): URL {
 }
 
 export class RealizeProviderHttpError extends Error {
-  constructor(readonly status: number, readonly retryAfterMs: number) {
+  constructor(readonly status: number, readonly retryAfterMs: number, readonly code?: string) {
     super(`Populi request failed with HTTP ${status}`);
   }
 }
@@ -242,7 +251,12 @@ async function providerJson<T>(configuration: RealizeCreatorPayoutConfigurationV
     if (!response.ok) {
       const retryAfter = response.headers.get("retry-after");
       const delay = retryAfter && /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1_000 : retryAfter ? Date.parse(retryAfter) - Date.now() : 5_000;
-      throw new RealizeProviderHttpError(response.status, Number.isFinite(delay) ? Math.max(5_000, delay) : 5_000);
+      let code: string | undefined;
+      try {
+        const failure = RealizeErrorV1Schema.safeParse(JSON.parse(bodyText));
+        if (failure.success) code = failure.data.code;
+      } catch { /* An untyped HTTP error is not evidence that a provider job is absent. */ }
+      throw new RealizeProviderHttpError(response.status, Number.isFinite(delay) ? Math.max(5_000, delay) : 5_000, code);
     }
     let body: unknown;
     try { body = JSON.parse(bodyText); } catch { throw new Error("Populi returned invalid JSON"); }
@@ -262,7 +276,7 @@ export class HttpPopuliRealizeClient implements PopuliRealizeClient {
     if ([...schema.searchParams.keys()].some((key) => key !== "creator_id") || schemaCreatorIds.length > 1 || (schemaCreatorIds.length === 1 && schemaCreatorIds[0] !== creatorId)) {
       throw new Error("Provider input schema has unsupported or mismatched query parameters");
     }
-    return providerJson(configuration, `${schema.pathname}${schema.search}`, {method: "GET"}, z.record(z.unknown()).refine((value) => value.type === "object", "input schema must describe an object"));
+    return providerJson(configuration, `${schema.pathname}${schema.search}`, {method: "GET"}, z.record(z.string(), z.unknown()).refine((value) => value.type === "object", "input schema must describe an object"));
   }
 
   async getCapabilities(configuration: RealizeCreatorPayoutConfigurationV1, creatorId: string): Promise<CreatorCapabilitiesV1> {

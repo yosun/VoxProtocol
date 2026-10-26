@@ -3,8 +3,10 @@ import {isValidUsername} from "@vox/protocol";
 import {ApiError, api, type CommissionRequestRecord, type RealizeAccountCommission} from "./api.js";
 import {getStoredRealizeIdentity, signRealizeRequest, type RealizeIdentity} from "./realize-identity.js";
 import {createAccountBackup, createHumanAccountIdentity, getHumanAccountIdentity, humanProfileUrl, protectHumanAccountIdentity, registerHumanAccount, restoreHumanAccountBackup, saveHumanAccountIdentity, type HumanAccountIdentity} from "./human-account.js";
+import {RealizeNfts} from "./RealizeNfts.js";
 
 type Mode = "create" | "restore";
+type AccountCommission = RealizeAccountCommission & {identity: RealizeIdentity};
 
 function errorMessage(reason: unknown): string {
   if (reason instanceof ApiError && reason.code === "username_taken") return "That username was claimed just now. Choose another and try again.";
@@ -32,7 +34,7 @@ function formatDate(value: string): string {
 
 function Activity({identity}: {identity: HumanAccountIdentity}) {
   const [requests, setRequests] = useState<CommissionRequestRecord[]>([]);
-  const [commissions, setCommissions] = useState<RealizeAccountCommission[]>([]);
+  const [commissions, setCommissions] = useState<AccountCommission[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refreshCount, setRefreshCount] = useState(0);
@@ -57,16 +59,16 @@ function Activity({identity}: {identity: HumanAccountIdentity}) {
           const limit = 30;
           try {
             const headers = await signRealizeRequest(owner, "GET", pathFor(limit));
-            return {...await api.realizeAccountCommissions(limit, headers), failed: false};
-          } catch { return {items: [] as RealizeAccountCommission[], failed: true}; }
+            return {...await api.realizeAccountCommissions(limit, headers), identity: owner, failed: false};
+          } catch { return {items: [] as RealizeAccountCommission[], identity: owner, failed: true}; }
         })
       ]);
       if (!active) return;
       const accountCommissionOutcome = commissionOutcomes[0]!;
       const legacyCommissionOutcome = hasLegacy ? commissionOutcomes[1] : undefined;
       setRequests(requestOutcome.items);
-      const unique = new Map<string, RealizeAccountCommission>();
-      for (const result of commissionOutcomes) for (const item of result.items) unique.set(item.commission.commission_id, item);
+      const unique = new Map<string, AccountCommission>();
+      for (const result of commissionOutcomes) for (const item of result.items) unique.set(item.commission.commission_id, {...item, identity: result.identity});
       setCommissions([...unique.values()].sort((left, right) => right.commission.updated_at.localeCompare(left.commission.updated_at)));
       setActivityLoad({
         requestsFailed: requestOutcome.failed,
@@ -94,6 +96,7 @@ function Activity({identity}: {identity: HumanAccountIdentity}) {
           const url = output.page_url ?? output.uri;
           return url ? <a key={`${item.commission.commission_id}-${index}`} href={url} target="_blank" rel="noreferrer">Open result ↗</a> : null;
         })}</div>
+        <RealizeNfts mediaIds={item.nft_media_ids ?? item.commission.nft_media_ids ?? []} identity={item.identity} />
       </article>)}</div>}
       {requests.length > 0 && <div className="account-activity-list"><p className="account-list-label">Public commission requests</p>{requests.map((item) => <article className="account-activity-card" key={item.request_id}>
         <div className="account-activity-top"><strong>{item.status.replaceAll("_", " ")}</strong><span>{formatDate(item.intent.created_at)}</span></div>
@@ -105,7 +108,7 @@ function Activity({identity}: {identity: HumanAccountIdentity}) {
   </section>;
 }
 
-export function HumanAccountDialog({onClose}: {onClose: () => void}) {
+export function HumanAccountDialog({onClose, onAccountReady}: {onClose: () => void; onAccountReady?: () => void}) {
   const [account, setAccount] = useState<HumanAccountIdentity>();
   const [mode, setMode] = useState<Mode>("create");
   const [loading, setLoading] = useState(true);
@@ -123,6 +126,7 @@ export function HumanAccountDialog({onClose}: {onClose: () => void}) {
   const [backupSaved, setBackupSaved] = useState(false);
   const [pending, setPending] = useState<HumanAccountIdentity>();
   const [pendingPassphrase, setPendingPassphrase] = useState("");
+  const [identityCopied, setIdentityCopied] = useState(false);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && !busy) onClose(); };
@@ -133,6 +137,7 @@ export function HumanAccountDialog({onClose}: {onClose: () => void}) {
       setAccount(stored);
       try { await registerHumanAccount(stored); } catch { setStatus("Your profile is saved on this device. Reconnect to VOX to sync it."); }
       setMode("restore");
+      onAccountReady?.();
     }).catch((reason) => setError(errorMessage(reason))).finally(() => setLoading(false));
     return () => { document.body.classList.remove("premiere-open"); document.removeEventListener("keydown", onKeyDown); };
   }, []);
@@ -174,6 +179,7 @@ export function HumanAccountDialog({onClose}: {onClose: () => void}) {
       setPending(undefined); setPendingPassphrase(""); setPassphrase("");
       setMode("restore");
       setStatus("Your VOX account is ready on this device.");
+      onAccountReady?.();
     } catch (reason) { setError(errorMessage(reason)); }
     finally { setBusy(false); }
   }
@@ -189,6 +195,7 @@ export function HumanAccountDialog({onClose}: {onClose: () => void}) {
       await registerHumanAccount(restored);
       setRecoveryPassphrase(""); setPassphrase(""); setConfirmPassphrase(""); setPendingPassphrase("");
       setStatus("Your VOX account is restored on this device.");
+      onAccountReady?.();
     } catch (reason) { setError(errorMessage(reason)); }
     finally { setBusy(false); setLoading(false); }
   }
@@ -199,6 +206,17 @@ export function HumanAccountDialog({onClose}: {onClose: () => void}) {
     try { await registerHumanAccount(account); setStatus("Your profile is synced with VOX."); }
     catch (reason) { setError(errorMessage(reason)); }
     finally { setBusy(false); }
+  }
+
+  async function copyHumanId() {
+    if (!account) return;
+    try {
+      await navigator.clipboard.writeText(account.humanId);
+      setIdentityCopied(true);
+      window.setTimeout(() => setIdentityCopied(false), 2_000);
+    } catch {
+      setError("Could not copy the account ID. Select and copy it from the account identity field.");
+    }
   }
 
   const profileUrl = account ? humanProfileUrl(account) : "";
@@ -217,7 +235,7 @@ export function HumanAccountDialog({onClose}: {onClose: () => void}) {
           <a className="secondary-button" href={profileUrl} target="_blank" rel="noreferrer">View profile ↗</a>
           <p>{account.registration.description || "Your public VOX profile."}</p>
         </section>
-        <div className="account-id-card"><span>Account identity</span><code>{shortId(account.humanId)}</code></div>
+        <div className="account-id-card"><span>Account identity</span><code title={account.humanId}>{account.humanId}</code><button type="button" className="account-edit-details" onClick={() => void copyHumanId()}>{identityCopied ? "Copied" : "Copy full ID"}</button></div>
         <Activity identity={account} />
         <div className="account-privacy-note"><strong>Your profile is public</strong><span>Anyone can view your profile and public commission requests. Realize order history is private and requires the signing key used at checkout. Keep your recovery file and passphrase private.</span></div>
         <button type="button" className="secondary-button account-sync-button" onClick={() => void syncAccount()} disabled={busy}>Sync profile with VOX</button>

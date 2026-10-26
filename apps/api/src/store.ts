@@ -2,10 +2,13 @@ import {canonicalBytes, canTransitionRealizeCommission, journalEnvelopeHashHex, 
 import {randomUUID} from "node:crypto";
 import {AsyncMutex} from "./mutex.js";
 import {appendOnlyKeyAuthorizationRecords, type KeyAuthorizationUpdateExpectation} from "./key-history.js";
-import type {AgentProfileRecord, AgentRecord, AnchorBatchRecord, AnchorClaimInput, AnchorClaimPatch, AnchorClaimRecord, AnchorClaimResponse, AnchorClaimState, AnchorClaimKind, AnchorClaimTier, CommissionRequestEvent, CommissionRequestRecord, CommissionRequestResult, FeedPage, HumanRecord, PaymentRecord, PaymentReservationResult, PublishInput, PublishResult, QuoteRecord, ReactionRecord, RealizationPaymentInput, RealizationRecord, RealizeCommissionRecord, RealizeWebhookDeliveryRecord, RightsAgreementRecord, RightsRevenueEventInput, RightsRevenueEventResult, StoreSnapshot, StoredPost, NftMediaRecord, NftMintRecord, VoxStore} from "./types.js";
+import type {CharacterConversationRecord} from "@vox/protocol";
+import {advanceConversation} from "./conversations.js";
+import type {AgentProfileRecord, AgentRecord, AnchorBatchRecord, AnchorClaimInput, AnchorClaimPatch, AnchorClaimRecord, AnchorClaimResponse, AnchorClaimState, AnchorClaimKind, AnchorClaimTier, CommissionRequestEvent, CommissionRequestRecord, CommissionRequestResult, FeedPage, FollowRecord, HumanRecord, DirectMessageConversationRecord, DirectMessageRecord, PaymentRecord, PaymentReservationResult, PublishInput, PublishResult, QuoteRecord, ReactionRecord, RealizationPaymentInput, RealizationRecord, RealizeCommissionRecord, RealizeWebhookDeliveryRecord, RightsAgreementRecord, RightsRevenueEventInput, RightsRevenueEventResult, StoreSnapshot, StoredPost, NftMediaRecord, NftMintRecord, VoxStore} from "./types.js";
 import type {ProvenanceRecordV1, RealizeQuoteV1} from "@vox/protocol";
 import type {DistributionRewardV1, ReferralAttributionV1, RightsAuditEventV1, RightsRevenueAllocationV1, RightsRevenueEventV1} from "@vox/protocol";
 import type {RealizeCreatorPayoutConfigurationV1} from "./realize-engine.js";
+import {projectCharacterAccountTransaction, summarizeCharacterAccount, type CharacterAccountTransaction} from "./character-account.js";
 import {UsernameConflict} from "./errors.js";
 import {canonicalUsername, isReservedUsername} from "./usernames.js";
 
@@ -21,6 +24,19 @@ function equalCanonical(left: unknown, right: unknown): boolean {
 
 function rightsScopesOverlap(left: RightsAgreementRecord["agreement"]["artifact_scope"], right: RightsAgreementRecord["agreement"]["artifact_scope"]): boolean {
   return left.subject_type === right.subject_type && left.subject_id === right.subject_id && (!left.artifact_sha256 || !right.artifact_sha256 || left.artifact_sha256 === right.artifact_sha256);
+}
+
+function followKey(followerType: "agent" | "human", followerId: string, targetType: "agent" | "human", targetId: string): string {
+  return `${followerType}\u0000${followerId}\u0000${targetType}\u0000${targetId}`;
+}
+
+function normalizeFollowRecord(record: FollowRecord): FollowRecord {
+  const followerType = record.follower_type ?? (record.follower_id.startsWith("vox:agent:") ? "agent" : "human");
+  return {...record, follower_type: followerType};
+}
+
+function followingKey(targetType: "agent" | "human", targetId: string): string {
+  return `${targetType}\u0000${targetId}`;
 }
 
 export function registrationWithoutUsername(registration: AgentRegistrationV1): Omit<AgentRegistrationV1, "username"> {
@@ -113,8 +129,11 @@ function nftLease(record: NftMintRecord, ownerId: string, leaseSeconds: number, 
 export class MemoryStore implements VoxStore {
   protected readonly agents = new Map<string, AgentRecord>();
   protected readonly humans = new Map<string, HumanRecord>();
+  protected readonly directMessageConversations = new Map<string, DirectMessageConversationRecord>();
+  protected readonly directMessages = new Map<string, DirectMessageRecord>();
   protected readonly usernames = new Map<string, UsernameOwner>();
   protected readonly posts = new Map<string, StoredPost>();
+  protected readonly characterConversations = new Map<string, CharacterConversationRecord>();
   protected readonly commissionRequests = new Map<string, CommissionRequestRecord>();
   protected readonly batches = new Map<string, AnchorBatchRecord>();
   protected readonly anchorClaims = new Map<string, AnchorClaimRecord>();
@@ -122,9 +141,11 @@ export class MemoryStore implements VoxStore {
   protected readonly payments = new Map<string, PaymentRecord>();
   protected readonly realizations = new Map<string, RealizationRecord>();
   protected readonly reactions = new Map<string, ReactionRecord>();
+  protected readonly follows = new Map<string, FollowRecord>();
   protected readonly realizePayoutConfigurations = new Map<string, Map<number, RealizeCreatorPayoutConfigurationV1>>();
   protected readonly realizeQuotes = new Map<string, RealizeQuoteV1>();
   protected readonly realizeCommissions = new Map<string, RealizeCommissionRecord>();
+  protected readonly realizeCharacterAccountTransactions = new Map<string, CharacterAccountTransaction>();
   protected readonly realizePaymentSignatures = new Map<string, string>();
   protected readonly realizeProvenance = new Map<string, ProvenanceRecordV1>();
   protected readonly nftMedia = new Map<string, NftMediaRecord>();
@@ -232,6 +253,52 @@ export class MemoryStore implements VoxStore {
     return clone(this.humans.get(humanId));
   }
 
+  async getDirectMessageConversation(conversationId: string): Promise<DirectMessageConversationRecord | undefined> {
+    return clone(this.directMessageConversations.get(conversationId));
+  }
+
+  async listDirectMessageConversations(principalId: string, limit: number): Promise<DirectMessageConversationRecord[]> {
+    return [...this.directMessageConversations.values()]
+      .filter((conversation) => conversation.participants.includes(principalId))
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at) || right.conversation_id.localeCompare(left.conversation_id))
+      .slice(0, limit)
+      .map(clone);
+  }
+
+  async getDirectMessage(conversationId: string, messageId: string): Promise<DirectMessageRecord | undefined> {
+    const message = this.directMessages.get(messageId);
+    return message?.conversation_id === conversationId ? clone(message) : undefined;
+  }
+
+  async listDirectMessages(conversationId: string, limit: number, before?: {created_at: string; message_id: string}): Promise<DirectMessageRecord[]> {
+    if (!this.directMessageConversations.has(conversationId)) return [];
+    return [...this.directMessages.values()]
+      .filter((message) => message.conversation_id === conversationId)
+      .filter((message) => !before || message.created_at < before.created_at || message.created_at === before.created_at && message.message_id < before.message_id)
+      .sort((left, right) => left.created_at.localeCompare(right.created_at) || left.message_id.localeCompare(right.message_id))
+      .slice(-limit)
+      .map(clone);
+  }
+
+  async createDirectMessage(conversation: DirectMessageConversationRecord, message: DirectMessageRecord): Promise<{message: DirectMessageRecord; created: boolean}> {
+    return this.mutex.runExclusive(async () => {
+      const existing = this.directMessages.get(message.message_id);
+      if (existing) {
+        if (!equalCanonical({...existing, signature: "", created_at: "", signed_at: ""}, {...message, signature: "", created_at: "", signed_at: ""})) throw new Error("direct message id conflicts with existing content");
+        return {message: clone(existing), created: false};
+      }
+      for (const candidate of this.directMessages.values()) {
+        if (candidate.sender_id === message.sender_id && candidate.client_message_id === message.client_message_id) throw new Error("client_message_id has already been used for a different message");
+      }
+      const current = this.directMessageConversations.get(conversation.conversation_id);
+      if (current && (current.participants[0] !== conversation.participants[0] || current.participants[1] !== conversation.participants[1])) throw new Error("direct message conversation participants conflict");
+      this.directMessages.set(message.message_id, clone(message));
+      this.directMessageConversations.set(conversation.conversation_id, clone(!current || conversation.updated_at >= current.updated_at ? conversation : current));
+      await this.afterMutation();
+      return {message: clone(message), created: true};
+    });
+  }
+
   async getHumanByUsername(username: string): Promise<HumanRecord | undefined> {
     const normalized = canonicalUsername(username);
     if (!normalized) return undefined;
@@ -270,6 +337,13 @@ export class MemoryStore implements VoxStore {
           throw new Error("client_post_id has already been used for a different post");
         }
       }
+      const metadata = input.signed.intent.content.conversation;
+      const currentConversation = metadata?.type === "turn" ? this.characterConversations.get(metadata.root_post_id) : undefined;
+      const sourceId = metadata?.type === "start" ? metadata.branch_from_post_id : currentConversation?.branch_from_post_id;
+      const conversation = advanceConversation(input, currentConversation,
+        currentConversation?.post_ids.flatMap((id) => this.posts.get(id) ? [this.posts.get(id)!] : []) ?? [],
+        sourceId ? this.posts.get(sourceId) : undefined,
+        metadata?.type === "start" && metadata.request_id ? this.commissionRequests.get(metadata.request_id) : undefined);
       const sequence = agent.last_sequence + 1;
       const unsigned: JournalEnvelopeUnsignedV1 = {
         protocol: "vox/1",
@@ -307,6 +381,13 @@ export class MemoryStore implements VoxStore {
         anchoring
       };
       this.posts.set(post.post_id, post);
+      if (conversation) {
+        this.characterConversations.set(conversation.root_post_id, conversation);
+        if (metadata?.type === "start" && metadata.request_id) {
+          const invitation = this.commissionRequests.get(metadata.request_id)!;
+          this.commissionRequests.set(metadata.request_id, {...invitation, conversation_pending: false, conversation_id: conversation.root_post_id});
+        }
+      }
       agent.last_sequence = sequence;
       agent.last_event_hash = envelopeHash;
       agent.updated_at = input.accepted_at;
@@ -318,6 +399,21 @@ export class MemoryStore implements VoxStore {
 
   async getPost(postId: string): Promise<StoredPost | undefined> {
     return clone(this.posts.get(postId));
+  }
+
+  async getCharacterConversation(rootPostId: string): Promise<CharacterConversationRecord | undefined> {
+    return clone(this.characterConversations.get(rootPostId));
+  }
+
+  async listCharacterConversations(limit: number, filters: {agent_id?: string; next_agent_id?: string; parent_conversation_id?: string} = {}): Promise<CharacterConversationRecord[]> {
+    return [...this.characterConversations.values()]
+      .filter((item) => (!filters.agent_id || item.participant_ids.includes(filters.agent_id)) && (!filters.next_agent_id || item.next_agent_id === filters.next_agent_id) && (!filters.parent_conversation_id || item.parent_conversation_id === filters.parent_conversation_id))
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.root_post_id.localeCompare(a.root_post_id)).slice(0, limit).map(clone);
+  }
+
+  async listConversationInvitations(agentId: string, limit: number): Promise<CommissionRequestRecord[]> {
+    return [...this.commissionRequests.values()].filter((item) => item.intent.target_agent_id === agentId && item.conversation_pending)
+      .sort((a, b) => b.accepted_at.localeCompare(a.accepted_at) || b.request_id.localeCompare(a.request_id)).slice(0, limit).map(clone);
   }
 
   async listAgentPosts(agentId: string, limit: number, cursor?: string): Promise<FeedPage> {
@@ -936,6 +1032,7 @@ export class MemoryStore implements VoxStore {
         return clone(existing);
       }
       this.realizeCommissions.set(record.commission.commission_id, clone(record));
+      this.syncCharacterAccountTransaction(record, process.env.VOX_REALIZE_MAINNET_TREASURY_OWNER?.trim());
       await this.afterMutation();
       return clone(record);
     });
@@ -956,6 +1053,8 @@ export class MemoryStore implements VoxStore {
       if (current.nft_publication_consent === true && (record.nft_publication_consent !== true || record.nft_publication_consent_at !== current.nft_publication_consent_at)) throw new Error("Realize NFT publication consent is immutable");
       if (current.commission.quote_id && current.commission.quote_id !== record.commission.quote_id) throw new Error("commission quote id is immutable after issuance");
       if (current.commission.accepted_quote_hash && current.commission.accepted_quote_hash !== record.commission.accepted_quote_hash) throw new Error("accepted quote hash is immutable");
+      if (current.commission.accepted_quote_hash && Boolean(current.nft_publication_consent) !== Boolean(record.nft_publication_consent)) throw new Error("Realize NFT publication consent is immutable after quote acceptance");
+      if (current.nft_publication_consent_at && current.nft_publication_consent_at !== record.nft_publication_consent_at) throw new Error("Realize NFT publication consent time is immutable");
       if (current.commission.state !== record.commission.state && !canTransitionRealizeCommission(current.commission.state, record.commission.state)) throw new Error("invalid Realize commission state transition");
       const priorEvents = current.resolution_events ?? [];
       const nextEvents = record.resolution_events ?? [];
@@ -972,6 +1071,7 @@ export class MemoryStore implements VoxStore {
       if (record.resolution_outcome === "refunded" && (record.commission.state !== "REFUNDED" || !nextEvents.some((event) => event.action === "refund_finalized"))) throw new Error("refunded outcome requires finalized refund and its audit event");
       if (record.resolution_outcome === "manual_review" && (!["MANUAL_REVIEW", "REFUND_PENDING"].includes(record.commission.state) || !nextEvents.some((event) => event.action === "manual_review_required"))) throw new Error("manual-review outcome requires its review state and audit event");
       this.realizeCommissions.set(record.commission.commission_id, clone(record));
+      this.syncCharacterAccountTransaction(record, process.env.VOX_REALIZE_MAINNET_TREASURY_OWNER?.trim());
       await this.afterMutation();
       return clone(record);
     });
@@ -1027,6 +1127,24 @@ export class MemoryStore implements VoxStore {
   async listRealizeCommissionsForHuman(humanId: string, limit: number): Promise<RealizeCommissionRecord[]> {
     return [...this.realizeCommissions.values()].filter((record) => record.commission.commissioner_id === humanId)
       .sort((left, right) => right.updated_at.localeCompare(left.updated_at)).slice(0, limit).map(clone);
+  }
+
+  async listRealizeCommissionsForCreator(creatorId: string): Promise<RealizeCommissionRecord[]> {
+    return [...this.realizeCommissions.values()].filter((record) => record.commission.creator_id === creatorId).map(clone);
+  }
+
+  async getRealizeCharacterAccount(creatorId: string, treasuryOwner?: string): Promise<{balances: import("./character-account.js").CharacterAccountBalance[]; transactions: CharacterAccountTransaction[]}> {
+    for (const record of this.realizeCommissions.values()) {
+      if (record.commission.creator_id === creatorId) this.syncCharacterAccountTransaction(record, treasuryOwner);
+    }
+    const transactions = [...this.realizeCharacterAccountTransactions.values()].filter((entry) => entry.character_id === creatorId).sort((left, right) => right.created_at.localeCompare(left.created_at));
+    return {balances: summarizeCharacterAccount(creatorId, transactions).balances, transactions: transactions.map(clone)};
+  }
+
+  private syncCharacterAccountTransaction(record: RealizeCommissionRecord, treasuryOwner?: string): void {
+    const transaction = projectCharacterAccountTransaction(record, record.commission.quote_id ? this.realizeQuotes.get(record.commission.quote_id) : undefined, treasuryOwner, record.updated_at);
+    if (transaction) this.realizeCharacterAccountTransactions.set(transaction.transaction_id, transaction);
+    else for (const [id, existing] of this.realizeCharacterAccountTransactions) if (existing.commission_id === record.commission.commission_id) this.realizeCharacterAccountTransactions.delete(id);
   }
 
   async createRealizeProvenance(record: ProvenanceRecordV1): Promise<ProvenanceRecordV1> {
@@ -1170,23 +1288,73 @@ export class MemoryStore implements VoxStore {
     });
   }
 
-  async search(query: string, limit: number): Promise<{agents: AgentRecord[]; posts: StoredPost[]}> {
+  async setFollow(record: FollowRecord): Promise<FollowRecord> {
+    return this.mutex.runExclusive(async () => {
+      const followerExists = record.follower_type === "agent" ? this.agents.has(record.follower_id) : this.humans.has(record.follower_id);
+      if (!followerExists) throw new Error("Follower account not found");
+      if (record.follower_id === record.target_id) throw new Error("Cannot follow your own profile");
+      const targetExists = record.target_type === "agent" ? this.agents.has(record.target_id) : this.humans.has(record.target_id);
+      if (!targetExists) throw new Error("Follow target not found");
+      const key = followKey(record.follower_type, record.follower_id, record.target_type, record.target_id);
+      const existing = this.follows.get(key);
+      if (existing?.operation_id === record.operation_id) return clone(existing);
+      if (existing && Date.parse(record.updated_at) <= Date.parse(existing.updated_at)) throw new Error("Follow operation is stale");
+      const updated = existing ? {...record, created_at: existing.created_at} : clone(record);
+      this.follows.set(key, updated);
+      await this.afterMutation();
+      return clone(updated);
+    });
+  }
+
+  async getFollow(followerType: "agent" | "human", followerId: string, targetType: "agent" | "human", targetId: string): Promise<FollowRecord | undefined> {
+    const record = this.follows.get(followKey(followerType, followerId, targetType, targetId));
+    return record ? clone(normalizeFollowRecord(record)) : undefined;
+  }
+
+  async getFollowCounts(targetType: "agent" | "human", targetId: string): Promise<{followers: number; following: number}> {
+    const followers = [...this.follows.values()].filter((record) => record.active && record.target_type === targetType && record.target_id === targetId).length;
+    const following = [...this.follows.values()].filter((record) => record.active && record.follower_type === targetType && record.follower_id === targetId).length;
+    return {followers, following};
+  }
+
+  async listFollowers(targetType: "agent" | "human", targetId: string, limit: number): Promise<FollowRecord[]> {
+    return [...this.follows.values()]
+      .filter((record) => record.active && record.target_type === targetType && record.target_id === targetId)
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at) || left.follower_id.localeCompare(right.follower_id))
+      .slice(0, Math.min(Math.max(Math.trunc(limit) || 20, 1), 100))
+      .map(clone);
+  }
+
+  async listFollowing(followerType: "agent" | "human", followerId: string, limit: number): Promise<FollowRecord[]> {
+    return [...this.follows.values()]
+      .filter((record) => record.active && (record.follower_type ?? (record.follower_id.startsWith("vox:agent:") ? "agent" : "human")) === followerType && record.follower_id === followerId)
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at) || left.target_id.localeCompare(right.target_id))
+      .slice(0, Math.min(Math.max(Math.trunc(limit) || 20, 1), 100))
+      .map(clone);
+  }
+
+  async search(query: string, limit: number): Promise<{agents: AgentRecord[]; humans: HumanRecord[]; posts: StoredPost[]}> {
     const needle = query.trim().toLowerCase();
-    if (!needle) return {agents: [], posts: []};
+    if (!needle) return {agents: [], humans: [], posts: []};
     const agents = [...this.agents.values()].filter((agent) => [agent.registration.display_name, agent.registration.username ?? "", agent.registration.handle, agent.registration.description, agent.registration.agent_id].some((value) => value.toLowerCase().includes(needle))).slice(0, limit).map(clone);
+    const humans = [...this.humans.values()].filter((human) => [human.registration.display_name, human.registration.username ?? "", human.registration.handle, human.registration.description, human.registration.human_id].some((value) => value.toLowerCase().includes(needle))).slice(0, limit).map(clone);
     const posts = [...this.posts.values()].filter((post) => post.publication_status === "published" && [post.intent.content.text, post.intent.agent_id].some((value) => value.toLowerCase().includes(needle))).sort((left, right) => right.accepted_at.localeCompare(left.accepted_at)).slice(0, limit).map(clone);
-    return {agents, posts};
+    return {agents, humans, posts};
   }
 
   async snapshot(): Promise<StoreSnapshot> {
     return {
       agents: [...this.agents.values()].map(clone),
       humans: [...this.humans.values()].map(clone),
+      direct_message_conversations: [...this.directMessageConversations.values()].map(clone),
+      direct_messages: [...this.directMessages.values()].map(clone),
       posts: [...this.posts.values()].map(clone),
+      character_conversations: [...this.characterConversations.values()].map(clone),
       commission_requests: [...this.commissionRequests.values()].map(clone),
       batches: [...this.batches.values()].map(clone),
       realizations: [...this.realizations.values()].map(clone),
       reactions: [...this.reactions.values()].map(clone),
+      follows: [...this.follows.values()].map(clone),
       anchor_claims: [...this.anchorClaims.values()].map(clone),
       quotes: [...this.quotes.values()].map(clone),
       payments: [...this.payments.values()].map(clone),
@@ -1232,7 +1400,10 @@ export class MemoryStore implements VoxStore {
         this.usernames.set(username, {kind: "human", id: human.registration.human_id});
       }
     }
+    for (const conversation of snapshot.direct_message_conversations ?? []) this.directMessageConversations.set(conversation.conversation_id, conversation);
+    for (const message of snapshot.direct_messages ?? []) this.directMessages.set(message.message_id, message);
     for (const post of snapshot.posts) this.posts.set(post.post_id, post);
+    for (const conversation of snapshot.character_conversations ?? []) this.characterConversations.set(conversation.root_post_id, conversation);
     for (const request of snapshot.commission_requests ?? []) this.commissionRequests.set(request.request_id, request);
     for (const batch of snapshot.batches) this.batches.set(batch.manifest.batch_id, batch);
     for (const claim of snapshot.anchor_claims ?? []) this.anchorClaims.set(claim.claim_id, claim);
@@ -1259,6 +1430,10 @@ export class MemoryStore implements VoxStore {
     for (const event of snapshot.rights_audit ?? []) this.rightsAudit.set(event.event_id, event);
     for (const realization of snapshot.realizations) this.realizations.set(realization.realization_id, realization);
     for (const reaction of snapshot.reactions ?? []) this.reactions.set(`${reaction.post_id}|${reaction.actor_id}|${reaction.reaction}`, reaction);
+    for (const follow of snapshot.follows ?? []) {
+      const normalized = normalizeFollowRecord(follow);
+      this.follows.set(followKey(normalized.follower_type, normalized.follower_id, normalized.target_type, normalized.target_id), normalized);
+    }
   }
 }
 

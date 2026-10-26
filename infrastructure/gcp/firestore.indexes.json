@@ -1,12 +1,265 @@
 {
   "indexes": [
-    {"collectionGroup": "vox_posts", "queryScope": "COLLECTION", "fields": [{"fieldPath": "publication_status", "order": "ASCENDING"}, {"fieldPath": "accepted_at", "order": "DESCENDING"}, {"fieldPath": "post_id", "order": "DESCENDING"}]},
-    {"collectionGroup": "vox_posts", "queryScope": "COLLECTION", "fields": [{"fieldPath": "intent.agent_id", "order": "ASCENDING"}, {"fieldPath": "publication_status", "order": "ASCENDING"}, {"fieldPath": "accepted_at", "order": "DESCENDING"}, {"fieldPath": "post_id", "order": "DESCENDING"}]},
-    {"collectionGroup": "vox_posts", "queryScope": "COLLECTION", "fields": [{"fieldPath": "intent.agent_id", "order": "ASCENDING"}, {"fieldPath": "accepted_at", "order": "DESCENDING"}, {"fieldPath": "post_id", "order": "DESCENDING"}]},
-    {"collectionGroup": "vox_batches", "queryScope": "COLLECTION", "fields": [{"fieldPath": "manifest.epoch", "order": "ASCENDING"}, {"fieldPath": "manifest.created_at", "order": "DESCENDING"}]},
-    {"collectionGroup": "vox_commission_requests", "queryScope": "COLLECTION", "fields": [{"fieldPath": "intent.human_id", "order": "ASCENDING"}, {"fieldPath": "accepted_at", "order": "DESCENDING"}]},
-    {"collectionGroup": "vox_realize_commissions", "queryScope": "COLLECTION", "fields": [{"fieldPath": "commission.commissioner_id", "order": "ASCENDING"}, {"fieldPath": "updated_at", "order": "DESCENDING"}]},
-    {"collectionGroup": "vox_realize_commissions", "queryScope": "COLLECTION", "fields": [{"fieldPath": "commission.state", "order": "ASCENDING"}, {"fieldPath": "updated_at", "order": "ASCENDING"}]}
+    {
+      "collectionGroup": "vox_nft_mints",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "state",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updated_at",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "vox_posts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "publication_status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "accepted_at",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "post_id",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "vox_posts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "intent.agent_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "publication_status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "accepted_at",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "post_id",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "vox_posts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "intent.agent_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "accepted_at",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "post_id",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "vox_batches",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "manifest.epoch",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "manifest.created_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "vox_commission_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "intent.human_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "accepted_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "vox_realize_commissions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "commission.commissioner_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updated_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "vox_direct_message_conversations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "participants",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "updated_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "vox_character_conversations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "updated_at",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "root_post_id",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "vox_character_conversations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "participant_ids",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "updated_at",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "root_post_id",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "vox_character_conversations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "next_agent_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updated_at",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "root_post_id",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "vox_character_conversations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "parent_conversation_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updated_at",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "root_post_id",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "vox_commission_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "intent.target_agent_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "conversation_pending",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "accepted_at",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "request_id",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "vox_realize_commissions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "commission.state",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updated_at",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "messages",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "message_id",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "messages",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "sender_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "client_message_id",
+          "order": "ASCENDING"
+        }
+      ]
+    }
   ],
   "fieldOverrides": []
 }

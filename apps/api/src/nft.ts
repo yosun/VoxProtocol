@@ -264,6 +264,7 @@ export class NftMintService {
       ...(input.source_post_id ? {source_post_id: input.source_post_id} : {}),
       ...(input.creator_id ? {creator_id: input.creator_id} : {}),
       owner_id: input.owner_id,
+      ...(input.publication_consent === true ? {publication_consent: true} : {}),
       provider_id: input.provider_id,
       ...(input.source_content ? {source_content: input.source_content} : {}),
       request_parameters: structuredClone(input.request_parameters),
@@ -439,6 +440,7 @@ function createMetadataAccountV3Instruction(input: {metadata: PublicKey; mint: P
     0,
     0,
     0,
+    0,
     1,
     0
   ]);
@@ -455,6 +457,20 @@ function createMetadataAccountV3Instruction(input: {metadata: PublicKey; mint: P
     ],
     data: Buffer.from(data)
   });
+}
+
+export function createSolanaNftMintInstructions(input: {authority: PublicKey; mint: PublicKey; owner: PublicKey; rentLamports: number; metadataUri: string; name: string}): TransactionInstruction[] {
+  const tokenAccount = getAssociatedTokenAddressSync(input.mint, input.owner, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
+  return [
+    SystemProgram.createAccount({fromPubkey: input.authority, newAccountPubkey: input.mint, lamports: input.rentLamports, space: MINT_SIZE, programId: TOKEN_PROGRAM_ID}),
+    createInitializeMintInstruction(input.mint, 0, input.authority, input.authority, TOKEN_PROGRAM_ID),
+    createAssociatedTokenAccountIdempotentInstruction(input.authority, tokenAccount, input.owner, input.mint, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID),
+    createMintToInstruction(input.mint, tokenAccount, input.authority, 1, [], TOKEN_PROGRAM_ID),
+    createMetadataAccountV3Instruction({metadata: metadataPda(input.mint), mint: input.mint, authority: input.authority, payer: input.authority, uri: input.metadataUri, name: input.name}),
+    // Token Metadata validates the current mint authority when creating metadata.
+    createSetAuthorityInstruction(input.mint, input.authority, AuthorityType.MintTokens, null, [], TOKEN_PROGRAM_ID),
+    createSetAuthorityInstruction(input.mint, input.authority, AuthorityType.FreezeAccount, null, [], TOKEN_PROGRAM_ID)
+  ];
 }
 
 export interface SolanaNftAdapterOptions {
@@ -485,20 +501,10 @@ export class SolanaNftAdapter implements NftChainAdapter {
     if (input.media.metadata_uri.length > MAX_SOLANA_METADATA_URI_BYTES) throw new Error("NFT metadata URI exceeds the Solana Token Metadata limit");
     const owner = new PublicKey(input.mint.owner_wallet);
     const mint = Keypair.generate();
-    const metadata = metadataPda(mint.publicKey);
-    const tokenAccount = getAssociatedTokenAddressSync(mint.publicKey, owner, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
     const {blockhash, lastValidBlockHeight} = await this.connection.getLatestBlockhash("finalized");
     const rent = await this.connection.getMinimumBalanceForRentExemption(MINT_SIZE, "finalized");
     const transaction = new Transaction({feePayer: this.signer.publicKey, recentBlockhash: blockhash});
-    transaction.add(
-      SystemProgram.createAccount({fromPubkey: this.signer.publicKey, newAccountPubkey: mint.publicKey, lamports: rent, space: MINT_SIZE, programId: TOKEN_PROGRAM_ID}),
-      createInitializeMintInstruction(mint.publicKey, 0, this.signer.publicKey, this.signer.publicKey, TOKEN_PROGRAM_ID),
-      createAssociatedTokenAccountIdempotentInstruction(this.signer.publicKey, tokenAccount, owner, mint.publicKey, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID),
-      createMintToInstruction(mint.publicKey, tokenAccount, this.signer.publicKey, 1, [], TOKEN_PROGRAM_ID),
-      createSetAuthorityInstruction(mint.publicKey, this.signer.publicKey, AuthorityType.MintTokens, null, [], TOKEN_PROGRAM_ID),
-      createSetAuthorityInstruction(mint.publicKey, this.signer.publicKey, AuthorityType.FreezeAccount, null, [], TOKEN_PROGRAM_ID),
-      createMetadataAccountV3Instruction({metadata, mint: mint.publicKey, authority: this.signer.publicKey, payer: this.signer.publicKey, uri: input.media.metadata_uri, name: String(input.media.metadata.name ?? `VOX ${input.media.media_id}`).slice(0, 32)})
-    );
+    transaction.add(...createSolanaNftMintInstructions({authority: this.signer.publicKey, mint: mint.publicKey, owner, rentLamports: rent, metadataUri: input.media.metadata_uri, name: String(input.media.metadata.name ?? `VOX ${input.media.media_id}`).slice(0, 32)}));
     transaction.sign(this.signer, mint);
     const simulation = await this.connection.simulateTransaction(transaction);
     if (simulation.value.err) throw new Error(`Solana NFT transaction simulation failed: ${JSON.stringify(simulation.value.err)}`);
@@ -544,7 +550,7 @@ export class SolanaNftAdapter implements NftChainAdapter {
       if (mint.last_valid_block_height !== undefined && await this.connection.getBlockHeight("finalized") > mint.last_valid_block_height) return {state: "manual_review", error: "Solana NFT transaction blockhash expired without a resolvable result", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
       return {state: "submitted", transaction_id: mint.transaction_id, ...(mint.asset_address ? {asset_address: mint.asset_address} : {}), ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
     }
-    if (status.err) return {state: "retryable_failure", error: `Solana NFT transaction failed: ${JSON.stringify(status.err)}`, transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
+    if (status.err && status.confirmationStatus === "finalized") return {state: "retryable_failure", error: `Solana NFT transaction failed: ${JSON.stringify(status.err)}`, transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
     if (status.confirmationStatus === "finalized") return {state: "finalized", transaction_id: mint.transaction_id, ...(mint.asset_address ? {asset_address: mint.asset_address} : {}), ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
     return {state: "submitted", transaction_id: mint.transaction_id, ...(mint.asset_address ? {asset_address: mint.asset_address} : {}), ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
   }
@@ -714,12 +720,16 @@ export class EvmNftAdapter implements NftChainAdapter {
     if (!receipt || typeof receipt !== "object") return {state: "manual_review", error: "EVM NFT receipt response is invalid", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
     const receiptObject = receipt as {status?: unknown; blockNumber?: unknown; logs?: unknown; to?: unknown; transactionHash?: unknown};
     if (typeof receiptObject.to !== "string" || receiptObject.to.toLowerCase() !== this.contractAddress || typeof receiptObject.transactionHash !== "string" || receiptObject.transactionHash.toLowerCase() !== mint.transaction_id.toLowerCase()) return {state: "manual_review", error: "EVM NFT receipt does not match the configured contract and transaction", transaction_id: mint.transaction_id};
-    if (receiptObject.status !== "0x1") return {state: "retryable_failure", error: "EVM NFT transaction reverted", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
-    const tokenId = this.receiptTokenId(receiptObject.logs, mint.owner_wallet);
-    if (!tokenId) return {state: "manual_review", error: "EVM NFT receipt has no mint Transfer to the bound owner wallet", transaction_id: mint.transaction_id};
     const blockNumber = parseRpcQuantity(receiptObject.blockNumber, "receipt block");
     const latest = parseRpcQuantity(await this.rpc("eth_blockNumber", []), "latest block");
-    if (latest + 1n - blockNumber < BigInt(this.confirmations)) return {state: "submitted", transaction_id: mint.transaction_id, ...(mint.asset_address ? {asset_address: mint.asset_address} : {}), ...(tokenId ? {token_id: tokenId} : {}), ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
+    const confirmed = latest + 1n - blockNumber >= BigInt(this.confirmations);
+    if (receiptObject.status === "0x0") return confirmed
+      ? {state: "retryable_failure", error: "EVM NFT transaction reverted", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})}
+      : {state: "submitted", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
+    if (receiptObject.status !== "0x1") return {state: "manual_review", error: "EVM NFT receipt status is invalid", transaction_id: mint.transaction_id};
+    const tokenId = this.receiptTokenId(receiptObject.logs, mint.owner_wallet);
+    if (!tokenId) return {state: "manual_review", error: "EVM NFT receipt has no mint Transfer to the bound owner wallet", transaction_id: mint.transaction_id};
+    if (!confirmed) return {state: "submitted", transaction_id: mint.transaction_id, ...(mint.asset_address ? {asset_address: mint.asset_address} : {}), ...(tokenId ? {token_id: tokenId} : {}), ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
     const uriData = `0x${bytesToHex(keccak_256(utf8("tokenURI(uint256)")).slice(0, 4))}${bytesToHex(pad32(bigintBytes(BigInt(tokenId))))}`;
     const encodedUri = await this.rpc("eth_call", [{to: this.contractAddress, data: uriData}, "latest"]);
     if (typeof encodedUri !== "string") return {state: "manual_review", error: "EVM NFT token URI is unavailable", transaction_id: mint.transaction_id};
@@ -824,6 +834,7 @@ export function fulfillmentOutputToNftInput(input: {commissionId: string; ownerI
     ...(input.sourcePostId ? {source_post_id: input.sourcePostId} : {}),
     creator_id: input.creatorId,
     owner_id: input.ownerId,
+    ...(input.publicationConsent ? {publication_consent: true} : {}),
     ...(input.ownerWallet ? {owner_wallets: {solana: input.ownerWallet}} : {}),
     provider_id: input.providerId,
     ...(input.sourceContent ? {source_content: input.sourceContent} : {}),

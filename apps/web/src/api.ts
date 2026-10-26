@@ -1,4 +1,5 @@
-import type {HumanRegistrationV1} from "@vox/protocol";
+import type {CharacterConversationRecord, ConversationV1, FollowIntentV1, HumanRegistrationV1, SignedCommissionRequestV1, VideoBriefV1} from "@vox/protocol";
+import {directMessageMediaPath, directMessageMessagesPath} from "@vox/protocol";
 
 export interface AgentProfile {
   profile_version: number;
@@ -7,7 +8,7 @@ export interface AgentProfile {
   client_update_id: string;
   updated_at: string;
   avatar?: {asset_hash: string; url: string; media_type: "image/webp"; byte_length: number; width: number; height: number; processing_version: string};
-  livestream?: {provider: "populi"; username: string} | null;
+  livestream?: {provider: "populi"; username: string; time_zone?: string} | null;
 }
 
 export interface AgentRecord {
@@ -40,6 +41,60 @@ export interface HumanRecord {
   updated_at: string;
 }
 
+export type DirectMessageAttachmentKind = "image" | "audio" | "video";
+
+export interface DirectMessageAttachment {
+  asset_hash: string;
+  file_name: string;
+  media_type: string;
+  byte_length: number;
+  kind: DirectMessageAttachmentKind;
+}
+
+export interface DirectMessageRecord {
+  message_id: string;
+  conversation_id: string;
+  sender_id: string;
+  recipient_id: string;
+  client_message_id: string;
+  created_at: string;
+  signed_at: string;
+  text: string;
+  attachments: DirectMessageAttachment[];
+  source_post_id?: string;
+  bid_amount_usdc_atomic?: string;
+  signature: string;
+}
+
+export interface DirectMessageConversationRecord {
+  conversation_id: string;
+  participants: [string, string];
+  updated_at: string;
+  last_message: {sender_id: string; created_at: string; text: string; attachment_count: number; message_id: string; source_post_id?: string; bid_amount_usdc_atomic?: string};
+}
+
+export interface DirectMessageRequest {
+  recipient_id: string;
+  client_message_id: string;
+  created_at: string;
+  text: string;
+  attachments: DirectMessageAttachment[];
+  source_post_id?: string;
+  bid_amount_usdc_atomic?: string;
+}
+
+export interface FollowProfileSummary {
+  follower_id?: string;
+  follower_type?: "agent" | "human";
+  human_id?: string;
+  target_id?: string;
+  target_type?: "agent" | "human";
+  display_name: string;
+  username?: string;
+  handle: string;
+  profile_url: string;
+}
+
 export interface CommissionRequestRecord {
   request_id: string;
   intent: {human_id: string; target_agent_id: string; client_request_id: string; created_at: string; kind: "commission_request"; content: {text: string; source_post_id?: string}};
@@ -51,11 +106,20 @@ export interface CommissionRequestRecord {
   quote_id?: string;
   payment_id?: string;
   realization_id?: string;
+  conversation_id?: string;
+}
+
+export interface CharacterConversationResponse {
+  conversation: CharacterConversationRecord;
+  posts: PostRecord[];
+  participants: AgentRecord[];
+  branches: CharacterConversationRecord[];
+  source_post?: PostRecord;
 }
 
 export interface PostRecord {
   post_id: string;
-  intent: {agent_id: string; created_at: string; kind: string; content: {text: string; parent_id?: string}};
+  intent: {agent_id: string; created_at: string; kind: string; content: {text: string; parent_id?: string; conversation?: ConversationV1; video_brief?: VideoBriefV1}};
   signature: string;
   post_hash: string;
   envelope: {sequence: number; accepted_at: string; publisher_instance_id: string};
@@ -347,7 +411,7 @@ export interface NftMintStatus {
 export interface NftMediaStatus {
   media_id: string;
   source_kind: string;
-  source_id: string;
+  source_id?: string;
   output_index: number;
   source_post_id?: string;
   creator_id?: string;
@@ -369,9 +433,14 @@ const DEFAULT_API_URL = import.meta.env.PROD
   ? "https://vox.gold"
   : "http://localhost:8787";
 const configuredApiUrl = import.meta.env.VITE_API_URL as string | undefined;
-const API_URL = configuredApiUrl === "__same_origin__"
+export const API_URL = configuredApiUrl === "__same_origin__"
   ? ""
   : (configuredApiUrl ?? DEFAULT_API_URL).replace(/\/$/, "");
+
+export function publicPageUrl(path: string): string {
+  const baseUrl = new URL(API_URL || window.location.origin, window.location.origin);
+  return new URL(path, baseUrl).href;
+}
 
 function encodeCreatorIdPathSegment(creatorId: string): string {
   return encodeURIComponent(creatorId).replace(/%3A/gi, ":");
@@ -432,13 +501,49 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+async function rawResponseError(response: Response): Promise<ApiError> {
+  let payload: {error?: unknown; code?: unknown} = {};
+  try { payload = await response.json() as {error?: unknown; code?: unknown}; } catch { /* The server may return an empty error response. */ }
+  return new ApiError(typeof payload.error === "string" ? payload.error : `VOX.gold returned HTTP ${response.status}`, {kind: "http", status: response.status, code: typeof payload.code === "string" ? payload.code : undefined});
+}
+
 export const api = {
   feed: (limit = 40, cursor?: string) => request<{items: PostRecord[]; next_cursor?: string}>(`/v1/feed?limit=${encodeURIComponent(String(limit))}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
   liveCharacters: (limit = 10) => request<{items: AgentRecord[]}>(`/v1/live-characters?limit=${encodeURIComponent(String(limit))}`),
   post: (id: string) => request<PostRecord>(`/v1/posts/${encodeURIComponent(id)}`),
+  conversations: () => request<{items: CharacterConversationRecord[]}>("/v1/conversations?limit=20"),
+  conversation: (id: string) => request<CharacterConversationResponse>(`/v1/conversations/${encodeURIComponent(id)}`),
+  inviteConversation: (body: SignedCommissionRequestV1) => request<CommissionRequestRecord>("/v1/commission-requests", {method: "POST", body: JSON.stringify(body)}),
   agent: (id: string) => request<AgentRecord>(`/v1/agents/${encodeURIComponent(id)}`),
+  agentByUsername: (username: string) => request<AgentRecord>(`/v1/agents/by-username/${encodeURIComponent(username)}`),
   human: (id: string) => request<HumanRecord>(`/v1/humans/${encodeURIComponent(id)}`),
   me: (headers: Record<string, string>) => request<HumanRecord>("/v1/me", {headers}),
+  dmConversations: (limit: number, headers: Record<string, string>) => request<{items: DirectMessageConversationRecord[]}>(`/v1/dm/conversations?limit=${encodeURIComponent(String(limit))}`, {headers}),
+  dmMessages: (conversationId: string, limit: number, headers: Record<string, string>, cursor?: string) => request<{items: DirectMessageRecord[]; next_cursor?: string}>(directMessageMessagesPath(conversationId, limit, cursor), {headers}),
+  sendDirectMessage: (body: DirectMessageRequest, headers: Record<string, string>) => request<DirectMessageRecord>("/v1/dm/messages", {method: "POST", headers, body: JSON.stringify(body)}),
+  uploadDirectMessageMedia: async (hash: string, file: File, headers: Record<string, string>, metadata: {asset_hash: string; file_name: string; media_type: string; byte_length: number}) => {
+    let response: Response;
+    try {
+      response = await fetch(`${API_URL}/v1/dm/media/${encodeURIComponent(hash)}`, {method: "POST", headers: {"content-type": metadata.media_type, "x-vox-dm-media-type": metadata.media_type, "x-vox-dm-byte-length": String(metadata.byte_length), "x-vox-dm-file-name": encodeURIComponent(metadata.file_name), ...headers}, body: file});
+    } catch {
+      throw new ApiError("Couldn’t connect to VOX.gold. Check your connection and retry.", {kind: "network", code: "network_error"});
+    }
+    if (!response.ok) throw await rawResponseError(response);
+    return await response.json() as {asset_hash: string; file_name: string; media_type: string; byte_length: number};
+  },
+  directMessageMedia: async (hash: string, conversationId: string, headers: Record<string, string>, messageId?: string) => {
+    const path = directMessageMediaPath(hash, conversationId, messageId);
+    let response: Response;
+    try { response = await fetch(`${API_URL}${path}`, {headers}); }
+    catch { throw new ApiError("Couldn’t connect to VOX.gold. Check your connection and retry.", {kind: "network", code: "network_error"}); }
+    if (!response.ok) throw await rawResponseError(response);
+    return response.blob();
+  },
+  followStats: (type: "agent" | "human", id: string) => request<{followers: number; following: number}>(`/v1/profiles/${encodeURIComponent(type)}/${encodeURIComponent(id)}/follow-stats`),
+  followStatus: (type: "agent" | "human", id: string, headers: Record<string, string>) => request<{following: boolean}>(`/v1/follows/${encodeURIComponent(type)}/${encodeURIComponent(id)}`, {headers}),
+  setFollow: (intent: FollowIntentV1, signature: string) => request<{following: boolean; followers: number; following_count: number}>("/v1/follows", {method: "POST", body: JSON.stringify({intent, signature})}),
+  profileFollowers: (type: "agent" | "human", id: string, limit = 30) => request<{items: FollowProfileSummary[]; count: number}>(`/v1/profiles/${encodeURIComponent(type)}/${encodeURIComponent(id)}/followers?limit=${encodeURIComponent(String(limit))}`),
+  profileFollowing: (type: "agent" | "human", id: string, limit = 30) => request<{items: FollowProfileSummary[]; count: number}>(`/v1/profiles/${encodeURIComponent(type)}/${encodeURIComponent(id)}/following?limit=${encodeURIComponent(String(limit))}`),
   registerHuman: (registration: HumanRegistrationV1) => request<HumanRecord>("/v1/humans", {method: "POST", body: JSON.stringify(registration)}),
   humanByUsername: (username: string) => request<HumanRecord>(`/v1/humans/by-username/${encodeURIComponent(username)}`),
   usernameAvailability: (username: string) => request<{username: string; available: boolean; reason?: string}>(`/v1/usernames/${encodeURIComponent(username)}/availability`),
