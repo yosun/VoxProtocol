@@ -21,13 +21,13 @@ export function validateIndexManifest(expected) {
   return expected;
 }
 
-function requireProtectedRelease(env) {
-  if (env.GITHUB_ACTIONS !== "true" || env.GITHUB_REPOSITORY !== "yosun/VoxProtocol" || env.GITHUB_REF !== "refs/heads/main" || !["push", "workflow_dispatch"].includes(env.GITHUB_EVENT_NAME) || env.VOX_PRODUCTION_SENSITIVE_APPROVED !== "true") throw new Error("Index changes require the protected production-sensitive approval environment on main");
+function requireVerifiedRelease(env) {
+  if (env.VOX_PRODUCTION_VERIFIED !== "true" || env.GITHUB_ACTIONS !== "true" || env.GITHUB_REPOSITORY !== "yosun/VoxProtocol" || env.GITHUB_REF !== "refs/heads/main" || env.GITHUB_REF_PROTECTED !== "true" || env.GITHUB_WORKFLOW_REF !== "yosun/VoxProtocol/.github/workflows/production.yml@refs/heads/main" || !["push", "workflow_dispatch"].includes(env.GITHUB_EVENT_NAME)) throw new Error("Index changes require the verified protected main production workflow");
 }
 
 /** Add missing definitions only; existing indexes are never deleted or replaced. */
 export async function provisionProductionIndexes(expected, options = {}) {
-  requireProtectedRelease(options.env ?? process.env);
+  requireVerifiedRelease(options.env ?? process.env);
   validateIndexManifest(expected);
   const run = options.run ?? runGcloud;
   const wait = options.wait ?? sleep;

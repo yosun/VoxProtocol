@@ -4,12 +4,15 @@ import {execFileSync} from "node:child_process";
 
 const [base, head, ...explicitFiles] = process.argv.slice(2);
 if (!base || (base !== "--paths" && !head)) {
-  console.error("Usage: node scripts/production-deployment-scope.mjs <base-sha> <head-sha> | --paths <changed-path>... | --release-profile <realize-paid-order-recovery|realize-refund-settlement|firestore-indexes>");
+  console.error("Usage: node scripts/production-deployment-scope.mjs <base-sha> <head-sha> | --paths <changed-path>... | --release-profile <automatic-production|realize-paid-order-recovery|realize-refund-settlement|firestore-indexes>");
   process.exit(2);
 }
 
 if (base === "--release-profile") {
   const profiles = {
+    // Every main push releases the full verified application. Failed, skipped,
+    // or stale runs cannot omit a target that changed in an earlier commit.
+    "automatic-production": {deploy_api: "true", deploy_hosting: "true", run_e2e: "true", deploy_settlement: "true", deploy_reconcile: "true", deploy_anchor: "true", deploy_indexes: "true", sensitive: "true", changed_files: "0"},
     "firestore-indexes": {deploy_api: "false", deploy_hosting: "false", run_e2e: "false", deploy_settlement: "false", deploy_reconcile: "false", deploy_anchor: "false", deploy_indexes: "true", sensitive: "true", changed_files: "0"},
     "realize-paid-order-recovery": {
       deploy_api: "true",
@@ -96,8 +99,8 @@ const sensitive = changed.some((file) =>
   file.startsWith("infrastructure/") ||
   file.startsWith("deployments/") ||
   file.startsWith(".github/") ||
-  // New runtime modules must retain the reviewer gate without requiring a
-  // filename allowlist update alongside their first money/auth/privacy change.
+  // Classify new runtime modules for the sensitive release environment without
+  // requiring a filename allowlist update for money/auth/privacy changes.
   /^apps\/[^/]+\/src\//.test(file) ||
   file.startsWith("packages/") ||
   file.startsWith("apps/settlement/") ||

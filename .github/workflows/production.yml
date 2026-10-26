@@ -9,6 +9,7 @@ on:
         description: Select a reviewed production release profile
         type: choice
         options:
+          - automatic-production
           - realize-paid-order-recovery
           - realize-refund-settlement
           - firestore-indexes
@@ -85,6 +86,8 @@ jobs:
         run: |
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             node scripts/production-deployment-scope.mjs --release-profile "$RELEASE_PROFILE"
+          elif [[ "$EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then
+            node scripts/production-deployment-scope.mjs --release-profile automatic-production
           else
             node scripts/production-deployment-scope.mjs "$BASE_SHA" "$HEAD_SHA"
           fi
@@ -93,10 +96,12 @@ jobs:
     name: Release production changes
     needs: [verify, scope]
     if: >-
-      ((github.event_name == 'push' &&
-        github.ref_name == github.event.repository.default_branch) ||
+      github.repository == 'yosun/VoxProtocol' &&
+      github.ref == 'refs/heads/main' && github.ref_protected &&
+      needs.verify.result == 'success' && needs.scope.result == 'success' &&
+      (github.event_name == 'push' ||
        (github.event_name == 'workflow_dispatch' &&
-        contains(fromJSON('["realize-paid-order-recovery","realize-refund-settlement","firestore-indexes"]'), inputs.release_profile))) &&
+        contains(fromJSON('["automatic-production","realize-paid-order-recovery","realize-refund-settlement","firestore-indexes"]'), inputs.release_profile))) &&
       (needs.scope.outputs.deploy_api == 'true' ||
        needs.scope.outputs.deploy_hosting == 'true' ||
        needs.scope.outputs.deploy_settlement == 'true' ||
@@ -104,8 +109,12 @@ jobs:
        needs.scope.outputs.deploy_anchor == 'true' ||
        needs.scope.outputs.deploy_indexes == 'true')
     runs-on: ubuntu-latest
+    concurrency:
+      group: vox-production
+      queue: max
+      cancel-in-progress: false
     environment:
-      name: ${{ needs.scope.outputs.sensitive == 'true' && 'production-sensitive' || 'production' }}
+      name: production-sensitive
     permissions:
       actions: read
       contents: read
@@ -120,24 +129,28 @@ jobs:
       VOX_DEPLOY_RECONCILE: ${{ needs.scope.outputs.deploy_reconcile }}
       VOX_DEPLOY_ANCHOR: ${{ needs.scope.outputs.deploy_anchor }}
       VOX_DEPLOY_INDEXES: ${{ needs.scope.outputs.deploy_indexes }}
-      VOX_PRODUCTION_SENSITIVE_APPROVED: ${{ needs.scope.outputs.sensitive }}
+      VOX_PRODUCTION_VERIFIED: ${{ needs.verify.result == 'success' && needs.scope.result == 'success' }}
       VOX_REALIZE_OPERATOR_HUMAN_IDS: ${{ vars.VOX_REALIZE_OPERATOR_HUMAN_IDS }}
-      VOX_PRODUCTION_BASE_SHA: ${{ github.event.before }}
-      VOX_PRODUCTION_HEAD_SHA: ${{ github.sha }}
     steps:
-      - name: Fail closed unless sensitive production releases require reviewers
-        if: needs.scope.outputs.sensitive == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Verify production release context
         run: |
-          reviewer_count="$(gh api "repos/$GITHUB_REPOSITORY/environments/production-sensitive" --jq '[.protection_rules[]? | select(.type == "required_reviewers")] | length')"
-          if [[ "$reviewer_count" -lt 1 ]]; then
-            echo "Configure required reviewers on the production-sensitive GitHub environment before releasing this change." >&2
+          set -euo pipefail
+          if [[ "$VOX_PRODUCTION_VERIFIED" != "true" || "$GITHUB_ACTIONS" != "true" || "$GITHUB_REPOSITORY" != "yosun/VoxProtocol" || "$GITHUB_REF" != "refs/heads/main" || "$GITHUB_REF_PROTECTED" != "true" || "$GITHUB_WORKFLOW_REF" != "yosun/VoxProtocol/.github/workflows/production.yml@refs/heads/main" || ( "$GITHUB_EVENT_NAME" != "push" && "$GITHUB_EVENT_NAME" != "workflow_dispatch" ) ]]; then
+            echo "Production releases require successful verification on the protected main production workflow." >&2
             exit 1
           fi
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Reject stale production runs before cloud authentication
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          current_main="$(git rev-parse refs/remotes/origin/main)"
+          if [[ "$GITHUB_SHA" != "$current_main" ]]; then
+            echo "This run is stale; the latest verified full production release will include every target." >&2
+            exit 1
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -146,13 +159,13 @@ jobs:
         with:
           name: vox-web-dist-${{ github.sha }}
           path: apps/web/dist
-      - name: Require the separately approved index provisioning identity
+      - name: Require the separate index provisioning identity
         if: needs.scope.outputs.deploy_indexes == 'true' || needs.scope.outputs.deploy_api == 'true' || needs.scope.outputs.deploy_reconcile == 'true'
         env:
           VOX_GCP_INDEX_SERVICE_ACCOUNT: ${{ vars.VOX_GCP_INDEX_SERVICE_ACCOUNT }}
         run: |
           if [[ ! "$VOX_GCP_INDEX_SERVICE_ACCOUNT" =~ ^[a-z][a-z0-9-]*@voxprotocol\.iam\.gserviceaccount\.com$ || "$VOX_GCP_INDEX_SERVICE_ACCOUNT" == "$VOX_GCP_DEPLOY_SERVICE_ACCOUNT" ]]; then
-            echo "Configure VOX_GCP_INDEX_SERVICE_ACCOUNT as a separate approved index provisioning identity. The application deploy identity must retain its existing limited permissions." >&2
+            echo "Configure VOX_GCP_INDEX_SERVICE_ACCOUNT as a separate index provisioning identity. The application deploy identity must retain its existing limited permissions." >&2
             exit 1
           fi
       - name: Authenticate only the reviewed index provisioning step
