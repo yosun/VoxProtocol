@@ -90,6 +90,9 @@ describe("verified automatic production release guards", () => {
 
   it("orders successful verification, serialization, fresh-main check, then cloud authentication without a reviewer gate", () => {
     const workflowText = readFileSync(new URL("../.github/workflows/production.yml", import.meta.url), "utf8");
+    const workflow = parse(workflowText);
+    expect(workflow.on.push.branches).toEqual(["main"]);
+    expect(workflow.on).toHaveProperty("pull_request");
     const job = releaseJob();
     expect(job.needs).toEqual(["verify", "scope"]);
     for (const condition of ["needs.verify.result == 'success'", "needs.scope.result == 'success'", "github.repository == 'yosun/VoxProtocol'", "github.ref == 'refs/heads/main'", "github.ref_protected"]) expect(job.if).toContain(condition);

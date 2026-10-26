@@ -2,6 +2,7 @@ name: Production CI and deployment
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
     inputs:
