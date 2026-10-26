@@ -133,10 +133,16 @@ export class GcsDirectMessageMediaStore implements DirectMessageMediaStore {
     // Knowledge of a content hash does not grant permission to share its bytes.
     // Record the verified uploader separately so globally deduplicated objects
     // cannot be attached to an unrelated conversation by guessing their hash.
-    await this.bucket.file(`direct-messages/uploaders/${owner}/${assetHash}`).save(Buffer.alloc(0), {
-      resumable: false,
-      metadata: {cacheControl: "private,no-store", contentType: "application/octet-stream"}
-    });
+    try {
+      await this.bucket.file(`direct-messages/uploaders/${owner}/${assetHash}`).save(Buffer.alloc(0), {
+        resumable: false,
+        metadata: {cacheControl: "private,no-store", contentType: "application/octet-stream"},
+        preconditionOpts: {ifGenerationMatch: 0}
+      });
+    } catch (error) {
+      // Grants are immutable markers. Retries need no overwrite permission.
+      if ((error as {code?: number}).code !== 412) throw error;
+    }
   }
 
   async canAttach(assetHash: string, uploaderId: string): Promise<boolean> {

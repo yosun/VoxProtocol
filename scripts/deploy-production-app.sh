@@ -190,6 +190,8 @@ deploy_service_candidate() {
   local -a extra_env_args=()
 
   if [[ "$service" == "$API_SERVICE" ]]; then
+    # Buffered 25 MB private uploads include encryption and storage copies.
+    extra_env_args+=(--concurrency=4 --memory=1Gi)
     extra_env_args+=(--update-env-vars="^|^VOX_REALIZE_FIRST_PARTY_CREATOR_IDS=$FIRST_PARTY_CREATOR_IDS")
     if [[ -n "$REALIZE_OPERATOR_HUMAN_IDS" ]]; then
       if [[ ! "$REALIZE_OPERATOR_HUMAN_IDS" =~ ^vox:human:[A-Za-z0-9_-]{43}(,vox:human:[A-Za-z0-9_-]{43})*$ ]]; then

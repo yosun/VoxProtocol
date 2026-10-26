@@ -12,6 +12,8 @@ vi.mock("@google-cloud/storage", () => ({Storage: class {
       return {
         async save(bytes: Buffer, options: any) {
           if (options.preconditionOpts?.ifGenerationMatch === 0 && cloud.objects.has(key)) throw Object.assign(new Error("already exists"), {code: 412});
+          // Production has objectCreator + objectViewer, which cannot overwrite.
+          if (cloud.objects.has(key)) throw Object.assign(new Error("overwrite forbidden"), {code: 403});
           cloud.objects.set(key, {bytes: Buffer.from(bytes), metadata: options.metadata});
         },
         async exists() { return [cloud.objects.has(key)]; },
@@ -66,6 +68,8 @@ describe("direct-message media upload grants", () => {
     const encrypted = cloud.objects.get(`audit-bucket/direct-messages/sha256/${hash}`)!;
     expect(encrypted.bytes.includes(bytes)).toBe(false);
     expect((await restarted.get(hash))?.bytes.equals(bytes)).toBe(true);
+    await restarted.put(hash, "image/png", bytes, other);
+    await restarted.put(hash, "image/png", bytes, owner);
     await restarted.put(hash, "image/png", bytes, other);
     expect(await new GcsDirectMessageMediaStore("audit-bucket", key).canAttach(hash, other)).toBe(true);
     const grantKeys = [...cloud.objects.keys()].filter((path) => path.includes("/uploaders/"));
