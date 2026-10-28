@@ -7,6 +7,7 @@ import {createCommissionRequestIntent, createThoughtIntent, signCommissionReques
 import {bytesToBase64Url, bytesToHex, commissionRequestHashHex, commissionRequestIdFromIntent, generateKeyPair, postHash, postIdFromIntent} from "@vox/protocol";
 import type {DirectMessageConversationRecord, DirectMessageRecord, PaymentRecord, QuoteRecord, RealizationRecord} from "@vox/api";
 import type {VoxPostIntentV1} from "@vox/protocol";
+import {FirestoreSettlementLedger, type SettlementBatchRecord} from "../apps/settlement/src/ledger.js";
 
 const emulatorConfigured = Boolean(process.env.FIRESTORE_EMULATOR_HOST);
 const firestoreDescribe = emulatorConfigured ? describe : describe.skip;
@@ -266,6 +267,38 @@ firestoreDescribe("Firestore emulator transactional integration", () => {
     expect((await secondStore.getQuote(quote.quote_id))?.status).toBe("consumed");
 
     await expect(firstStore.reservePayment({...payment, post_id: "vox:post:" + "f".repeat(64)})).rejects.toThrow(/different economic record/);
+  });
+
+  it("reserves one refund replacement attempt across settlement instances and preserves its signed bytes", async () => {
+    const first = new FirestoreSettlementLedger(database);
+    const second = new FirestoreSettlementLedger(database);
+    const recordId = `emulator:refund:${randomUUID()}`;
+    const failed: SettlementBatchRecord = {
+      batch_index: 0, attempt_number: 1, payout_ids: [recordId], amount_usdc_atomic: "1000000",
+      status: "failed", transaction_signature: "failed-emulator-signature", raw_transaction_base64: "ZmFpbGVk",
+      updated_at: now()
+    };
+    await first.createBatchIfAbsent(recordId, failed);
+    await expect(second.replaceFailedBatch(recordId, failed.transaction_signature, {...failed, attempt_number: 2, status: "prepared"})).rejects.toThrow("new transaction attempt");
+    await expect(second.replaceFailedBatch(recordId, failed.transaction_signature, {...failed, attempt_number: 3, transaction_signature: "skipped-emulator-signature", status: "prepared"})).rejects.toThrow("new transaction attempt");
+    expect(await first.getBatch(recordId, 0)).toEqual(failed);
+
+    const contenders = ["a", "b"].map((id): SettlementBatchRecord => ({
+      ...failed, attempt_number: 2, status: "prepared", transaction_signature: `replacement-${id}`,
+      raw_transaction_base64: Buffer.from(`replacement-bytes-${id}`).toString("base64"), updated_at: now()
+    }));
+    const results = await Promise.all([
+      first.replaceFailedBatch(recordId, failed.transaction_signature, contenders[0]!),
+      second.replaceFailedBatch(recordId, failed.transaction_signature, contenders[1]!)
+    ]);
+    expect(results[0]).toEqual(results[1]);
+    const winner = results[0]!;
+    expect(winner).toMatchObject({attempt_number: 2, previous_attempts: [{attempt_number: 1, status: "failed", transaction_signature: failed.transaction_signature}]});
+    expect(await second.getBatch(recordId, 0)).toEqual(winner);
+    await expect(first.updateBatch(recordId, {...failed, status: "finalized"})).rejects.toThrow("transaction binding changed");
+    await second.updateBatch(recordId, {...winner, status: "finalized"});
+    await first.updateBatch(recordId, winner);
+    expect(await second.getBatch(recordId, 0)).toMatchObject({status: "finalized", transaction_signature: winner.transaction_signature, raw_transaction_base64: winner.raw_transaction_base64});
   });
 
   it("finds due NFT mints beyond a full page of leased and delayed records", async () => {
