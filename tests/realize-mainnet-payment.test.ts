@@ -412,5 +412,35 @@ describe("Mainnet SPL USDC Realize payment rail", () => {
     const duplicateRetry = await signedRequest(retryPath, retryBody);
     expect(duplicateRetry.statusCode).toBe(200);
     expect(requestFulfillment).toHaveBeenCalledTimes(2);
+
+    // A failed submitted transfer cannot leave the next successful receipt
+    // trapped behind the server's durable pending-signature reservation.
+    vi.setSystemTime(new Date(now));
+    const failedRetry = await addCommission("finalized-failure-retry");
+    const acceptedRetry = await signedRequest(`/v1/realize/commissions/${encodeURIComponent(failedRetry.commissionId)}/accept-quote`, {quote_id: failedRetry.quote.quote_id, canonical_quote_hash: failedRetry.quote.canonical_quote_hash, payer_wallet: payer, rights_reviewed: true});
+    expect(acceptedRetry.statusCode, acceptedRetry.body).toBe(201);
+    const failedPath = `/v1/realize/commissions/${encodeURIComponent(failedRetry.commissionId)}/fund`;
+    const failedSignature = "7".repeat(88);
+    const replacementSignature = "8".repeat(88);
+    verifyFunding.mockResolvedValueOnce({finalized: false, matched: false});
+    const pendingFailure = await signedRequest(failedPath, {payer_wallet: payer, transaction_signature: failedSignature});
+    expect(pendingFailure.statusCode, pendingFailure.body).toBe(409);
+    expect(pendingFailure.json().code).toBe("payment_pending");
+    for (const previousResult of [
+      {finalized: false, matched: false},
+      {finalized: true, matched: false},
+      {finalized: true, matched: true, block_time: Math.floor(Date.now() / 1000)}
+    ]) {
+      verifyFunding.mockResolvedValueOnce(previousResult);
+      const conflict = await signedRequest(failedPath, {payer_wallet: payer, transaction_signature: replacementSignature});
+      expect(conflict.statusCode, conflict.body).toBe(409);
+      expect(await store.getRealizeCommission(failedRetry.commissionId)).toMatchObject({funding_submission_signature: failedSignature});
+    }
+    verifyFunding.mockResolvedValueOnce({finalized: true, matched: false, execution_failed: true} as never);
+    verifyFunding.mockResolvedValueOnce({finalized: true, matched: true, block_time: Math.floor(Date.now() / 1000)});
+    const replacedFailure = await signedRequest(failedPath, {payer_wallet: payer, transaction_signature: replacementSignature});
+    expect(replacedFailure.statusCode, replacedFailure.body).toBe(202);
+    expect(await store.getRealizeCommission(failedRetry.commissionId)).toMatchObject({funding_submission_signature: replacementSignature, funding_signature: replacementSignature, commission: {state: "GENERATING", payment_state: "captured"}});
+    expect(requestFulfillment).toHaveBeenCalledTimes(3);
   }, 15_000);
 });

@@ -869,7 +869,18 @@ async function verifyAndRecordMainnetFunding(
   if (funding.payment_reference !== `vox:realize:payment:${current.payment_intent.payment_intent_id}:${quote.canonical_quote_hash}`) throw new HttpError(409, "payment_intent_mismatch", "Mainnet payment memo does not match the unique payment intent");
   if (funding.destination_token_account !== configuration.funding_destination_token_account || funding.network_id !== "solana:mainnet-beta") throw new HttpError(409, "treasury_configuration_mismatch", "Mainnet payment destination differs from the pinned treasury account");
   if (funding.payer_wallet !== current.payer_wallet) throw new HttpError(409, "payment_intent_mismatch", "submitted payer does not match the accepted payment intent");
-  if (current.funding_submission_signature && current.funding_submission_signature !== signature) throw new HttpError(409, "payment_submission_conflict", "a different payment signature is already being reconciled for this order");
+  if (current.funding_submission_signature && current.funding_submission_signature !== signature) {
+    // A browser may observe a finalized failure before the scheduled reconciler.
+    // Replace only a transaction proven to have failed, never an unresolved or
+    // merely nonmatching receipt that might still represent received funds.
+    const previousSignature = current.funding_submission_signature;
+    const previous = await rail.verifyFunding(funding, previousSignature, current.payer_wallet!);
+    if (!previous.finalized || previous.execution_failed !== true || previous.matched) throw new HttpError(409, "payment_submission_conflict", "a different payment signature is already being reconciled for this order");
+    const latest = await context.store.getRealizeCommission(commissionId) ?? current;
+    if (latest.funding_signature || latest.funding_submission_signature !== previousSignature) throw new HttpError(409, "payment_submission_conflict", "the payment changed while its failed transaction was being reconciled");
+    const {funding_submission_signature: _failedSignature, ...withoutSubmission} = latest;
+    current = await context.store.updateRealizeCommission(updatedRealizeCommission(withoutSubmission, {}, {failure_reason: "the previous payment transaction finalized with an execution failure; verifying the replacement receipt"}), latest.updated_at);
+  }
 
   if (!current.funding_submission_signature || current.commission.state === "EXPIRED") {
     const submitted = updatedRealizeCommission(current, current.commission.state === "EXPIRED" ? {state: "AWAITING_PAYMENT", payment_state: "pending"} : {}, {

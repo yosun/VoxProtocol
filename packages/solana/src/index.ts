@@ -255,6 +255,8 @@ export interface UsdcTransferExpectation {
 export interface UsdcTransferVerification {
   finalized: boolean;
   matched: boolean;
+  /** A finalized execution error proves that this transaction moved no tokens. */
+  execution_failed?: boolean;
   network_matches?: boolean;
   reason?: string;
   /** Solana transaction block time, in Unix seconds, when exposed by RPC. */
@@ -362,8 +364,9 @@ export async function verifyFinalizedUsdcTransfer(input: UsdcTransferExpectation
     return {finalized: true, matched: false, network_matches: false, reason: "Configured RPC endpoint does not serve Solana mainnet-beta.", usdc_mint: input.usdc_mint, destination_token_account: input.destination_token_account, amount_atomic: input.amount_atomic, ...(input.source_token_account ? {source_token_account: input.source_token_account} : {})};
   }
   const transaction = await connection.getParsedTransaction(input.transaction_signature, {commitment: "finalized", maxSupportedTransactionVersion: 1});
-  const base = {finalized: !!transaction && transaction.meta?.err === null, matched: false, ...(input.network_id ? {network_matches: true} : {}), ...(Number.isSafeInteger(transaction?.blockTime) ? {block_time: transaction!.blockTime!} : {}), usdc_mint: input.usdc_mint, destination_token_account: input.destination_token_account, amount_atomic: input.amount_atomic};
-  if (!transaction || !transaction.meta || transaction.meta.err !== null) return input.source_token_account ? {...base, source_token_account: input.source_token_account} : base;
+  const base = {finalized: !!transaction?.meta && transaction.meta.err !== undefined, matched: false, ...(input.network_id ? {network_matches: true} : {}), ...(Number.isSafeInteger(transaction?.blockTime) ? {block_time: transaction!.blockTime!} : {}), usdc_mint: input.usdc_mint, destination_token_account: input.destination_token_account, amount_atomic: input.amount_atomic};
+  if (!transaction || !transaction.meta || transaction.meta.err === undefined) return input.source_token_account ? {...base, source_token_account: input.source_token_account} : base;
+  if (transaction.meta.err !== null) return {...base, execution_failed: true, reason: "The finalized payment transaction failed execution and moved no USDC.", ...(input.source_token_account ? {source_token_account: input.source_token_account} : {})};
   if (input.payment_reference && !transactionContainsPaymentReference(transaction, input.payment_reference)) return input.source_token_account ? {...base, source_token_account: input.source_token_account} : base;
   if (input.payer_address && !transaction.transaction.message.accountKeys.some((account) => account.pubkey.toBase58() === input.payer_address && account.signer)) return {...base, reason: "Payer wallet did not sign the finalized payment transaction.", ...(input.source_token_account ? {source_token_account: input.source_token_account} : {})};
   const matches: string[] = [];

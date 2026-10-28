@@ -195,7 +195,7 @@ describe("historical finalized USDC ownership (offline)", () => {
     await expect(test.verify()).resolves.toMatchObject({matched: false, network_matches: false});
     test.genesisLookup.mockResolvedValue(MAINNET_GENESIS);
     test.meta.err = {InstructionError: [0, "Custom"]};
-    await expect(test.verify()).resolves.toMatchObject({finalized: false, matched: false});
+    await expect(test.verify()).resolves.toMatchObject({finalized: true, matched: false, execution_failed: true});
   });
 
   it("rejects two identical quote-bound transfers and does not query current account state", async () => {
