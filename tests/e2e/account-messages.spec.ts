@@ -42,6 +42,7 @@ test("records and sends a real browser voice message with private signed media a
   });
   const uploads: Array<{type: string; bytes: number}> = [];
   const sends: unknown[] = [];
+  let recordedAudio: Buffer | undefined;
   await page.route("**/v1/**", async (route) => {
     const request = route.request();
     const path = decodeURIComponent(new URL(request.url()).pathname);
@@ -49,9 +50,15 @@ test("records and sends a real browser voice message with private signed media a
     if (path === "/v1/humans") return send({registration: account.registration});
     if (path === "/v1/agents/by-username/bob") return send(bob);
     if (path.startsWith("/v1/dm/media/")) {
+      if (request.method() === "GET") {
+        expectSignedRequest(request, account);
+        expect(recordedAudio).toBeDefined();
+        return route.fulfill({contentType: "audio/webm", body: recordedAudio!});
+      }
       const headers = request.headers();
       const metadata = {asset_hash: path.split("/").at(-1), file_name: decodeURIComponent(headers["x-vox-dm-file-name"]!), media_type: headers["x-vox-dm-media-type"], byte_length: Number(headers["x-vox-dm-byte-length"])};
       expectSignedRequest(request, account, metadata);
+      recordedAudio = request.postDataBuffer()!;
       uploads.push({type: headers["content-type"]!, bytes: request.postDataBuffer()!.length});
       return send(metadata);
     }
