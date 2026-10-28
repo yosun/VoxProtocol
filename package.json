@@ -26,6 +26,7 @@
     "test:firestore:run": "FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 vitest run tests/firestore.integration.test.ts --testTimeout=30000",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:nft-contract": "forge test --root . --contracts contracts --match-path contracts/test/VoxMediaNFT.t.sol --use 0.8.33 --evm-version cancun --out .vox-local/forge-out --cache-path .vox-local/forge-cache -vv",
     "test:realize-escrow": "sh scripts/test-realize-escrow.sh",
     "test:realize-escrow:local-validator": "npx tsx scripts/test-realize-escrow-local-validator.ts",
     "initialize:realize-devnet": "tsx scripts/initialize-realize-devnet-config.ts",

@@ -131,6 +131,7 @@ export class FirestoreSettlementLedger implements SettlementLedger {
       const prior = snapshot.data() as SettlementBatchRecord;
       if (prior.status !== "failed" || prior.transaction_signature !== expectedSignature || prior.amount_usdc_atomic !== replacement.amount_usdc_atomic || JSON.stringify(prior.payout_ids) !== JSON.stringify(replacement.payout_ids)) return prior;
       const attemptNumber = (prior.attempt_number ?? 1) + 1;
+      if (replacement.attempt_number !== attemptNumber || !replacement.transaction_signature || replacement.transaction_signature === prior.transaction_signature) throw new Error("replacement refund must bind a new transaction attempt");
       const history = [...(prior.previous_attempts ?? []), {attempt_number: prior.attempt_number ?? 1, status: "failed" as const, ...(prior.transaction_signature ? {transaction_signature: prior.transaction_signature} : {}), updated_at: prior.updated_at}];
       const next = {...replacement, attempt_number: attemptNumber, previous_attempts: history};
       transaction.set(ref, next);
@@ -198,6 +199,7 @@ export class MemorySettlementLedger implements SettlementLedger {
     const prior = batches?.get(replacement.batch_index);
     if (!prior || prior.status !== "failed" || prior.transaction_signature !== expectedSignature || prior.amount_usdc_atomic !== replacement.amount_usdc_atomic || JSON.stringify(prior.payout_ids) !== JSON.stringify(replacement.payout_ids)) return prior ?? replacement;
     const attemptNumber = (prior.attempt_number ?? 1) + 1;
+    if (replacement.attempt_number !== attemptNumber || !replacement.transaction_signature || replacement.transaction_signature === prior.transaction_signature) throw new Error("replacement refund must bind a new transaction attempt");
     const history = [...(prior.previous_attempts ?? []), {attempt_number: prior.attempt_number ?? 1, status: "failed" as const, ...(prior.transaction_signature ? {transaction_signature: prior.transaction_signature} : {}), updated_at: prior.updated_at}];
     const next = {...replacement, attempt_number: attemptNumber, previous_attempts: history};
     batches!.set(replacement.batch_index, next);

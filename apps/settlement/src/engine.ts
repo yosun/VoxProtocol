@@ -50,7 +50,7 @@ export interface MainnetSettlementChain {
   isTreasuryDestination(destination: string): boolean;
   ensureTreasury(): Promise<void>;
   verifyFunding(input: RefundRequest): Promise<boolean>;
-  prepareBatch(input: {recordId: string; batchIndex: number; transfers: SettlementTransfer[]}): Promise<PreparedSettlementBatch>;
+  prepareBatch(input: {recordId: string; batchIndex: number; attemptNumber: number; transfers: SettlementTransfer[]}): Promise<PreparedSettlementBatch>;
   executeBatch(batch: PreparedSettlementBatch): Promise<"prepared" | "finalized" | "failed" | "uncertain">;
 }
 
@@ -230,12 +230,12 @@ export class RealizeSettlementProcessor {
   private async progressBatch(recordId: string, batchIndex: number, transfers: SettlementTransfer[], allowRefundReplacement = false) {
     let batch = await this.ledger.getBatch(recordId, batchIndex);
     if (!batch) {
-      const prepared = await this.chain.prepareBatch({recordId, batchIndex, transfers});
+      const prepared = await this.chain.prepareBatch({recordId, batchIndex, attemptNumber: 1, transfers});
       batch = await this.ledger.createBatchIfAbsent(recordId, prepared);
     }
     if (batch.status === "failed" && allowRefundReplacement) {
       if ((batch.attempt_number ?? 1) >= 3) return batch;
-      const prepared = await this.chain.prepareBatch({recordId, batchIndex, transfers});
+      const prepared = await this.chain.prepareBatch({recordId, batchIndex, attemptNumber: (batch.attempt_number ?? 1) + 1, transfers});
       batch = await this.ledger.replaceFailedBatch(recordId, batch.transaction_signature, prepared);
     }
     if (batch.status === "finalized" || batch.status === "failed") return batch;

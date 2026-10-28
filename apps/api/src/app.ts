@@ -124,7 +124,7 @@ import {
   type SolanaRealizeSettlementClient
 } from "./realize-engine.js";
 import {configuredDevnetRealizeEscrow, type DevnetRealizeEscrowClient} from "./realize-solana-devnet.js";
-import {configuredNftService, fulfillmentOutputToNftInput, legacyRealizationToNftInput, NftMintService, verifyNftWalletProof} from "./nft.js";
+import {configuredNftService, fulfillmentOutputToNftInput, isMainnetNftChain, legacyRealizationToNftInput, NftMintService, verifyNftWalletProof} from "./nft.js";
 import {configuredMainnetRealizePaymentRail, isManagedRealizeSettlementConfigured, type MainnetSplUsdcFundingAuthorization, type RealizePaymentRail} from "./realize-payment.js";
 import {summarizeCharacterAccount} from "./character-account.js";
 
@@ -869,7 +869,18 @@ async function verifyAndRecordMainnetFunding(
   if (funding.payment_reference !== `vox:realize:payment:${current.payment_intent.payment_intent_id}:${quote.canonical_quote_hash}`) throw new HttpError(409, "payment_intent_mismatch", "Mainnet payment memo does not match the unique payment intent");
   if (funding.destination_token_account !== configuration.funding_destination_token_account || funding.network_id !== "solana:mainnet-beta") throw new HttpError(409, "treasury_configuration_mismatch", "Mainnet payment destination differs from the pinned treasury account");
   if (funding.payer_wallet !== current.payer_wallet) throw new HttpError(409, "payment_intent_mismatch", "submitted payer does not match the accepted payment intent");
-  if (current.funding_submission_signature && current.funding_submission_signature !== signature) throw new HttpError(409, "payment_submission_conflict", "a different payment signature is already being reconciled for this order");
+  if (current.funding_submission_signature && current.funding_submission_signature !== signature) {
+    // A browser may observe a finalized failure before the scheduled reconciler.
+    // Replace only a transaction proven to have failed, never an unresolved or
+    // merely nonmatching receipt that might still represent received funds.
+    const previousSignature = current.funding_submission_signature;
+    const previous = await rail.verifyFunding(funding, previousSignature, current.payer_wallet!);
+    if (!previous.finalized || previous.execution_failed !== true || previous.matched) throw new HttpError(409, "payment_submission_conflict", "a different payment signature is already being reconciled for this order");
+    const latest = await context.store.getRealizeCommission(commissionId) ?? current;
+    if (latest.funding_signature || latest.funding_submission_signature !== previousSignature) throw new HttpError(409, "payment_submission_conflict", "the payment changed while its failed transaction was being reconciled");
+    const {funding_submission_signature: _failedSignature, ...withoutSubmission} = latest;
+    current = await context.store.updateRealizeCommission(updatedRealizeCommission(withoutSubmission, {}, {failure_reason: "the previous payment transaction finalized with an execution failure; verifying the replacement receipt"}), latest.updated_at);
+  }
 
   if (!current.funding_submission_signature || current.commission.state === "EXPIRED") {
     const submitted = updatedRealizeCommission(current, current.commission.state === "EXPIRED" ? {state: "AWAITING_PAYMENT", payment_state: "pending"} : {}, {
@@ -1425,6 +1436,7 @@ async function provisionRealizeNfts(context: AppContext, current: RealizeCommiss
 
 async function provisionLegacyNft(context: AppContext, record: RealizationRecord): Promise<RealizationRecord> {
   if (!context.nftService || record.status !== "delivered" || record.nft_media_ids?.length || !record.media_url || !record.media_hash) return record;
+  if (context.nftService.adapters.every((adapter) => isMainnetNftChain(adapter.chain))) return record;
   try {
     const quote = record.quote_id ? await context.store.getQuote(record.quote_id) : undefined;
     const sourcePost = await context.store.getPost(record.post_id);
@@ -3328,26 +3340,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
         created_at: new Date().toISOString()
       };
       let storedRealization = await context.store.createRealizationWithPayment({payment, realization});
-      if (context.nftService && job.status === "delivered" && job.media_url && job.media_hash) {
-        try {
-          const sourcePost = await context.store.getPost(body.post_id);
-          const media = await context.nftService.ensureMedia(context.store, legacyRealizationToNftInput({
-            realizationId: storedRealization.realization_id,
-            ownerId: requesterId,
-            ...(isValidSolanaAddress(requesterId) ? {ownerWallet: requesterId} : {}),
-            providerId: storedRealization.provider_id,
-            postId: body.post_id,
-            ...(sourcePost ? {sourceContent: sourcePost.intent.content.text} : {}),
-            requestParameters: {generation_description: quote.generation_description ?? "", style: quote.style, duration_seconds: quote.duration_seconds},
-            mediaUri: job.media_url,
-            mediaHash: job.media_hash,
-            publicBaseUrl: context.publicBaseUrl
-          }));
-          storedRealization = await context.store.updateRealizationNftMediaIds(storedRealization.realization_id, [media.media_id]);
-        } catch (error) {
-          request.log.error({err: error, realization_id: storedRealization.realization_id}, "NFT entitlement provisioning deferred");
-        }
-      }
+      storedRealization = await provisionLegacyNft(context, storedRealization);
       if (commissionRequest && commissionRequestId) {
         const eventKind: CommissionRequestEvent["kind"] = job.status === "delivered" ? "realization_delivered" : job.status === "failed" ? "realization_failed" : job.status === "processing" ? "realization_processing" : "realization_queued";
         const requestStatus: CommissionRequestRecord["status"] = job.status === "delivered" ? "delivered" : job.status === "failed" ? "failed" : job.status === "refundable" ? "refundable" : job.status === "processing" ? "processing" : "queued";

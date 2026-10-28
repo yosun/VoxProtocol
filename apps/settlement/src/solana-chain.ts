@@ -1,5 +1,6 @@
+import {createHash} from "node:crypto";
 import {readFileSync} from "node:fs";
-import {Connection, Keypair, PublicKey, Transaction} from "@solana/web3.js";
+import {Connection, Keypair, PublicKey, Transaction, TransactionInstruction} from "@solana/web3.js";
 import {
   AccountLayout,
   createAssociatedTokenAccountIdempotentInstruction,
@@ -8,7 +9,8 @@ import {
   TOKEN_PROGRAM_ID,
   unpackAccount
 } from "@solana/spl-token";
-import {verifyFinalizedUsdcTransfer} from "@vox/solana";
+import {MEMO_PROGRAM_ID, verifyFinalizedUsdcTransfer} from "@vox/solana";
+import {REALIZE_MAX_RECIPIENTS_PER_TRANSACTION, REALIZE_MAX_TRANSACTION_BYTES} from "@vox/protocol";
 import {MAINNET_GENESIS_HASH, MAINNET_NETWORK_ID, MAINNET_USDC_MINT, solanaAddressForNetwork, type MainnetSettlementChain, type PreparedSettlementBatch, type RefundRequest, type SettlementTransfer, SettlementError} from "./engine.js";
 
 export interface SolanaSettlementOptions {
@@ -96,11 +98,14 @@ export class SolanaMainnetSettlementChain implements MainnetSettlementChain {
     return solanaMainnetPayoutAddress(destination) === this.owner.toBase58();
   }
 
-  async prepareBatch(input: {recordId: string; batchIndex: number; transfers: SettlementTransfer[]}): Promise<PreparedSettlementBatch> {
+  async prepareBatch(input: {recordId: string; batchIndex: number; attemptNumber: number; transfers: SettlementTransfer[]}): Promise<PreparedSettlementBatch> {
+    if (!input.recordId || input.recordId.length > 512 || !Number.isSafeInteger(input.batchIndex) || input.batchIndex < 0 || !Number.isSafeInteger(input.attemptNumber) || input.attemptNumber < 1) {
+      throw new SettlementError(400, "invalid_transaction_identity", "settlement transaction must identify its record, batch, and attempt");
+    }
     const normalizedTransfers = input.transfers.map((transfer) => {
       return {...transfer, destination: solanaMainnetPayoutAddress(transfer.destination)};
     });
-    if (!normalizedTransfers.length || normalizedTransfers.some((transfer) => !/^[1-9][0-9]{0,19}$/.test(transfer.amount_usdc_atomic) || BigInt(transfer.amount_usdc_atomic) > this.options.maxPaymentAtomic || !/^[A-Za-z0-9:._-]{1,256}$/.test(transfer.payout_id))) {
+    if (!normalizedTransfers.length || normalizedTransfers.length > REALIZE_MAX_RECIPIENTS_PER_TRANSACTION || normalizedTransfers.some((transfer) => !/^[1-9][0-9]{0,19}$/.test(transfer.amount_usdc_atomic) || BigInt(transfer.amount_usdc_atomic) > this.options.maxPaymentAtomic || !/^[A-Za-z0-9:._-]{1,256}$/.test(transfer.payout_id))) {
       throw new SettlementError(400, "invalid_payout", "settlement payout is invalid");
     }
     if (normalizedTransfers.some((transfer) => transfer.destination === this.owner.toBase58())) throw new SettlementError(409, "treasury_liability", "treasury-owned allocations must remain liabilities and cannot be submitted as payouts");
@@ -109,6 +114,7 @@ export class SolanaMainnetSettlementChain implements MainnetSettlementChain {
     if (total > this.options.maxPaymentAtomic) throw new SettlementError(400, "payment_limit_exceeded", "settlement batch exceeds the configured payment limit");
     const base = {
       batch_index: input.batchIndex,
+      attempt_number: input.attemptNumber,
       payout_ids: normalizedTransfers.map((transfer) => transfer.payout_id),
       amount_usdc_atomic: total.toString(),
       updated_at: new Date().toISOString()
@@ -125,11 +131,20 @@ export class SolanaMainnetSettlementChain implements MainnetSettlementChain {
     const missingAccounts = await Promise.all(recipientAccounts.map(async ({tokenAccount}) => !(await this.connection.getAccountInfo(tokenAccount, "finalized"))));
     const {blockhash, lastValidBlockHeight} = await this.connection.getLatestBlockhash("finalized");
     const transaction = new Transaction({feePayer: this.owner, recentBlockhash: blockhash});
+    // Equal transfers within one blockhash must remain distinct economic
+    // operations. The durable ledger selects the winning signed attempt before
+    // submission, and retries rebroadcast those exact bytes.
+    const identity = createHash("sha256").update(JSON.stringify([input.recordId, input.batchIndex, input.attemptNumber])).digest("hex");
+    transaction.add(new TransactionInstruction({programId: MEMO_PROGRAM_ID, keys: [], data: Buffer.from("vox:realize:treasury:v1:" + identity, "utf8")}));
     recipientAccounts.forEach(({transfer, owner, tokenAccount}) => {
       transaction.add(createAssociatedTokenAccountIdempotentInstruction(this.owner, tokenAccount, owner, this.mint, TOKEN_PROGRAM_ID));
       transaction.add(createTransferCheckedInstruction(this.tokenAccount, this.mint, tokenAccount, this.owner, BigInt(transfer.amount_usdc_atomic), 6, [], TOKEN_PROGRAM_ID));
     });
-    const fee = (await this.connection.getFeeForMessage(transaction.compileMessage(), "finalized")).value;
+    const message = transaction.compileMessage();
+    // This adapter always uses one treasury signature, whose shortvec length
+    // occupies one byte. Check the actual wire size including the binding memo.
+    if (1 + 64 * message.header.numRequiredSignatures + message.serialize().length > REALIZE_MAX_TRANSACTION_BYTES) throw new SettlementError(400, "transaction_too_large", "settlement batch exceeds Solana's serialized transaction limit");
+    const fee = (await this.connection.getFeeForMessage(message, "finalized")).value;
     if (fee === null) throw new SettlementError(503, "fee_estimate_unavailable", "treasury transaction fee could not be estimated");
     const rent = await this.connection.getMinimumBalanceForRentExemption(AccountLayout.span, "finalized");
     const requiredLamports = BigInt(fee) + BigInt(rent) * BigInt(missingAccounts.filter(Boolean).length) + this.reserveLamports;

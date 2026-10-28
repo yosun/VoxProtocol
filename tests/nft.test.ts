@@ -10,6 +10,7 @@ import {buildApp} from "../apps/api/src/app.js";
 import {MemoryStore} from "../apps/api/src/store.js";
 import {createSolanaNftMintInstructions, EvmNftAdapter, NftMintService, SolanaNftAdapter, nftClaimMessage, nftMediaIdFor, type NftChainAdapter, type NftMediaInput, type NftPreparedTransaction} from "../apps/api/src/nft.js";
 import type {NftChain, NftMediaRecord, NftMintRecord} from "../apps/api/src/types.js";
+import {seedPaidNftSource} from "./nft-fixtures.js";
 
 let app: Awaited<ReturnType<typeof buildApp>> | undefined;
 afterEach(async () => { await app?.close(); app = undefined; });
@@ -69,6 +70,11 @@ function input(ownerWallet?: string, publicationConsent = true): NftMediaInput {
     byte_length: 1234,
     provenance_record_id: "vox:provenance:test"
   };
+}
+
+async function paidMainnetMedia(service: NftMintService, store: MemoryStore, media: NftMediaInput) {
+  await seedPaidNftSource(store, media);
+  return service.ensureMedia(store, media);
 }
 
 function evmWallet(seed: number) {
@@ -185,7 +191,7 @@ describe("cross-chain NFT entitlements", () => {
     const store = new MemoryStore();
     const chains = ["arbitrum:mainnet", "ethereum:mainnet", "hyperevm:mainnet", "robinhood:mainnet"] as const;
     const service = new NftMintService({publicBaseUrl: "https://vox.example.test", adapters: chains.map((chain) => adapter(chain))});
-    const media = await service.ensureMedia(store, input());
+    const media = await paidMainnetMedia(service, store, input());
     expect((await store.listNftMintsForMedia(media.media_id)).map((mint) => mint.chain)).toEqual([...chains].sort());
   });
 
@@ -269,7 +275,7 @@ describe("cross-chain NFT entitlements", () => {
     await store.registerHuman(human.registration);
     const monad = adapter("monad:mainnet");
     const service = new NftMintService({publicBaseUrl: "https://vox.example.test", adapters: [monad]});
-    const media = await service.ensureMedia(store, {...input(), owner_id: human.registration.human_id});
+    const media = await paidMainnetMedia(service, store, {...input(), owner_id: human.registration.human_id});
     const mint = (await store.listNftMintsForMedia(media.media_id))[0]!;
     const wallet = evmWallet(11);
     const path = `/v1/nft/mints/${encodeURIComponent(mint.mint_id)}/claim`;
@@ -293,7 +299,7 @@ describe("cross-chain NFT entitlements", () => {
     await store.registerHuman(human.registration);
     await store.registerHuman(other.registration);
     const service = new NftMintService({publicBaseUrl: "https://vox.example.test", adapters: [adapter("monad:mainnet")]});
-    const media = await service.ensureMedia(store, {...input(), owner_id: human.registration.human_id});
+    const media = await paidMainnetMedia(service, store, {...input(), owner_id: human.registration.human_id});
     const mint = (await store.listNftMintsForMedia(media.media_id))[0]!;
     const wallet = evmWallet(12);
     const path = `/v1/nft/mints/${encodeURIComponent(mint.mint_id)}/claim`;
@@ -326,7 +332,7 @@ describe("cross-chain NFT entitlements", () => {
     const evm = new EvmNftAdapter({chain: "monad:mainnet", rpcUrl: "https://rpc.example.test", chainId: 143, contractAddress: contract, privateKey: new Uint8Array(32).fill(15), explorerBaseUrl: "https://monadscan.com", fetcher: (async (_url: unknown, init: RequestInit) => new Response(JSON.stringify({result: JSON.parse(init.body as string).method === "eth_blockNumber" ? "0x20" : {status: "0x1", to: contract, transactionHash: tx, logs: [], blockNumber: "0x1"}}), {status: 200})) as typeof fetch});
     const store = new MemoryStore();
     const service = new NftMintService({publicBaseUrl: "https://vox.example.test", adapters: [evm]});
-    const media = await service.ensureMedia(store, input());
+    const media = await paidMainnetMedia(service, store, input());
     const mint = (await store.listNftMintsForMedia(media.media_id))[0]!;
     expect(await evm.reconcile({...mint, owner_wallet: evmWallet(16).address, transaction_id: tx})).toMatchObject({state: "manual_review"});
   });
@@ -337,7 +343,7 @@ describe("cross-chain NFT entitlements", () => {
     await store.registerHuman(human.registration);
     const monad = adapter("monad:mainnet");
     const service = new NftMintService({publicBaseUrl: "https://vox.example.test", adapters: [monad]});
-    const media = await service.ensureMedia(store, {...input(), owner_id: human.registration.human_id});
+    const media = await paidMainnetMedia(service, store, {...input(), owner_id: human.registration.human_id});
     const mint = (await store.listNftMintsForMedia(media.media_id))[0]!;
     const wallet = evmWallet(11);
     const path = `/v1/nft/mints/${encodeURIComponent(mint.mint_id)}/claim`;
@@ -361,7 +367,7 @@ describe("cross-chain NFT entitlements", () => {
     await store.registerHuman(human.registration);
     await store.registerHuman(other.registration);
     const service = new NftMintService({publicBaseUrl: "https://vox.example.test", adapters: [adapter("monad:mainnet")]});
-    const media = await service.ensureMedia(store, {...input(), owner_id: human.registration.human_id});
+    const media = await paidMainnetMedia(service, store, {...input(), owner_id: human.registration.human_id});
     const mint = (await store.listNftMintsForMedia(media.media_id))[0]!;
     const wallet = evmWallet(12);
     const path = `/v1/nft/mints/${encodeURIComponent(mint.mint_id)}/claim`;
@@ -394,7 +400,7 @@ describe("cross-chain NFT entitlements", () => {
     const evm = new EvmNftAdapter({chain: "monad:mainnet", rpcUrl: "https://rpc.example.test", chainId: 143, contractAddress: contract, privateKey: new Uint8Array(32).fill(15), explorerBaseUrl: "https://monadscan.com", fetcher: (async (_url, init) => new Response(JSON.stringify({result: JSON.parse(init!.body as string).method === "eth_blockNumber" ? "0x100" : {status: "0x1", to: contract, transactionHash: tx, logs: [], blockNumber: "0x1"}}), {status: 200})) as typeof fetch});
     const store = new MemoryStore();
     const service = new NftMintService({publicBaseUrl: "https://vox.example.test", adapters: [evm]});
-    const media = await service.ensureMedia(store, input());
+    const media = await paidMainnetMedia(service, store, input());
     const mint = (await store.listNftMintsForMedia(media.media_id))[0]!;
     expect(await evm.reconcile({...mint, owner_wallet: evmWallet(16).address, transaction_id: tx})).toMatchObject({state: "manual_review"});
   });
