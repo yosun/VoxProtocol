@@ -34,6 +34,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - name: Install Foundry for NFT contract regression tests
+        uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1
+        with:
+          version: v1.5.1
+          cache: false
+      - name: Verify ERC-721 receiver compatibility
+        run: npm run test:nft-contract
       - name: Install browser for frontend end-to-end tests
         if: needs.scope.outputs.run_e2e == 'true'
         run: npx playwright install --with-deps chromium
