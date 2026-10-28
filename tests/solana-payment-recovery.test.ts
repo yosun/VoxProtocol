@@ -273,6 +273,22 @@ describe("USDC wallet broadcast recovery", () => {
     expect(Connection.prototype.sendRawTransaction).not.toHaveBeenCalled();
   });
 
+  it("uses only the connected account's signing capabilities even when the wallet advertises both globally", async () => {
+    const wallet = walletFeatures();
+    const input = paymentInput();
+    await sendUsdcPayment({...input, account: {...input.account, features: [SolanaSignAndSendTransaction]}});
+    expect(wallet.signTransaction).not.toHaveBeenCalled();
+    expect(wallet.signAndSendTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses wallet-global signing methods absent from the connected account", async () => {
+    const wallet = walletFeatures();
+    const input = paymentInput();
+    await expect(sendUsdcPayment({...input, account: {...input.account, features: []}})).rejects.toThrow("does not support Solana transaction signing");
+    expect(wallet.signTransaction).not.toHaveBeenCalled();
+    expect(wallet.signAndSendTransaction).not.toHaveBeenCalled();
+  });
+
   it("recognizes only explicit user cancellation, rather than generic signing failures", () => {
     expect(walletRejected({code: 4001})).toBe(true);
     expect(walletRejected(new Error("User rejected the request"))).toBe(true);

@@ -7,10 +7,11 @@ import {checkSolanaTransaction, recoverUsdcPayment, sendRealizeEscrowPayment, se
 import {configuredWalletCluster, solanaWalletClient, walletChainForCluster} from "./solana-wallet.js";
 import {RealizeNfts} from "./RealizeNfts.js";
 import {generationDescription, videoOptions, type VideoOptions} from "./realize-parameters.js";
+import {readFinancialCheckpoint, withFinancialLock, writeFinancialCheckpoint, type FinancialCheckpoint, type FinancialOutcome} from "./financial-checkpoints.js";
 
 type RealizeStyle = "cinematic" | "portrait" | "documentary" | "ambient" | "special";
 type PaymentProgress = "preparing" | "wallet_approval" | "solana_confirmation" | "vox_verification";
-type SavedCheckout = {version: 2; originPostId: string; creatorId: string; description: string; style: RealizeStyle; duration: number; resolution?: string; testVideo?: boolean; idempotencyKey: string; requestId: string; commissionId?: string; transactionSignature?: string; paymentAttempt?: UsdcPaymentAttempt; refundTransactionSignature?: string; transactionUrl?: string; publicAttribution?: string; nftPublicationConsent?: boolean};
+type SavedCheckout = {version: 2; originPostId: string; creatorId: string; description: string; style: RealizeStyle; duration: number; resolution?: string; testVideo?: boolean; idempotencyKey: string; requestId: string; commissionId?: string; transactionSignature?: string; paymentAttempt?: UsdcPaymentAttempt; financialAttemptId?: string; financialPredecessor?: string; refundTransactionSignature?: string; transactionUrl?: string; publicAttribution?: string; nftPublicationConsent?: boolean};
 const CHECKOUT_KEY = "vox.realize.v1.checkout";
 const CHECKPOINTS_KEY = "vox.realize.v1.checkpoints";
 type CheckoutCheckpoints = {version: 1; latestByPost: Record<string, string>; entries: Record<string, SavedCheckout>};
@@ -62,19 +63,16 @@ function loadSavedCheckout(originPostId: string, commissionId?: string): SavedCh
   return checkout?.originPostId === originPostId ? checkout : undefined;
 }
 
-function saveCheckout(value: SavedCheckout, requirePersistence = false): void {
+function saveCheckout(value: SavedCheckout): void {
   try {
     const registry = loadCheckpoints();
     const id = checkpointId(value);
     registry.entries[id] = value;
     registry.latestByPost[value.originPostId] = id;
     if (value.commissionId) delete registry.entries[`draft:${value.originPostId}`];
-    const serialized = JSON.stringify(registry);
-    sessionStorage.setItem(CHECKPOINTS_KEY, serialized);
-    if (requirePersistence && sessionStorage.getItem(CHECKPOINTS_KEY) !== serialized) throw new Error("Payment recovery could not be saved.");
+    sessionStorage.setItem(CHECKPOINTS_KEY, JSON.stringify(registry));
     sessionStorage.setItem(CHECKOUT_KEY, JSON.stringify(value));
   } catch {
-    if (requirePersistence) throw new Error("Could not save payment recovery in this browser. Enable browser storage before continuing.");
     /* Draft/status updates can continue when storage is unavailable. */
   }
 }
@@ -90,6 +88,14 @@ function clearCheckout(originPostId: string): void {
     const raw = sessionStorage.getItem(CHECKOUT_KEY);
     if (raw && (JSON.parse(raw) as Partial<SavedCheckout>).originPostId === originPostId) sessionStorage.removeItem(CHECKOUT_KEY);
   } catch { /* Ignore disabled storage. */ }
+}
+
+async function migrateFinancialCheckpoints(): Promise<void> {
+  for (const saved of Object.values(loadCheckpoints().entries)) {
+    if (!saved.commissionId || !saved.transactionSignature && !saved.paymentAttempt && !saved.refundTransactionSignature) continue;
+    const attemptId = saved.financialAttemptId ?? crypto.randomUUID();
+    await writeFinancialCheckpoint({sourcePostId: saved.originPostId, commissionId: saved.commissionId, attemptId, outcome: "pending", updatedAt: Date.now(), checkout: {...saved, financialAttemptId: attemptId}}, {migrateOnly: true});
+  }
 }
 
 function money(value: string | undefined): string {
@@ -237,6 +243,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
   const [nftPublicationConsent, setNftPublicationConsent] = useState(!!savedCheckout?.nftPublicationConsent);
   const [pendingSignature, setPendingSignature] = useState<string>();
   const [pendingPaymentAttempt, setPendingPaymentAttempt] = useState<UsdcPaymentAttempt | undefined>(savedCheckout?.paymentAttempt);
+  const [financialAttemptId, setFinancialAttemptId] = useState<string | undefined>(savedCheckout?.financialAttemptId);
   const [walletReceipt, setWalletReceipt] = useState("");
   const [pendingRefundSignature, setPendingRefundSignature] = useState<string>();
   const [transactionUrl, setTransactionUrl] = useState<string>();
@@ -252,6 +259,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
   const loadedCreator = useRef(creatorId);
   const quoteReviewRef = useRef<HTMLElement | null>(null);
   const scrollToQuoteRef = useRef(false);
+  const financialRecord = useRef<FinancialCheckpoint<SavedCheckout>>();
   const selectedCreator = creatorOptions.find((item) => item.registration.agent_id === creatorId);
   const connectedAddress = connected?.account.address;
   const testVideoCapabilityAvailable = !!capabilities?.capabilities.some((item) => item.capability_id === REALIZE_TEST_VIDEO_CAPABILITY_ID && item.output_media_types.includes("video/mp4")) && !!capabilities?.generation_provider_ids.includes(REALIZE_TEST_VIDEO_PROVIDER_ID);
@@ -342,6 +350,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
   }, [creatorId, capabilityAttempt, testVideoMode]);
 
   const refreshStatus = useCallback(async (id: string, signer: RealizeIdentity) => {
+    const financialAtRequest = financialRecord.current?.commissionId === id ? financialRecord.current : undefined;
     const updated = await getCommission(signer, id);
     setCommissionStatus(updated);
     if (updated.quote) {
@@ -364,29 +373,95 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       else throw new Error("The provenance signature could not be verified against this VOX.gold issuer.");
     }
     if (updated.commission.accepted_quote_hash) setRightsReviewed(true);
+    if (financialAtRequest?.outcome === "pending" && ["captured", "settled"].includes(updated.commission.payment_state)) {
+      const {transactionSignature: _signature, paymentAttempt: _attempt, ...checkout} = financialAtRequest.checkout;
+      try {
+        const resolved = await writeFinancialCheckpoint({...financialAtRequest, outcome: "captured", updatedAt: Date.now(), checkout}, {expectedAttemptId: financialAtRequest.attemptId});
+        if (financialRecord.current?.attemptId === financialAtRequest.attemptId) {
+          financialRecord.current = resolved;
+          saveCheckout(checkout);
+          setPendingSignature(undefined);
+          setPendingPaymentAttempt(undefined);
+        }
+      } catch { /* A newer attempt or unavailable durable storage must not be erased. */ }
+    }
     setTrackingError("");
     return updated;
   }, [health]);
 
-  useEffect(() => {
-    if (!identity || restoreOnce.current) return;
-    restoreOnce.current = true;
-    const saved = loadSavedCheckout(post.post_id);
-    if (!saved || saved.originPostId !== post.post_id) { setRestoringCommission(false); return; }
+  function paymentCheckpoint(expectedAttemptId?: string): SavedCheckout | undefined {
+    const durable = financialRecord.current;
+    const saved = durable && durable.commissionId === commissionId && (!expectedAttemptId || durable.attemptId === expectedAttemptId) ? durable.checkout : loadSavedCheckout(post.post_id, commissionId);
+    return saved && (!expectedAttemptId || saved.financialAttemptId === expectedAttemptId) ? saved : undefined;
+  }
+
+  async function persistFinancial(checkout: SavedCheckout, outcome: FinancialOutcome, options: {startAttempt?: boolean; expectedAttemptId?: string; expectedSignature?: string} = {}): Promise<void> {
+    if (!checkout.commissionId || !checkout.financialAttemptId) throw new Error("The financial recovery checkpoint is missing; reopen this checkout before paying.");
+    const record: FinancialCheckpoint<SavedCheckout> = {sourcePostId: checkout.originPostId, commissionId: checkout.commissionId, attemptId: checkout.financialAttemptId, outcome, updatedAt: Date.now(), checkout};
+    financialRecord.current = await writeFinancialCheckpoint(record, {
+      ...options,
+      ...(checkout.financialPredecessor ? {predecessorCommissionId: checkout.financialPredecessor} : {}),
+      ...(!options.startAttempt ? {expectedAttemptId: checkout.financialAttemptId} : {})
+    });
+    // IndexedDB is the durable authority. The old session registry is retained
+    // for draft compatibility and cannot overwrite another tab's financial data.
+    saveCheckout(checkout);
+    setFinancialAttemptId(checkout.financialAttemptId);
+  }
+
+  async function resolveFinancial(outcome: Exclude<FinancialOutcome, "pending">, expectedAttemptId: string | undefined, signature?: string): Promise<void> {
+    if (expectedAttemptId && financialRecord.current?.attemptId === expectedAttemptId && financialRecord.current.outcome === outcome) {
+      setPendingSignature(undefined);
+      setPendingPaymentAttempt(undefined);
+      return;
+    }
+    const saved = paymentCheckpoint(expectedAttemptId);
+    if (!saved) throw new Error("Another tab has a newer payment for this order. Reopen its saved checkout before continuing.");
+    const {transactionSignature: _signature, paymentAttempt: _paymentAttempt, ...resolved} = saved;
+    if (expectedAttemptId) await persistFinancial(resolved, outcome, signature ? {expectedSignature: signature} : {});
+    else saveCheckout(resolved);
+    setPendingSignature(undefined);
+    setPendingPaymentAttempt(undefined);
+  }
+
+  async function restoreCheckout(saved: SavedCheckout, record?: FinancialCheckpoint<SavedCheckout>): Promise<void> {
+    if (!validSavedCheckout(saved) || record && (saved.originPostId !== record.sourcePostId || saved.commissionId !== record.commissionId || saved.financialAttemptId !== record.attemptId)) throw new Error("The durable payment checkpoint is invalid. Verify the original wallet receipt before continuing.");
+    if (record) financialRecord.current = record;
+    saveCheckout(saved);
+    loadedCreator.current = saved.creatorId;
+    setCreatorId(saved.creatorId);
+    setDescription(saved.description);
+    setStyle(saved.style);
+    setDuration(saved.duration);
+    setResolution(saved.resolution ?? "768P");
+    setTestVideoMode(saved.testVideo === true);
     setPublicAttribution(saved.publicAttribution ?? "");
     setPublicConsent(!!saved.publicAttribution);
     setNftPublicationConsent(saved.nftPublicationConsent === true);
     setCommissionId(saved.commissionId);
     setPendingSignature(saved.transactionSignature);
     setPendingPaymentAttempt(saved.paymentAttempt);
+    setFinancialAttemptId(saved.financialAttemptId);
     setPendingRefundSignature(saved.refundTransactionSignature);
     setTransactionUrl(saved.transactionUrl);
-    if (saved.commissionId) {
-      setRestoringCommission(true);
-      void refreshStatus(saved.commissionId, identity)
-        .catch((reason: unknown) => setError(`Could not restore this commission. ${checkoutError(reason)}`))
-        .finally(() => setRestoringCommission(false));
-    } else setRestoringCommission(false);
+    setRestoringCommission(true);
+    try { if (saved.commissionId && identity) await refreshStatus(saved.commissionId, identity); }
+    finally { setRestoringCommission(false); }
+  }
+
+  useEffect(() => {
+    if (!identity || restoreOnce.current) return;
+    restoreOnce.current = true;
+    setRestoringCommission(true);
+    void (async () => {
+      await migrateFinancialCheckpoints();
+      const durable = await readFinancialCheckpoint<SavedCheckout>(post.post_id);
+      financialRecord.current = durable;
+      const session = loadSavedCheckout(post.post_id);
+      const useDurable = durable && (durable.outcome === "pending" || !session || session.commissionId === durable.commissionId || session.financialPredecessor !== durable.commissionId);
+      const saved = useDurable ? durable.checkout : session;
+      if (saved?.originPostId === post.post_id) await restoreCheckout(saved, useDurable ? durable : undefined);
+    })().catch((reason: unknown) => setError(`Could not restore this commission. ${checkoutError(reason)}`)).finally(() => setRestoringCommission(false));
   }, [identity, post.post_id, refreshStatus]);
 
   useEffect(() => {
@@ -472,7 +547,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
     const params = testVideoMode ? {...REALIZE_TEST_VIDEO_REQUEST} : {[options.descriptionField]: cleanDescription, ...(options.supportsStyle ? {style} : {}), duration_seconds: duration, ...(options.resolutions.length ? {resolution} : {})};
     const agreementReference = rightsPolicyId(rights);
     const createBody = {commissioner_id: identity.humanId, creator_id: creatorId, capability_id: selectedCapability.capability_id, requested_generation_parameters: params, rights_agreement_reference: agreementReference, source_post_id: post.post_id};
-    const savedBase: SavedCheckout = {version: 2, originPostId: post.post_id, creatorId, description: cleanDescription, style, duration: testVideoMode ? REALIZE_TEST_VIDEO_REQUEST.duration_seconds : duration, resolution: testVideoMode ? REALIZE_TEST_VIDEO_REQUEST.resolution : resolution, testVideo: testVideoMode, idempotencyKey, requestId: pricingRequestId};
+    const savedBase: SavedCheckout = {version: 2, originPostId: post.post_id, creatorId, description: cleanDescription, style, duration: testVideoMode ? REALIZE_TEST_VIDEO_REQUEST.duration_seconds : duration, resolution: testVideoMode ? REALIZE_TEST_VIDEO_REQUEST.resolution : resolution, testVideo: testVideoMode, idempotencyKey, requestId: pricingRequestId, ...(financialRecord.current ? {financialPredecessor: financialRecord.current.commissionId} : {})};
     saveCheckout(savedBase);
     try {
       const createPath = "/v1/realize/commissions";
@@ -519,7 +594,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       const path = `${commissionPath(commissionId)}/accept-quote`;
       // Acceptance may succeed even when its response or the following status
       // request is lost. Retain the exact consent sent before crossing that boundary.
-      saveCheckout({version: 2, originPostId: post.post_id, creatorId, description: description.trim(), style, duration, resolution, testVideo: testVideoMode, idempotencyKey: loadSavedCheckout(post.post_id, commissionId)?.idempotencyKey ?? crypto.randomUUID(), requestId: quote.pricing_request_id, commissionId, nftPublicationConsent, ...(publicConsent && publicAttribution.trim() ? {publicAttribution: publicAttribution.trim()} : {})});
+      saveCheckout({version: 2, originPostId: post.post_id, creatorId, description: description.trim(), style, duration, resolution, testVideo: testVideoMode, idempotencyKey: loadSavedCheckout(post.post_id, commissionId)?.idempotencyKey ?? crypto.randomUUID(), requestId: quote.pricing_request_id, commissionId, nftPublicationConsent, ...(financialRecord.current ? {financialPredecessor: financialRecord.current.commissionId} : {}), ...(publicConsent && publicAttribution.trim() ? {publicAttribution: publicAttribution.trim()} : {})});
       const accepted = await api.acceptRealizeQuote(commissionId, body, await signRealizeRequest(identity, "POST", path, body));
       setFunding(accepted.funding);
       const updated = await refreshStatus(commissionId, identity);
@@ -528,7 +603,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
     finally { setBusy(false); }
   }
 
-  async function submitFunding(signature: string): Promise<void> {
+  async function submitFunding(signature: string, expectedAttemptId = financialAttemptId): Promise<void> {
     if (!identity || !commissionId || !funding) return;
     setBusy(true);
     setPaymentProgress("vox_verification");
@@ -538,39 +613,42 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       const path = `${commissionPath(commissionId)}/fund`;
       await api.fundRealizeCommission(commissionId, body, await signRealizeRequest(identity, "POST", path, body));
       setPendingSignature(signature);
-      const saved = loadSavedCheckout(post.post_id, commissionId);
-      if (saved) saveCheckout({...saved, transactionSignature: signature});
       const updated = await refreshStatus(commissionId, identity);
       if (["captured", "settled"].includes(updated.commission.payment_state)) {
-        setPendingSignature(undefined);
-        setPendingPaymentAttempt(undefined);
-        const saved = loadSavedCheckout(post.post_id, commissionId);
-        if (saved) {
-          const {transactionSignature: _transactionSignature, paymentAttempt: _paymentAttempt, ...withoutSignature} = saved;
-          saveCheckout(withoutSignature);
-        }
+        await resolveFinancial("captured", expectedAttemptId, signature);
       }
     } catch (reason) {
       setPendingSignature(signature);
-      const saved = loadSavedCheckout(post.post_id, commissionId);
-      if (saved) saveCheckout({...saved, transactionSignature: signature});
       setError(checkoutError(reason));
       try {
         const updated = await refreshStatus(commissionId, identity);
         if (["captured", "settled"].includes(updated.commission.payment_state)) {
-          setPendingSignature(undefined);
-          setPendingPaymentAttempt(undefined);
-          const saved = loadSavedCheckout(post.post_id, commissionId);
-          if (saved) {
-            const {transactionSignature: _transactionSignature, paymentAttempt: _paymentAttempt, ...withoutSignature} = saved;
-            saveCheckout(withoutSignature);
-          }
+          await resolveFinancial("captured", expectedAttemptId, signature);
         }
       } catch { /* The signed transaction remains saved for a later check. */ }
     } finally { setBusy(false); }
   }
 
   async function pay(): Promise<void> {
+    if (busy || restoringCommission) return;
+    setBusy(true);
+    setError("");
+    try {
+      await withFinancialLock(post.post_id, async () => {
+        const durable = await readFinancialCheckpoint<SavedCheckout>(post.post_id);
+        const saved = loadSavedCheckout(post.post_id, commissionId);
+        if (durable && (durable.outcome === "pending" || durable.commissionId === commissionId && durable.outcome === "captured" || durable.commissionId !== commissionId && saved?.financialPredecessor !== durable.commissionId)) {
+          await restoreCheckout(durable.checkout, durable);
+          setError("This source already has a saved payment. Check its existing transaction before paying again.");
+          return;
+        }
+        await payLocked(durable);
+      });
+    } catch (reason) { setError(checkoutError(reason)); }
+    finally { setBusy(false); }
+  }
+
+  async function payLocked(previousRecord?: FinancialCheckpoint<SavedCheckout>): Promise<void> {
     if (!identity || !quote || !funding || !commissionId || !connected || !quoteAccepted || quoteExpired || busy || paymentPending) return;
     if (mainnetRealizeDisabled) { setError("Realize Mainnet checkout is disabled in this web build."); return; }
     if (networkMismatch) { setError(`This checkout is configured for ${networkName}, but the wallet connector is configured for ${configuredWalletCluster()}.`); return; }
@@ -582,15 +660,18 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
     setError("");
     let paymentSubmitted = false;
     let preparedAttempt: UsdcPaymentAttempt | undefined;
+    let financialStarted = false;
+    const attemptId = crypto.randomUUID();
     try {
       const onWalletApprovalRequested = () => setPaymentProgress("wallet_approval");
-      const onPrepared = (attempt: UsdcPaymentAttempt) => {
-        const saved = loadSavedCheckout(post.post_id, commissionId);
+      const onPrepared = async (attempt: UsdcPaymentAttempt) => {
+        const saved = paymentCheckpoint();
         if (!saved) throw new Error("The payment recovery checkpoint is missing. Reopen this checkout before paying; no payment was sent.");
         const signedRecovery = attempt.kind === "signed" ? {transactionSignature: attempt.signature, transactionUrl: `https://explorer.solana.com/tx/${encodeURIComponent(attempt.signature)}?cluster=${encodeURIComponent(networkName)}`} : {};
         // This write must succeed before the RPC or a sign-and-send wallet can
         // broadcast. Draft persistence elsewhere is deliberately best effort.
-        saveCheckout({...saved, paymentAttempt: attempt, ...signedRecovery}, true);
+        await persistFinancial({...saved, financialAttemptId: attemptId, paymentAttempt: attempt, ...signedRecovery}, "pending", {startAttempt: true, ...(previousRecord?.commissionId === commissionId ? {expectedAttemptId: previousRecord.attemptId} : {})});
+        financialStarted = true;
         preparedAttempt = attempt;
         paymentSubmitted = true;
         setPendingPaymentAttempt(attempt);
@@ -599,17 +680,18 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
           setTransactionUrl(signedRecovery.transactionUrl);
         }
       };
-      const onSubmitted = (signature: string, url: string) => {
+      const onSubmitted = async (signature: string, url: string) => {
         paymentSubmitted = true;
         setPaymentProgress("solana_confirmation");
         setPendingSignature(signature);
         setTransactionUrl(url);
-        const saved = loadSavedCheckout(post.post_id, commissionId);
+        const saved = paymentCheckpoint(financialStarted ? attemptId : undefined);
         if (saved) {
           // A real wallet response supplies the missing identity. A manually
           // entered receipt keeps the unresolved marker until API verification.
           const {paymentAttempt, ...checkpoint} = saved;
-          saveCheckout({...checkpoint, ...(paymentAttempt?.kind === "signed" ? {paymentAttempt} : {}), transactionSignature: signature, transactionUrl: url}, true);
+          await persistFinancial({...checkpoint, financialAttemptId: attemptId, ...(paymentAttempt?.kind === "signed" ? {paymentAttempt} : {}), transactionSignature: signature, transactionUrl: url}, "pending", !financialStarted ? {startAttempt: true, ...(previousRecord?.commissionId === commissionId ? {expectedAttemptId: previousRecord.attemptId} : {})} : {});
+          financialStarted = true;
           if (paymentAttempt?.kind === "wallet_submission") setPendingPaymentAttempt(undefined);
         }
       };
@@ -619,18 +701,13 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       if (sent.confirmation === "failed") {
         paymentSubmitted = false;
         setPaymentProgress(undefined);
-        setPendingSignature(undefined);
-        setPendingPaymentAttempt(undefined);
-        const saved = loadSavedCheckout(post.post_id, commissionId);
-        if (saved) { const {transactionSignature: _signature, paymentAttempt: _paymentAttempt, ...withoutSignature} = saved; saveCheckout(withoutSignature); }
+        await resolveFinancial("failed", attemptId, sent.signature);
         if (identity && commissionId) await refreshStatus(commissionId, identity).catch(() => undefined);
         throw new Error("The Solana transaction failed. No commission was funded; request a fresh quote before retrying.");
       }
       if (sent.confirmation === "pending") {
         setPaymentProgress("solana_confirmation");
         setPendingSignature(sent.signature);
-        const saved = loadSavedCheckout(post.post_id, commissionId);
-        if (saved) saveCheckout({...saved, transactionSignature: sent.signature, transactionUrl: sent.explorerUrl});
         await refreshStatus(commissionId, identity).catch(() => undefined);
         setError("Payment confirmation is delayed. Your transaction signature is saved; check its status before continuing and do not pay again.");
         return;
@@ -638,15 +715,10 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       // A wallet response is only a submitted transaction. The authenticated API
       // independently verifies finalized chain state before payment becomes captured.
       setPaymentProgress("vox_verification");
-      await submitFunding(sent.signature);
+      await submitFunding(sent.signature, attemptId);
     } catch (reason) {
       if (preparedAttempt?.kind === "wallet_submission" && walletRejected(reason)) {
-        const saved = loadSavedCheckout(post.post_id, commissionId);
-        if (saved) {
-          const {paymentAttempt: _paymentAttempt, ...withoutAttempt} = saved;
-          saveCheckout(withoutAttempt);
-        }
-        setPendingPaymentAttempt(undefined);
+        await resolveFinancial("rejected", attemptId);
         paymentSubmitted = false;
       }
       if (!paymentSubmitted) setPaymentProgress(undefined);
@@ -665,10 +737,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       try {
         const checked = await recoverUsdcPayment(pendingPaymentAttempt, {payerAddress: funding.payer_wallet, usdcMint: funding.usdc_mint, destinationTokenAccount: funding.destination_token_account, destinationOwnerAddress: funding.destination_owner, amountAtomic: funding.amount_usdc_atomic, paymentReference: funding.payment_reference, cluster: networkName}, {quoteExpiresAt: quote!.expires_at});
         if (checked.confirmation === "failed") {
-          setPendingSignature(undefined);
-          setPendingPaymentAttempt(undefined);
-          const saved = loadSavedCheckout(post.post_id, commissionId);
-          if (saved) { const {transactionSignature: _signature, paymentAttempt: _paymentAttempt, ...withoutAttempt} = saved; saveCheckout(withoutAttempt); }
+          await resolveFinancial("failed", financialAttemptId, checked.signature);
           setError("The Solana transaction failed. No commission was funded; request a fresh quote before retrying.");
         } else await submitFunding(checked.signature);
       } catch (reason) { setError(checkoutError(reason)); }
@@ -692,9 +761,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       const chainStatus = await checkSolanaTransaction(pendingSignature, networkName);
       if (chainStatus === "pending") return;
       if (chainStatus === "failed") {
-        setPendingSignature(undefined);
-        const saved = loadSavedCheckout(post.post_id, commissionId);
-        if (saved) { const {transactionSignature: _signature, ...withoutSignature} = saved; saveCheckout(withoutSignature); }
+        await resolveFinancial("failed", financialAttemptId, pendingSignature);
         if (commissionId && identity) await refreshStatus(commissionId, identity).catch(() => undefined);
         setError("The Solana transaction failed. Refresh the escrow status before trying again.");
         return;
@@ -703,9 +770,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
         const updated = await refreshStatus(commissionId, identity);
         const onchainStatus = updated.funding?.mode === "escrow" ? updated.funding.progress?.status : undefined;
         if (["captured", "settled"].includes(updated.commission.payment_state) || ["Absent", "Draft", "Ready"].includes(onchainStatus ?? "Absent")) {
-          setPendingSignature(undefined);
-          const saved = loadSavedCheckout(post.post_id, commissionId);
-          if (saved) { const {transactionSignature: _signature, ...withoutSignature} = saved; saveCheckout(withoutSignature); }
+          await resolveFinancial(["captured", "settled"].includes(updated.commission.payment_state) ? "captured" : "failed", financialAttemptId, pendingSignature);
         }
       }
     }
@@ -723,7 +788,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       setError("Paste the Solana transaction signature from this payment in your wallet history.");
       return;
     }
-    const saved = loadSavedCheckout(post.post_id, commissionId);
+    const saved = paymentCheckpoint(financialAttemptId);
     if (!saved) return;
     setBusy(true);
     setError("");
@@ -735,7 +800,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
         setError(chainStatus === "failed" ? "That receipt records a failed Solana transaction. Check this payment in your wallet history before continuing; do not pay again." : "Solana has not finalized this receipt yet. Check the signature in your wallet history and try again; do not pay again.");
         return;
       }
-      saveCheckout({...saved, transactionSignature: signature}, true);
+      await persistFinancial({...saved, transactionSignature: signature}, "pending");
       setPendingSignature(signature);
       // The authenticated API checks the quote intent, payer, mint, amount,
       // treasury and finality. Pasting an unrelated receipt cannot unlock payment.

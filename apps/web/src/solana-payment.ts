@@ -58,9 +58,9 @@ export interface SendUsdcPaymentInput extends UsdcPaymentAuthorization {
   supportedTransactionVersions: ConnectedWallet["supportedTransactionVersions"];
   rpcUrl?: string;
   /** Must durably save this attempt or throw, before any possible broadcast. */
-  onPrepared: (attempt: UsdcPaymentAttempt) => void;
+  onPrepared: (attempt: UsdcPaymentAttempt) => void | Promise<void>;
   onWalletApprovalRequested?: () => void;
-  onSubmitted?: (signature: string, explorerUrl: string) => void;
+  onSubmitted?: (signature: string, explorerUrl: string) => void | Promise<void>;
 }
 
 export interface SolanaPaymentResult {
@@ -288,7 +288,7 @@ export async function sendUsdcPayment(input: SendUsdcPaymentInput): Promise<Sola
   const features = walletSigningFeatures(input.wallet);
   input.onWalletApprovalRequested?.();
   let signature: string;
-  if (features[SolanaSignTransaction]) {
+  if (features[SolanaSignTransaction] && input.account.features.includes(SolanaSignTransaction)) {
     const [signed] = await features[SolanaSignTransaction].signTransaction({
       account: input.account,
       transaction: transaction.serialize({requireAllSignatures: false, verifySignatures: false}),
@@ -298,19 +298,19 @@ export async function sendUsdcPayment(input: SendUsdcPaymentInput): Promise<Sola
     if (!signed?.signedTransaction) throw new Error("The wallet did not return a signed Solana transaction.");
     const prepared = verifiedSignedPayment(transaction, signed.signedTransaction);
     signature = prepared.signature;
-    input.onPrepared({version: 1, kind: "signed", authorization: paymentAuthorization(input), ...prepared, lastValidBlockHeight: latestBlockhash.lastValidBlockHeight});
+    await input.onPrepared({version: 1, kind: "signed", authorization: paymentAuthorization(input), ...prepared, lastValidBlockHeight: latestBlockhash.lastValidBlockHeight});
     // Derive and durably save the signature before broadcast. A lost RPC
     // response must retain it rather than enable a newly signed payment.
-    input.onSubmitted?.(signature, paymentExplorerUrl(signature, input.cluster));
+    await input.onSubmitted?.(signature, paymentExplorerUrl(signature, input.cluster));
     try {
       await connection.sendRawTransaction(signed.signedTransaction, {preflightCommitment: "confirmed"});
     } catch {
       return {signature, explorerUrl: paymentExplorerUrl(signature, input.cluster), confirmation: "pending"};
     }
-  } else if (features[SolanaSignAndSendTransaction]) {
+  } else if (features[SolanaSignAndSendTransaction] && input.account.features.includes(SolanaSignAndSendTransaction)) {
     // These wallets may broadcast without returning a signature. Persist an
     // unresolved attempt before calling them, so a timeout survives refresh.
-    input.onPrepared({version: 1, kind: "wallet_submission", authorization: paymentAuthorization(input)});
+    await input.onPrepared({version: 1, kind: "wallet_submission", authorization: paymentAuthorization(input)});
     const [sent] = await features[SolanaSignAndSendTransaction].signAndSendTransaction({
       account: input.account,
       transaction: transaction.serialize({requireAllSignatures: false, verifySignatures: false}),
@@ -319,7 +319,7 @@ export async function sendUsdcPayment(input: SendUsdcPaymentInput): Promise<Sola
     });
     if (sent?.signature?.length !== 64) throw new Error("The wallet did not return a valid Solana transaction signature. Check the original wallet receipt before continuing.");
     signature = encodeBase58(sent.signature);
-    input.onSubmitted?.(signature, paymentExplorerUrl(signature, input.cluster));
+    await input.onSubmitted?.(signature, paymentExplorerUrl(signature, input.cluster));
   } else {
     throw new Error("This wallet does not support Solana transaction signing.");
   }
@@ -396,7 +396,7 @@ export async function sendRealizeEscrowPayment(input: {
   funding: RealizeEscrowFunding;
   cluster: string;
   onWalletApprovalRequested?: () => void;
-  onSubmitted?: (signature: string, explorerUrl: string) => void;
+  onSubmitted?: (signature: string, explorerUrl: string) => void | Promise<void>;
 }): Promise<SolanaPaymentResult> {
   if (input.funding.mode !== "escrow" || input.cluster !== "devnet") throw new Error("This escrow authorization is not configured for Devnet.");
   if (import.meta.env.VITE_REALIZE_DEVNET_ENABLED !== "true") throw new Error("Realize Devnet escrow is disabled in this web build.");
@@ -537,7 +537,7 @@ export async function sendRealizeEscrowPayment(input: {
     }
     let signature: string;
     input.onWalletApprovalRequested?.();
-    if (features[SolanaSignAndSendTransaction]) {
+    if (features[SolanaSignAndSendTransaction] && input.account.features.includes(SolanaSignAndSendTransaction)) {
       const [sent] = await features[SolanaSignAndSendTransaction].signAndSendTransaction({
         account: input.account,
         transaction: transaction.serialize({requireAllSignatures: false, verifySignatures: false}),
@@ -546,7 +546,7 @@ export async function sendRealizeEscrowPayment(input: {
       });
       if (!sent?.signature) throw new Error("The wallet did not return a Devnet transaction signature.");
       signature = encodeBase58(sent.signature);
-    } else if (features[SolanaSignTransaction]) {
+    } else if (features[SolanaSignTransaction] && input.account.features.includes(SolanaSignTransaction)) {
       const [signed] = await features[SolanaSignTransaction].signTransaction({
         account: input.account,
         transaction: transaction.serialize({requireAllSignatures: false, verifySignatures: false}),
@@ -556,7 +556,7 @@ export async function sendRealizeEscrowPayment(input: {
       signature = await connection.sendRawTransaction(signed.signedTransaction, {preflightCommitment: "confirmed"});
     } else throw new Error("This wallet does not support Solana transaction signing.");
     const explorerUrl = `https://explorer.solana.com/tx/${encodeURIComponent(signature)}?cluster=devnet`;
-    input.onSubmitted?.(signature, explorerUrl);
+    await input.onSubmitted?.(signature, explorerUrl);
     const confirmation = await pollFinality(connection, signature, blockhash.lastValidBlockHeight);
     if (confirmation === "failed") return {signature, explorerUrl, confirmation, fundingComplete: false};
     if (confirmation !== "finalized") return {signature, explorerUrl, confirmation, fundingComplete: false};
@@ -629,11 +629,11 @@ export async function sendRealizeEscrowRefund(input: {
   if (simulation.value.err) throw new Error(`Devnet refund simulation failed: ${JSON.stringify(simulation.value.err)}`);
   const features = walletSigningFeatures(input.wallet);
   let signature: string;
-  if (features[SolanaSignAndSendTransaction]) {
+  if (features[SolanaSignAndSendTransaction] && input.account.features.includes(SolanaSignAndSendTransaction)) {
     const [sent] = await features[SolanaSignAndSendTransaction].signAndSendTransaction({account: input.account, transaction: transaction.serialize({requireAllSignatures: false, verifySignatures: false}), chain, options: {preflightCommitment: "confirmed", commitment: "confirmed", skipPreflight: false}});
     if (!sent?.signature) throw new Error("The wallet did not return a Devnet refund signature.");
     signature = encodeBase58(sent.signature);
-  } else if (features[SolanaSignTransaction]) {
+  } else if (features[SolanaSignTransaction] && input.account.features.includes(SolanaSignTransaction)) {
     const [signed] = await features[SolanaSignTransaction].signTransaction({account: input.account, transaction: transaction.serialize({requireAllSignatures: false, verifySignatures: false}), chain, options: {preflightCommitment: "confirmed"}});
     if (!signed?.signedTransaction) throw new Error("The wallet did not return a signed Devnet refund transaction.");
     signature = await connection.sendRawTransaction(signed.signedTransaction, {preflightCommitment: "confirmed"});
