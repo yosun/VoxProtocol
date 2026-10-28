@@ -4,7 +4,11 @@ import {
   PublicKey,
   Transaction,
   TransactionInstruction,
-  type Commitment
+  type Commitment,
+  type ParsedInstruction,
+  type ParsedTransactionWithMeta,
+  type PartiallyDecodedInstruction,
+  type TokenBalance
 } from "@solana/web3.js";
 import {
   base64UrlToBytes,
@@ -261,16 +265,73 @@ export interface UsdcTransferVerification {
   source_token_account?: string;
 }
 
-async function tokenAccountBelongsTo(connection: Connection, source: string, mint: string, owner: string): Promise<boolean> {
-  try {
-    const account = await connection.getParsedAccountInfo(new PublicKey(source), {commitment: "finalized"});
-    const value = account.value;
-    if (!value) return false;
-    const parsedData = value.data as unknown as {parsed?: {type?: string; info?: {mint?: string; owner?: string}}};
-    return parsedData.parsed?.type === "account" && parsedData.parsed.info?.mint === mint && parsedData.parsed.info.owner === owner;
-  } catch {
-    return false;
+type HistoricalInstruction = ParsedInstruction | PartiallyDecodedInstruction;
+type TokenAccountIdentity = {mint: string; owner: string | undefined};
+type TokenAccountChange = {kind: "none" | "unknown" | "closed"} | {kind: "initialize"; identity: TokenAccountIdentity} | {kind: "owner"; owner: string};
+
+const TOKEN_INSTRUCTIONS_PRESERVING_OWNER = new Set([
+  "initializeMint", "initializeMint2", "initializeMultisig", "initializeMultisig2",
+  "transfer", "transferChecked", "approve", "approveChecked", "revoke", "mintTo",
+  "mintToChecked", "burn", "burnChecked", "freezeAccount", "thawAccount", "syncNative",
+  "getAccountDataSize", "initializeImmutableOwner", "amountToUiAmount", "uiAmountToAmount"
+]);
+
+function tokenAccountChange(instruction: HistoricalInstruction, source: string, innerInstructionsRecorded: boolean): TokenAccountChange {
+  const parsed = "parsed" in instruction ? instruction.parsed as {type?: string; info?: Record<string, unknown>} : undefined;
+  const info = parsed?.info;
+  const mentionsSource = "accounts" in instruction
+    ? instruction.accounts.some((account) => account.toBase58() === source)
+    : !!info && Object.values(info).some((value) => value === source);
+  if (!instruction.programId.equals(TOKEN_PROGRAM_ID)) {
+    // Other programs can only alter classic-token state via CPI. Without its
+    // instruction history, a call carrying the source account is ambiguous.
+    return !innerInstructionsRecorded && mentionsSource ? {kind: "unknown"} : {kind: "none"};
   }
+  if (!parsed?.type || !info) return mentionsSource ? {kind: "unknown"} : {kind: "none"};
+  if (["initializeAccount", "initializeAccount2", "initializeAccount3"].includes(parsed.type) && info.account === source) {
+    return typeof info.mint === "string" && typeof info.owner === "string" && isValidSolanaAddress(info.mint) && isValidSolanaAddress(info.owner)
+      ? {kind: "initialize", identity: {mint: info.mint, owner: info.owner}}
+      : {kind: "unknown"};
+  }
+  if (parsed.type === "closeAccount" && info.account === source) return {kind: "closed"};
+  if (parsed.type === "setAuthority" && info.account === source) {
+    if (info.authorityType === "closeAccount") return {kind: "none"};
+    return info.authorityType === "accountOwner" && typeof info.newAuthority === "string" && isValidSolanaAddress(info.newAuthority)
+      ? {kind: "owner", owner: info.newAuthority}
+      : {kind: "unknown"};
+  }
+  if (TOKEN_INSTRUCTIONS_PRESERVING_OWNER.has(parsed.type) || !mentionsSource) return {kind: "none"};
+  return {kind: "unknown"};
+}
+
+function tokenIdentity(balance: TokenBalance | undefined): TokenAccountIdentity | undefined {
+  if (!balance || balance.uiTokenAmount.decimals !== 6 || balance.programId && balance.programId !== TOKEN_PROGRAM_ID.toBase58()) return undefined;
+  return {mint: balance.mint, owner: balance.owner};
+}
+
+/** Establish ownership at the transfer, never from the account's present state. */
+function tokenAccountBelongedTo(transaction: ParsedTransactionWithMeta, transferIndex: number, source: string, mint: string, owner: string): boolean {
+  const sourceIndex = transaction.transaction.message.accountKeys.findIndex((account) => account.pubkey.toBase58() === source);
+  if (sourceIndex < 0) return false;
+  const pre = transaction.meta?.preTokenBalances?.filter((balance) => balance.accountIndex === sourceIndex) ?? [];
+  if (pre.length > 1 || pre.length && !tokenIdentity(pre[0])) return false;
+  let identity = tokenIdentity(pre[0]);
+  const innerInstructionsRecorded = Array.isArray(transaction.meta?.innerInstructions);
+  for (const [index, instruction] of transaction.transaction.message.instructions.entries()) {
+    if (index >= transferIndex) break;
+    const inner = transaction.meta?.innerInstructions?.filter((group) => group.index === index).flatMap((group) => group.instructions) ?? [];
+    for (const [precedingIndex, preceding] of [instruction, ...inner].entries()) {
+      const change = tokenAccountChange(preceding, source, innerInstructionsRecorded);
+      // A caller can catch a failed CPI, so transaction success alone does not
+      // prove an inner lifecycle change took effect. Invalidate pre-state
+      // rather than trusting that instruction or inferring it from post-state.
+      if (precedingIndex > 0 && change.kind !== "none") identity = undefined;
+      else if (change.kind === "initialize") identity = change.identity;
+      else if (change.kind === "owner") identity = {mint: identity?.mint ?? mint, owner: change.owner};
+      else if (change.kind === "closed" || change.kind === "unknown") identity = undefined;
+    }
+  }
+  return identity?.mint === mint && identity.owner === owner;
 }
 
 function transactionContainsPaymentReference(transaction: NonNullable<Awaited<ReturnType<Connection["getParsedTransaction"]>>>, reference: string): boolean {
@@ -301,19 +362,19 @@ export async function verifyFinalizedUsdcTransfer(input: UsdcTransferExpectation
     return {finalized: true, matched: false, network_matches: false, reason: "Configured RPC endpoint does not serve Solana mainnet-beta.", usdc_mint: input.usdc_mint, destination_token_account: input.destination_token_account, amount_atomic: input.amount_atomic, ...(input.source_token_account ? {source_token_account: input.source_token_account} : {})};
   }
   const transaction = await connection.getParsedTransaction(input.transaction_signature, {commitment: "finalized", maxSupportedTransactionVersion: 1});
-  const base = {finalized: !!transaction && !transaction.meta?.err, matched: false, ...(input.network_id ? {network_matches: true} : {}), ...(Number.isSafeInteger(transaction?.blockTime) ? {block_time: transaction!.blockTime!} : {}), usdc_mint: input.usdc_mint, destination_token_account: input.destination_token_account, amount_atomic: input.amount_atomic};
-  if (!transaction || transaction.meta?.err) return input.source_token_account ? {...base, source_token_account: input.source_token_account} : base;
+  const base = {finalized: !!transaction && transaction.meta?.err === null, matched: false, ...(input.network_id ? {network_matches: true} : {}), ...(Number.isSafeInteger(transaction?.blockTime) ? {block_time: transaction!.blockTime!} : {}), usdc_mint: input.usdc_mint, destination_token_account: input.destination_token_account, amount_atomic: input.amount_atomic};
+  if (!transaction || !transaction.meta || transaction.meta.err !== null) return input.source_token_account ? {...base, source_token_account: input.source_token_account} : base;
   if (input.payment_reference && !transactionContainsPaymentReference(transaction, input.payment_reference)) return input.source_token_account ? {...base, source_token_account: input.source_token_account} : base;
   if (input.payer_address && !transaction.transaction.message.accountKeys.some((account) => account.pubkey.toBase58() === input.payer_address && account.signer)) return {...base, reason: "Payer wallet did not sign the finalized payment transaction.", ...(input.source_token_account ? {source_token_account: input.source_token_account} : {})};
   const matches: string[] = [];
-  for (const instruction of transaction.transaction.message.instructions) {
+  for (const [instructionIndex, instruction] of transaction.transaction.message.instructions.entries()) {
     const candidate = instruction as unknown as {programId?: PublicKey; parsed?: {type?: string; info?: {mint?: string; destination?: string; source?: string; authority?: string; amount?: string; tokenAmount?: {amount?: string; decimals?: number}}}};
     if (!candidate.programId?.equals(TOKEN_PROGRAM_ID)) continue;
     const info = candidate.parsed?.info;
     if (!info || candidate.parsed?.type !== "transferChecked") continue;
     const amount = info.amount ?? info.tokenAmount?.amount;
     if (info.mint !== input.usdc_mint || info.destination !== input.destination_token_account || amount !== input.amount_atomic || info.tokenAmount?.decimals !== 6 || (input.payer_address && info.authority !== input.payer_address) || (input.source_token_account && info.source !== input.source_token_account)) continue;
-    if (input.payer_address && (!info.source || !(await tokenAccountBelongsTo(connection, info.source, input.usdc_mint, input.payer_address)))) continue;
+    if (input.payer_address && (!info.source || !tokenAccountBelongedTo(transaction, instructionIndex, info.source, input.usdc_mint, input.payer_address))) continue;
     if (info.source) matches.push(info.source);
   }
   if (matches.length === 1) return {...base, matched: true, source_token_account: matches[0]!};

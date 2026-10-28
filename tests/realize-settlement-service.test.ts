@@ -15,10 +15,11 @@ class FakeSettlementChain implements MainnetSettlementChain {
   isTreasuryDestination = vi.fn((destination: string) => destination === this.treasuryDestination);
   ensureTreasury = vi.fn(async () => {});
   verifyFunding = vi.fn(async (_input: RefundRequest) => this.verifyResult);
-  prepareBatch = vi.fn(async (input: {recordId: string; batchIndex: number; transfers: SettlementTransfer[]}): Promise<PreparedSettlementBatch> => {
+  prepareBatch = vi.fn(async (input: {recordId: string; batchIndex: number; attemptNumber: number; transfers: SettlementTransfer[]}): Promise<PreparedSettlementBatch> => {
     this.prepareCount += 1;
     return {
       batch_index: input.batchIndex,
+      attempt_number: input.attemptNumber,
       payout_ids: input.transfers.map((transfer) => transfer.payout_id),
       amount_usdc_atomic: input.transfers.reduce((sum, transfer) => sum + BigInt(transfer.amount_usdc_atomic), 0n).toString(),
       status: "prepared",
@@ -136,6 +137,7 @@ describe("Mainnet Realize settlement adapter", () => {
     await expect(chain.prepareBatch({
       recordId: "vox:settlement:test",
       batchIndex: 0,
+      attemptNumber: 1,
       transfers: [{payout_id: "payout-held", destination: "solana:mainnet-beta:" + address, amount_usdc_atomic: "100"}]
     })).rejects.toMatchObject({statusCode: 409, code: "treasury_liability"});
   });
@@ -310,6 +312,7 @@ describe("Mainnet Realize settlement adapter", () => {
     const reconciled = await processor.getRefund(first.refund_id);
     expect(reconciled.status).toBe("refunded");
     expect(chain.prepareCount).toBe(1);
+    expect(chain.prepareBatch).toHaveBeenCalledWith(expect.objectContaining({attemptNumber: 1}));
     expect(chain.executedSignatures).toHaveLength(2);
     expect(new Set(chain.executedSignatures).size).toBe(1);
   });
@@ -325,9 +328,37 @@ describe("Mainnet Realize settlement adapter", () => {
     const finalized = await processor.getRefund(first.refund_id);
     expect(finalized.status).toBe("refunded");
     expect(chain.prepareCount).toBe(2);
+    expect(chain.prepareBatch.mock.calls.map(([input]) => input.attemptNumber)).toEqual([1, 2]);
     expect(chain.executedSignatures[0]).not.toBe(chain.executedSignatures[1]);
+    expect(await ledger.getBatch(first.refund_id, 0)).toMatchObject({attempt_number: 2, previous_attempts: [{attempt_number: 1, status: "failed", transaction_signature: chain.executedSignatures[0]}]});
     const resolution = await processor.getPaymentIntentResolution(refund.payment_intent_id);
     expect(resolution).toMatchObject({kind: "refund", state: "refunded"});
+  });
+
+  it("reserves one replacement signature when refund retries race after a finalized failure", async () => {
+    const chain = new FakeSettlementChain();
+    chain.executionResults = ["failed"];
+    chain.executionResult = "prepared";
+    const ledger = new MemorySettlementLedger();
+    const processor = new RealizeSettlementProcessor(ledger, chain, 1_000_000n);
+    const refund = refundRequest();
+    const first = await processor.requestRefund(refund, refund.idempotency_key);
+    expect(first.status).toBe("failed");
+    const retries = await Promise.all([processor.getRefund(first.refund_id), processor.getRefund(first.refund_id)]);
+    expect(retries.map((retry) => retry.status)).toEqual(["processing", "processing"]);
+    expect(new Set(chain.executedSignatures.slice(1)).size).toBe(1);
+    expect(chain.executedSignatures[1]).not.toBe(chain.executedSignatures[0]);
+    expect(chain.prepareBatch.mock.calls.slice(1).every(([input]) => input.attemptNumber === 2)).toBe(true);
+    expect(await ledger.getBatch(first.refund_id, 0)).toMatchObject({attempt_number: 2, previous_attempts: [{attempt_number: 1, transaction_signature: chain.executedSignatures[0]}]});
+  });
+
+  it("rejects replacement bytes that reuse a failed signature or skip their durable attempt", async () => {
+    const ledger = new MemorySettlementLedger();
+    const failed = {batch_index: 0, attempt_number: 1, payout_ids: ["refund"], amount_usdc_atomic: "1000000", status: "failed" as const, transaction_signature: "failed-signature", updated_at: new Date().toISOString()};
+    await ledger.createBatchIfAbsent("refund-record", failed);
+    await expect(ledger.replaceFailedBatch("refund-record", failed.transaction_signature, {...failed, attempt_number: 2, status: "prepared"})).rejects.toThrow("replacement refund must bind a new transaction attempt");
+    await expect(ledger.replaceFailedBatch("refund-record", failed.transaction_signature, {...failed, attempt_number: 3, transaction_signature: "new-signature", status: "prepared"})).rejects.toThrow("replacement refund must bind a new transaction attempt");
+    expect(await ledger.getBatch("refund-record", 0)).toEqual(failed);
   });
 
   it("blocks refunds when settlement status is uncertain or any payout finalized", async () => {
