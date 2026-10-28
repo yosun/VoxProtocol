@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+interface IERC721Receiver {
+    function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata data) external returns (bytes4);
+}
+
 /// @title VOX Media NFT
 /// @notice A small, non-upgradeable ERC-721 collection whose only privileged
 /// operation is minting an immutable token URI. Deploy one instance per EVM
@@ -105,17 +109,21 @@ contract VoxMediaNFT {
 
     function safeTransferFrom(address from, address to, uint256 tokenId) external {
         transferFrom(from, to, tokenId);
-        if (to.code.length != 0) {
-            (bool ok, bytes memory data) = to.call(abi.encodeWithSignature("onERC721Received(address,address,uint256,bytes)", msg.sender, from, tokenId, ""));
-            if (!ok || data.length != 4 || bytes4(data) != 0x150b7a02) revert NotAuthorized();
-        }
+        _checkOnERC721Received(from, to, tokenId, "");
     }
 
     function safeTransferFrom(address from, address to, uint256 tokenId, bytes calldata data) external {
         transferFrom(from, to, tokenId);
+        _checkOnERC721Received(from, to, tokenId, data);
+    }
+
+    function _checkOnERC721Received(address from, address to, uint256 tokenId, bytes memory data) private {
         if (to.code.length != 0) {
-            (bool ok, bytes memory returned) = to.call(abi.encodeWithSignature("onERC721Received(address,address,uint256,bytes)", msg.sender, from, tokenId, data));
-            if (!ok || returned.length != 4 || bytes4(returned) != 0x150b7a02) revert NotAuthorized();
+            try IERC721Receiver(to).onERC721Received(msg.sender, from, tokenId, data) returns (bytes4 returned) {
+                if (returned != IERC721Receiver.onERC721Received.selector) revert NotAuthorized();
+            } catch {
+                revert NotAuthorized();
+            }
         }
     }
 

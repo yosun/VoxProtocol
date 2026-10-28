@@ -24,6 +24,7 @@ import {
   TransactionInstruction
 } from "@solana/web3.js";
 import {canonicalBytes, utf8, type FulfillmentResultV1} from "@vox/protocol";
+import {MAINNET_USDC_MINT} from "@vox/realize-solana";
 import type {NftChain, NftMediaRecord, NftMintRecord, VoxStore} from "./types.js";
 
 const SOLANA_METADATA_PROGRAM_ID = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
@@ -166,6 +167,10 @@ function mintIdFor(mediaId: string, chain: NftChain): string {
   return `vox:nft:${sha256Hex(`${mediaId}\u0000${chain}`)}`;
 }
 
+export function isMainnetNftChain(chain: NftChain): boolean {
+  return chain.endsWith(":mainnet") || chain === "solana:mainnet-beta";
+}
+
 function metadataFor(input: NftMediaInput, mediaId: string, metadataUri: string, mediaPageUrl: string): Record<string, unknown> {
   const mediaAttributes = [
     {trait_type: "VOX media ID", value: mediaId},
@@ -282,7 +287,13 @@ export class NftMintService {
       updated_at: now
     };
     const media = await store.createNftMedia(record);
+    const mainnetEligibilityError = this.adapters.some((adapter) => isMainnetNftChain(adapter.chain))
+      ? await this.mainnetEligibilityError(store, media)
+      : undefined;
     for (const adapter of this.adapters) {
+      // Mock/legacy and unpaid outputs may be rehearsed on testnets, but cannot
+      // create an entitlement that can spend a production minter's gas.
+      if (isMainnetNftChain(adapter.chain) && mainnetEligibilityError) continue;
       const mintId = mintIdFor(media.media_id, adapter.chain);
       const ownerWallet = ownerWalletFor(input, adapter.chain);
       const mint: NftMintRecord = {
@@ -301,6 +312,48 @@ export class NftMintService {
       await store.createNftMint(mint);
     }
     return media;
+  }
+
+  private async mainnetEligibilityError(store: VoxStore, media: NftMediaRecord): Promise<string | undefined> {
+    // The legacy provider produces synthetic media even when its generic
+    // payment mode is direct. Only Realize persists verified artifact evidence.
+    if (media.source_kind !== "realize_commission") return "Mainnet NFT minting requires a verified paid Realize commission";
+    const current = await store.getRealizeCommission(media.source_id);
+    if (!current || current.nft_publication_consent !== true || media.publication_consent !== true) return "Mainnet NFT publication consent or source commission is missing";
+    const commission = current.commission;
+    const completed = commission.state === "COMPLETED" && commission.payment_state === "captured" || commission.state === "SETTLED" && commission.payment_state === "settled";
+    if (!completed || commission.fulfillment_state !== "completed" || current.refund_approval || current.refund_response || current.failure_evidence || current.resolution_outcome !== "fulfilled") return "Mainnet NFT commission is not a paid, successfully fulfilled order";
+    const intent = current.payment_intent;
+    const funding = current.direct_funding;
+    const quote = commission.quote_id ? await store.getRealizeQuote(commission.quote_id) : undefined;
+    if (!quote || !intent || !funding || !current.funding_signature || !current.funding_verified_at || !current.funded_at || !current.rights_reviewed_at || !current.payer_wallet) return "Mainnet NFT verified payment evidence is missing";
+    const expectedIntentId = `vox:payment-intent:${sha256Hex(`${commission.commission_id}\u0000${quote.canonical_quote_hash}`)}`;
+    const paymentMatches = quote.commission_id === commission.commission_id && quote.creator_id === commission.creator_id &&
+      quote.network_id === "solana:mainnet-beta" && quote.usdc_mint === MAINNET_USDC_MINT && current.funding_network_id === quote.network_id &&
+      commission.accepted_quote_hash === quote.canonical_quote_hash && commission.payment_intent_id === expectedIntentId &&
+      intent.payment_intent_id === expectedIntentId && intent.commission_id === commission.commission_id && intent.quote_id === quote.quote_id &&
+      intent.accepted_quote_hash === quote.canonical_quote_hash && intent.payer_id === commission.commissioner_id && intent.asset === "USDC" &&
+      ["captured", "settled"].includes(intent.status) && intent.network_id === quote.network_id && intent.amount_usdc_atomic === quote.total_amount_usdc_atomic &&
+      funding.mode === "direct" && funding.custody_model === "backend_managed" && funding.commission_id === commission.commission_id &&
+      funding.quote_id === quote.quote_id && funding.accepted_quote_hash === quote.canonical_quote_hash && funding.network_id === quote.network_id &&
+      funding.usdc_mint === quote.usdc_mint && funding.amount_usdc_atomic === intent.amount_usdc_atomic && funding.payer_wallet === current.payer_wallet &&
+      funding.payment_reference === `vox:realize:payment:${expectedIntentId}:${quote.canonical_quote_hash}`;
+    if (!paymentMatches) return "Mainnet NFT payment evidence does not match the accepted Mainnet USDC quote";
+    const result = current.fulfillment_result;
+    const output = result?.outputs[media.output_index];
+    const provenance = current.provenance_record_id ? await store.getRealizeProvenance(current.provenance_record_id) : undefined;
+    const verifiedOutput = provenance?.outputs[media.output_index];
+    const outputMatches = result?.status === "completed" && result.outputs.length <= 64 && Number.isInteger(media.output_index) && media.output_index >= 0 &&
+      result.commission_id === commission.commission_id && result.fulfillment_request_id === commission.fulfillment_request_id &&
+      result.generation_provider_id === quote.generation_provider_id && media.provider_id === quote.generation_provider_id &&
+      media.owner_id === commission.commissioner_id && media.creator_id === commission.creator_id && media.provenance_record_id === current.provenance_record_id &&
+      output && output.uri.startsWith("https://") && output.uri === media.media_uri && output.sha256 === media.media_sha256 && output.media_type === media.media_type && output.byte_length === media.byte_length &&
+      provenance?.commission_id === commission.commission_id && provenance.quote_hash === quote.canonical_quote_hash &&
+      provenance.generation_provider_id === quote.generation_provider_id && provenance.creator_id === commission.creator_id &&
+      verifiedOutput?.sha256 === output.sha256 && verifiedOutput.media_type === output.media_type && verifiedOutput.byte_length === output.byte_length &&
+      media.media_id === mediaIdFor(media) && media.request_hash === canonicalHash(commission.requested_generation_parameters) && media.metadata_hash === canonicalHash(media.metadata);
+    if (!outputMatches) return "Mainnet NFT media does not match the verified commission artifact and provenance";
+    return undefined;
   }
 
   async processPending(store: VoxStore, limit = 30, workerId = "vox-nft-reconcile"): Promise<Array<{mint_id: string; state: NftMintRecord["state"]; error?: string}>> {
@@ -329,6 +382,18 @@ export class NftMintService {
           continue;
         }
         try {
+          const media = await store.getNftMedia(claimed.media_id);
+          if (!media) throw new Error("canonical NFT media record is missing");
+          if (isMainnetNftChain(claimed.chain)) {
+            const eligibilityError = await this.mainnetEligibilityError(store, media);
+            const mintMatches = claimed.mint_id === mintIdFor(media.media_id, claimed.chain) && claimed.owner_id === media.owner_id && claimed.metadata_uri === media.metadata_uri && claimed.metadata_hash === media.metadata_hash;
+            if (eligibilityError || !mintMatches) {
+              const blocked = clearTransient({...claimed, state: "manual_review", updated_at: new Date().toISOString()});
+              const saved = await store.updateNftMint({...blocked, last_error: eligibilityError ?? "Mainnet NFT entitlement does not match its canonical media"}, claimed.updated_at);
+              outcomes.push({mint_id: saved.mint_id, state: saved.state, ...(saved.last_error ? {error: saved.last_error} : {})});
+              continue;
+            }
+          }
           let observation: NftChainObservation;
           let currentForObservation = claimed;
           if (claimed.state === "signed") {
@@ -342,8 +407,6 @@ export class NftMintService {
               outcomes.push({mint_id: saved.mint_id, state: saved.state});
               continue;
             }
-            const media = await store.getNftMedia(claimed.media_id);
-            if (!media) throw new Error("canonical NFT media record is missing");
             const prepared = await adapter.prepare({media, mint: claimed});
             const signed = {...claimed, state: "signed" as const, transaction_id: prepared.transaction_id, ...(prepared.token_id ? {token_id: prepared.token_id} : {}), ...(prepared.asset_address ? {asset_address: prepared.asset_address} : {}), ...(prepared.explorer_url ? {explorer_url: prepared.explorer_url} : {}), signed_transaction: prepared.signed_transaction, ...(prepared.nonce ? {nonce: prepared.nonce} : {}), ...(prepared.blockhash ? {blockhash: prepared.blockhash} : {}), ...(prepared.last_valid_block_height === undefined ? {} : {last_valid_block_height: prepared.last_valid_block_height}), updated_at: new Date().toISOString()};
             const stored = await store.updateNftMint(signed, claimed.updated_at);

@@ -10,6 +10,8 @@ VOX creates one durable NFT entitlement per canonical media output and configure
 - A walletless chain is stored as `claimable`, not failed. A later signed claim at `POST /v1/nft/mints/:mintId/claim` binds the wallet and queues that chain only.
 - A signed transaction is persisted before broadcast. A missing/expired transaction result enters `manual_review` rather than automatically creating a duplicate NFT.
 - Mainnet adapter construction fails closed unless `VOX_NFT_MAINNET_ENABLED=true`, `VOX_CONFIRM_NFT_MAINNET=1`, and `VOX_DEPLOYMENT_ENV=production` are all present. The deployment script additionally requires the owner-approved RPC, contract, and dedicated Secret Manager signer entries.
+- Mainnet entitlements also require a persisted completed or settled Realize commission, explicit publication consent, verified Mainnet USDC funding bound to its accepted quote and payment intent, and the exact verified artifact and provenance. The deterministic media/output/chain identity permits one entitlement per output per chain. Legacy generation produces synthetic media and is restricted to testnet entitlements, including when testnet and Mainnet adapters are configured together.
+- The processor rechecks these bindings before preparing, submitting, or reconciling Mainnet transactions. Ineligible older or bypass-created entitlements enter `manual_review` without calling a chain adapter; any existing signature and signed bytes are retained for investigation.
 
 Public surfaces are `GET /v1/nft/media/:mediaId`, `GET /v1/nft/metadata/:mediaId`, and `/media/:mediaId`. Metadata uses the media page as `external_url` and uses the provider output as `image` or `animation_url` through the canonical metadata record. The public page displays each configured chain state and explorer link.
 
@@ -41,6 +43,28 @@ The command also needs the three testnet RPC URLs, deployed `VoxMediaNFT` contra
 5. Set `VOX_NFT_ENABLED=true`, `VOX_NFT_MAINNET_ENABLED=true`, and `VOX_CONFIRM_NFT_MAINNET=1` only after explicit approval to spend real funds, then deploy with `DEPLOYMENT_ENV=production` and the repository `.kiro/gcp-project.json` target.
 
 The application does not deploy contracts or submit Mainnet transactions as part of a normal build or test run.
+
+## ERC-721 receiver verification
+
+Both safe-transfer overloads use a typed `onERC721Received` call so standard
+ABI-encoded `bytes4` responses are accepted. Wrong selectors, reverting receivers,
+malformed responses, and contracts without the callback revert the entire
+transfer, including ownership, balance, and approval changes.
+
+Run the contract regression suite locally with Solc 0.8.33 installed:
+
+```sh
+forge test --root . --contracts contracts \
+  --match-path contracts/test/VoxMediaNFT.t.sol \
+  --use 0.8.33 --evm-version cancun \
+  --out .vox-local/forge-out --cache-path .vox-local/forge-cache --offline -vv
+```
+
+The suite executes entirely inside Forge's local EVM. The collection is
+non-upgradeable: this source repair does not change any already deployed
+collection. Applying it on a live network requires checking the deployed bytecode
+and separately planning a new deployment or migration; this repair performs
+neither operation.
 
 ## Completed Realize outputs on Monad
 
