@@ -62,6 +62,8 @@ type MockState = {
   rpcBroadcasts: string[];
   broadcastResponseLoss?: boolean;
   signatureMissing?: boolean;
+  signatureConfirmation?: "processed" | "confirmed" | "finalized";
+  signatureError?: string;
   checkpointBeforeBroadcast?: Record<string, any>;
 };
 
@@ -249,7 +251,7 @@ async function installMocks(page: Page, sourceBalance = PAYER_USDC, rejectFundin
       case "simulateTransaction":
         return result({context: {slot: 10}, value: {err: null, logs: [], accounts: null, unitsConsumed: 50_000, returnData: null}});
       case "getSignatureStatuses":
-        return result({context: {slot: 11}, value: [state.signatureMissing ? null : {slot: 11, confirmations: null, err: null, confirmationStatus: "finalized"}]});
+        return result({context: {slot: 11}, value: [state.signatureMissing ? null : {slot: 11, confirmations: state.signatureConfirmation && state.signatureConfirmation !== "finalized" ? 1 : null, err: state.signatureError ?? null, confirmationStatus: state.signatureConfirmation ?? "finalized"}]});
       case "getBlockHeight":
         return result(11);
       case "sendTransaction": {
@@ -630,6 +632,38 @@ test("a lost RPC broadcast response saves the signature before sending and recov
   expect(state.fundCalls[0]?.transaction_signature).toBe(checkpoint.transactionSignature);
   expect(await page.evaluate(() => (window as any).__voxWalletSignCount)).toBeUndefined();
   expect(await page.evaluate(() => (window as any).__voxPaymentSendCount)).toBeUndefined();
+});
+
+test("a confirmed fork error retains payment recovery and only finalized failure permits another payment", async ({page}) => {
+  const state = await installMocks(page, PAYER_USDC, true);
+  state.broadcastResponseLoss = true;
+  await createWallet(page, false, true);
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
+  await dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true}).click();
+  await expect(dialog.getByRole("button", {name: "Check payment status"})).toBeVisible();
+  const originalSignature = state.checkpointBeforeBroadcast!.transactionSignature;
+  state.signatureConfirmation = "confirmed";
+  state.signatureError = "AccountInUse";
+  await dialog.getByRole("button", {name: "Check payment status"}).click();
+  await expect(dialog.getByRole("alert").filter({hasText: "mock verifier"})).toBeVisible();
+  await expect(dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true})).toHaveCount(0);
+  expect(JSON.parse((await page.evaluate(() => sessionStorage.getItem("vox.realize.v1.checkout")))!).paymentAttempt.signature).toBe(originalSignature);
+  expect(state.rpcBroadcasts).toHaveLength(1);
+  state.signatureConfirmation = "finalized";
+  await dialog.getByRole("button", {name: "Check payment status"}).click();
+  await expect(dialog.getByRole("alert").filter({hasText: "The Solana transaction failed"})).toBeVisible();
+  await expect(dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true})).toBeEnabled();
+  const checkpoint = JSON.parse((await page.evaluate(() => sessionStorage.getItem("vox.realize.v1.checkout")))!);
+  expect(checkpoint.paymentAttempt).toBeUndefined();
+  expect(checkpoint.transactionSignature).toBeUndefined();
+  expect(state.rpcBroadcasts).toHaveLength(1);
+  expect(state.fundCalls).toHaveLength(1);
 });
 
 test("an ambiguous sign-and-send wallet failure survives expiry and reload and accepts only a verified receipt", async ({page}) => {

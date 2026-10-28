@@ -4,7 +4,7 @@ import {Connection, Keypair, PublicKey, Transaction} from "@solana/web3.js";
 import {ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID} from "@solana/spl-token";
 import {SolanaSignAndSendTransaction, SolanaSignTransaction} from "@solana/wallet-standard-features";
 import {getBase58Decoder} from "@solana/kit";
-import {recoverUsdcPayment, sendUsdcPayment, walletRejected, type SendUsdcPaymentInput, type UsdcPaymentAttempt} from "../apps/web/src/solana-payment.js";
+import {checkSolanaTransaction, recoverUsdcPayment, sendUsdcPayment, walletRejected, type SendUsdcPaymentInput, type UsdcPaymentAttempt} from "../apps/web/src/solana-payment.js";
 
 const registry = vi.hoisted(() => ({getWallet: vi.fn()}));
 const rpc = vi.hoisted(() => ({getBlockHeight: vi.fn()}));
@@ -75,7 +75,7 @@ beforeEach(() => {
   vi.spyOn(Connection.prototype, "sendRawTransaction").mockResolvedValue("untrusted-rpc-return-value");
 });
 
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.useRealTimers(); });
 
 describe("USDC wallet broadcast recovery", () => {
   it("prefers signing and checkpoints the verified signature and bytes before broadcast", async () => {
@@ -106,6 +106,32 @@ describe("USDC wallet broadcast recovery", () => {
     expect(attempt.kind).toBe("signed");
     expect(result).toMatchObject({signature: attempt.kind === "signed" ? attempt.signature : undefined, confirmation: "pending"});
     expect(Connection.prototype.sendRawTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("continues polling after a confirmed fork error instead of releasing the payment for retry", async () => {
+    vi.useFakeTimers();
+    walletFeatures();
+    vi.mocked(Connection.prototype.getSignatureStatuses).mockResolvedValueOnce({context: {slot: 10}, value: [{slot: 10, confirmations: 1, err: {InstructionError: [0, "AccountNotFound"]}, confirmationStatus: "confirmed"}]});
+    const result = sendUsdcPayment(paymentInput());
+    await vi.advanceTimersByTimeAsync(1_200);
+    await expect(result).resolves.toMatchObject({confirmation: "finalized"});
+    expect(Connection.prototype.getSignatureStatuses).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a nonfinal failure pending when the finality polling deadline expires", async () => {
+    vi.useFakeTimers();
+    walletFeatures();
+    vi.mocked(Connection.prototype.getSignatureStatuses).mockResolvedValue({context: {slot: 10}, value: [{slot: 10, confirmations: 1, err: {InstructionError: [0, "AccountNotFound"]}, confirmationStatus: "processed"}]});
+    const result = sendUsdcPayment(paymentInput());
+    await vi.advanceTimersByTimeAsync(31_000);
+    await expect(result).resolves.toMatchObject({confirmation: "pending"});
+    expect(vi.mocked(Connection.prototype.getSignatureStatuses).mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("reports a finalized failed broadcast as safe to retry", async () => {
+    walletFeatures();
+    vi.mocked(Connection.prototype.getSignatureStatuses).mockResolvedValue({context: {slot: 10}, value: [{slot: 10, confirmations: null, err: {InstructionError: [0, "AccountNotFound"]}, confirmationStatus: "finalized"}]});
+    await expect(sendUsdcPayment(paymentInput())).resolves.toMatchObject({confirmation: "failed"});
   });
 
   it("recovers by rebroadcasting identical saved bytes without another wallet signature", async () => {
@@ -158,6 +184,36 @@ describe("USDC wallet broadcast recovery", () => {
     const recovered = await recoverUsdcPayment(checkpoint.mock.calls[0]![0], input, {...recoveryOptions(), quoteExpiresAt: new Date(Date.now() - 1).toISOString()});
     expect(recovered).toMatchObject({signature: original.signature, confirmation: "pending"});
     expect(Connection.prototype.sendRawTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["processed", "confirmed"] as const)("retains a saved payment after a %s fork error", async (confirmationStatus) => {
+    walletFeatures();
+    const checkpoint = vi.fn();
+    const input = paymentInput(checkpoint);
+    const original = await sendUsdcPayment(input);
+    vi.mocked(Connection.prototype.getSignatureStatuses).mockResolvedValue({context: {slot: 10}, value: [{slot: 10, confirmations: 1, err: {InstructionError: [0, "AccountNotFound"]}, confirmationStatus}]});
+    const recovered = await recoverUsdcPayment(checkpoint.mock.calls[0]![0], input, recoveryOptions());
+    expect(recovered).toMatchObject({signature: original.signature, confirmation: "pending"});
+    expect(Connection.prototype.sendRawTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows recovery to release a saved payment only after finalized failure", async () => {
+    walletFeatures();
+    const checkpoint = vi.fn();
+    const input = paymentInput(checkpoint);
+    const original = await sendUsdcPayment(input);
+    vi.mocked(Connection.prototype.getSignatureStatuses).mockResolvedValue({context: {slot: 10}, value: [{slot: 10, confirmations: null, err: {InstructionError: [0, "AccountNotFound"]}, confirmationStatus: "finalized"}]});
+    await expect(recoverUsdcPayment(checkpoint.mock.calls[0]![0], input, recoveryOptions())).resolves.toMatchObject({signature: original.signature, confirmation: "failed"});
+  });
+
+  it.each(["processed", "confirmed"] as const)("keeps a manually checked receipt pending after a %s fork error", async (confirmationStatus) => {
+    vi.mocked(Connection.prototype.getSignatureStatuses).mockResolvedValue({context: {slot: 10}, value: [{slot: 10, confirmations: 1, err: {InstructionError: [0, "AccountNotFound"]}, confirmationStatus}]});
+    await expect(checkSolanaTransaction("receipt-from-wallet", "mainnet-beta")).resolves.toBe("pending");
+  });
+
+  it("reports a finalized receipt failure to the caller", async () => {
+    vi.mocked(Connection.prototype.getSignatureStatuses).mockResolvedValue({context: {slot: 10}, value: [{slot: 10, confirmations: null, err: {InstructionError: [0, "AccountNotFound"]}, confirmationStatus: "finalized"}]});
+    await expect(checkSolanaTransaction("receipt-from-wallet", "mainnet-beta")).resolves.toBe("failed");
   });
 
   it.each(["payerAddress", "usdcMint", "destinationTokenAccount", "destinationOwnerAddress", "amountAtomic", "paymentReference", "cluster"] as const)("rejects recovery when the accepted %s binding differs", async (field) => {

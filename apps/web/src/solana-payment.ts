@@ -173,8 +173,9 @@ export async function recoverUsdcPayment(attempt: UsdcPaymentAttempt, authorizat
   let confirmation: SolanaPaymentResult["confirmation"] = "pending";
   try {
     const status = (await connection.getSignatureStatuses([attempt.signature], {searchTransactionHistory: true})).value[0];
-    if (status?.err) confirmation = "failed";
-    else if (status?.confirmationStatus === "finalized") confirmation = "finalized";
+    // Errors on processed/confirmed forks can roll back. Only finalized failure
+    // proves this signature cannot still transfer funds and permit another try.
+    if (status?.confirmationStatus === "finalized") confirmation = status.err ? "failed" : "finalized";
     else if (!status && mayRebroadcast && await connection.getBlockHeight("confirmed") <= attempt.lastValidBlockHeight && Date.parse(options.quoteExpiresAt) > Date.now()) {
       // An RPC timeout cannot establish whether it accepted the previous request.
       // Rebroadcasting identical signed bytes is idempotent on Solana.
@@ -193,8 +194,7 @@ async function pollFinality(connection: Connection, signature: string, lastValid
         connection.getBlockHeight("confirmed")
       ]);
       const transaction = status.value[0];
-      if (transaction?.err) return "failed";
-      if (transaction?.confirmationStatus === "finalized") return "finalized";
+      if (transaction?.confirmationStatus === "finalized") return transaction.err ? "failed" : "finalized";
       // A missing history result after blockhash expiry can still be delayed by an
       // RPC indexer, so preserve the signature and let server verification decide.
       if (blockHeight > lastValidBlockHeight && !transaction) return "pending";
@@ -367,9 +367,8 @@ export async function checkSolanaTransaction(signature: string, cluster: string)
   const connection = new Connection(import.meta.env.VITE_SOLANA_RPC_URL as string | undefined ?? baseSolanaRpcUrl(cluster), "confirmed");
   try {
     const status = (await connection.getSignatureStatuses([signature], {searchTransactionHistory: true})).value[0];
-    if (!status) return "pending";
-    if (status.err) return "failed";
-    return status.confirmationStatus === "finalized" ? "finalized" : "pending";
+    if (status?.confirmationStatus !== "finalized") return "pending";
+    return status.err ? "failed" : "finalized";
   } catch { return "pending"; }
 }
 
