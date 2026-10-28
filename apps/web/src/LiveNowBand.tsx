@@ -165,12 +165,13 @@ export function LiveNowBand({agents, liveAgents, loading, feedError}: {agents: R
     });
   }, []);
   const sortedCharacters = useMemo(() => characters
-    .map((character, index) => ({character, index, viewers: viewerCounts[character.username]}))
+    .map((character) => ({character, viewers: viewerCounts[character.username]}))
     .sort((left, right) => {
-      if (left.viewers === undefined && right.viewers === undefined) return left.index - right.index;
-      if (left.viewers === undefined) return 1;
-      if (right.viewers === undefined) return -1;
-      return right.viewers - left.viewers || left.index - right.index;
+      const leftUsername = left.character.agent.registration.username ?? left.character.handle;
+      const rightUsername = right.character.agent.registration.username ?? right.character.handle;
+      return (right.viewers ?? 0) - (left.viewers ?? 0)
+        || leftUsername.localeCompare(rightUsername, "en", {sensitivity: "base"})
+        || left.character.username.localeCompare(right.character.username, "en");
     })
     .map(({character}) => character), [characters, viewerCounts]);
 
