@@ -32,10 +32,7 @@ const ESCROW_STATUSES = ["Draft", "Ready", "Funded", "Fulfilled", "Refundable", 
 export type ConnectedWallet = NonNullable<WalletState["connected"]>;
 export type DiscoveredWallet = WalletState["wallets"][number];
 
-export interface SendUsdcPaymentInput {
-  wallet: ConnectedWallet["wallet"];
-  account: ConnectedWallet["account"];
-  supportedTransactionVersions: ConnectedWallet["supportedTransactionVersions"];
+export interface UsdcPaymentAuthorization {
   payerAddress: string;
   usdcMint: string;
   destinationTokenAccount: string;
@@ -43,7 +40,25 @@ export interface SendUsdcPaymentInput {
   amountAtomic: string;
   paymentReference: string;
   cluster: string;
+}
+
+export type UsdcPaymentAttempt = {
+  version: 1;
+  authorization: UsdcPaymentAuthorization;
+} & ({kind: "wallet_submission"} | {
+  kind: "signed";
+  signature: string;
+  signedTransaction: string;
+  lastValidBlockHeight: number;
+});
+
+export interface SendUsdcPaymentInput extends UsdcPaymentAuthorization {
+  wallet: ConnectedWallet["wallet"];
+  account: ConnectedWallet["account"];
+  supportedTransactionVersions: ConnectedWallet["supportedTransactionVersions"];
   rpcUrl?: string;
+  /** Must durably save this attempt or throw, before any possible broadcast. */
+  onPrepared: (attempt: UsdcPaymentAttempt) => void;
   onWalletApprovalRequested?: () => void;
   onSubmitted?: (signature: string, explorerUrl: string) => void;
 }
@@ -57,9 +72,11 @@ export interface SolanaPaymentResult {
 
 function walletRejected(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
-  const value = error as {name?: unknown; code?: unknown; message?: unknown};
+  const value = error as {code?: unknown; message?: unknown};
   const message = typeof value.message === "string" ? value.message.toLowerCase() : "";
-  return value.code === 4001 || value.name === "WalletSignTransactionError" || value.name === "WalletConnectionError" && message.includes("reject") || message.includes("user rejected") || message.includes("user declined") || message.includes("request rejected");
+  // Generic signing/connection errors can also mean an accepted broadcast lost
+  // its response. Only an explicit user rejection is safe to treat as canceled.
+  return value.code === 4001 || /\buser (?:rejected|declined|denied)\b|\b(?:rejected|declined|denied) by (?:the )?user\b/.test(message);
 }
 
 export {walletRejected};
@@ -104,6 +121,67 @@ function walletSigningFeatures(wallet: ConnectedWallet["wallet"]) {
   const standardWallet = getWalletForHandle(wallet as unknown as Parameters<typeof getWalletForHandle>[0]);
   const typed = standardWallet as unknown as {features: SolanaSignAndSendTransactionFeature & SolanaSignTransactionFeature};
   return typed.features;
+}
+
+function paymentAuthorization(input: UsdcPaymentAuthorization): UsdcPaymentAuthorization {
+  const {payerAddress, usdcMint, destinationTokenAccount, destinationOwnerAddress, amountAtomic, paymentReference, cluster} = input;
+  return {payerAddress, usdcMint, destinationTokenAccount, destinationOwnerAddress, amountAtomic, paymentReference, cluster};
+}
+
+function paymentExplorerUrl(signature: string, cluster: string): string {
+  return `https://explorer.solana.com/tx/${encodeURIComponent(signature)}?cluster=${encodeURIComponent(cluster)}`;
+}
+
+function directPaymentTransaction(input: UsdcPaymentAuthorization, createSource: boolean): Transaction {
+  const owner = new PublicKey(input.payerAddress);
+  const mint = new PublicKey(input.usdcMint);
+  const destination = new PublicKey(input.destinationTokenAccount);
+  const destinationOwner = new PublicKey(input.destinationOwnerAddress);
+  const source = getAssociatedTokenAddressSync(mint, owner, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
+  const transaction = new Transaction();
+  if (createSource) transaction.add(createAssociatedTokenAccountIdempotentInstruction(owner, source, owner, mint, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID));
+  transaction.add(createAssociatedTokenAccountIdempotentInstruction(owner, destination, destinationOwner, mint, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID));
+  transaction.add(createTransferCheckedInstruction(source, mint, destination, owner, BigInt(input.amountAtomic), USDC_DECIMALS, [], TOKEN_PROGRAM_ID));
+  transaction.add(paymentMemoInstruction(input.paymentReference));
+  transaction.feePayer = owner;
+  transaction.setSigners(owner);
+  return transaction;
+}
+
+function verifiedSignedPayment(transaction: Transaction, bytes: Uint8Array): {signature: string; signedTransaction: string} {
+  const signed = Transaction.from(bytes);
+  if (!signed.serializeMessage().equals(transaction.serializeMessage()) || !signed.signature || !signed.verifySignatures()) {
+    throw new Error("The wallet returned a transaction that does not match the authorized payment, or its signature is invalid.");
+  }
+  return {signature: encodeBase58(signed.signature), signedTransaction: Buffer.from(bytes).toString("base64")};
+}
+
+/** Recovery never builds a new payment: only the exact saved signature/bytes may be retried. */
+export async function recoverUsdcPayment(attempt: UsdcPaymentAttempt, authorization: UsdcPaymentAuthorization, options: {rpcUrl?: string; quoteExpiresAt: string}): Promise<SolanaPaymentResult> {
+  if (attempt.kind !== "signed" || attempt.version !== 1 || JSON.stringify(paymentAuthorization(attempt.authorization)) !== JSON.stringify(paymentAuthorization(authorization))) {
+    throw new Error("The saved payment does not match this accepted quote. Do not pay again; verify the original wallet receipt.");
+  }
+  const mayRebroadcast = authorization.cluster !== "mainnet-beta" || import.meta.env.VITE_REALIZE_MAINNET_ENABLED === "true";
+  const bytes = Buffer.from(attempt.signedTransaction, "base64");
+  const signed = Transaction.from(bytes);
+  const expected = directPaymentTransaction(authorization, signed.instructions.length === 4);
+  expected.recentBlockhash = signed.recentBlockhash!;
+  const verified = verifiedSignedPayment(expected, bytes);
+  if (verified.signature !== attempt.signature || !Number.isSafeInteger(attempt.lastValidBlockHeight) || attempt.lastValidBlockHeight < 0) throw new Error("The saved payment recovery data is invalid. Verify the original wallet receipt before continuing.");
+  const connection = new Connection(options.rpcUrl ?? import.meta.env.VITE_SOLANA_RPC_URL as string | undefined ?? baseSolanaRpcUrl(authorization.cluster), "confirmed");
+  const explorerUrl = paymentExplorerUrl(attempt.signature, authorization.cluster);
+  let confirmation: SolanaPaymentResult["confirmation"] = "pending";
+  try {
+    const status = (await connection.getSignatureStatuses([attempt.signature], {searchTransactionHistory: true})).value[0];
+    if (status?.err) confirmation = "failed";
+    else if (status?.confirmationStatus === "finalized") confirmation = "finalized";
+    else if (!status && mayRebroadcast && await connection.getBlockHeight("confirmed") <= attempt.lastValidBlockHeight && Date.parse(options.quoteExpiresAt) > Date.now()) {
+      // An RPC timeout cannot establish whether it accepted the previous request.
+      // Rebroadcasting identical signed bytes is idempotent on Solana.
+      await connection.sendRawTransaction(bytes, {preflightCommitment: "confirmed"});
+    }
+  } catch { /* Keep the original identity, including after blockhash expiry or RPC failure. */ }
+  return {signature: attempt.signature, explorerUrl, confirmation};
 }
 
 async function pollFinality(connection: Connection, signature: string, lastValidBlockHeight: number): Promise<"finalized" | "pending" | "failed"> {
@@ -179,13 +257,9 @@ export async function sendUsdcPayment(input: SendUsdcPaymentInput): Promise<Sola
     throw new Error(`Insufficient USDC in wallet ${input.payerAddress}. It has ${(Number(sourceAmount) / 1_000_000).toFixed(2)} USDC in its associated account; the quote requires ${(Number(BigInt(input.amountAtomic)) / 1_000_000).toFixed(2)} USDC.`);
   }
 
-  const transaction = new Transaction();
-  if (!sourceInfo) transaction.add(createAssociatedTokenAccountIdempotentInstruction(owner, source, owner, mint, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID));
   // If this is the first Mainnet payment, the payer creates the treasury ATA
   // and pays its one-time rent in the same transaction as the USDC transfer.
-  transaction.add(createAssociatedTokenAccountIdempotentInstruction(owner, destination, destinationOwner, mint, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID));
-  transaction.add(createTransferCheckedInstruction(source, mint, destination, owner, BigInt(input.amountAtomic), USDC_DECIMALS, [], TOKEN_PROGRAM_ID));
-  transaction.add(paymentMemoInstruction(input.paymentReference));
+  const transaction = directPaymentTransaction(input, !sourceInfo);
   const latestBlockhash = await connection.getLatestBlockhash("confirmed");
   transaction.feePayer = owner;
   transaction.setSigners(owner);
@@ -214,16 +288,7 @@ export async function sendUsdcPayment(input: SendUsdcPaymentInput): Promise<Sola
   const features = walletSigningFeatures(input.wallet);
   input.onWalletApprovalRequested?.();
   let signature: string;
-  if (features[SolanaSignAndSendTransaction]) {
-    const [sent] = await features[SolanaSignAndSendTransaction].signAndSendTransaction({
-      account: input.account,
-      transaction: transaction.serialize({requireAllSignatures: false, verifySignatures: false}),
-      chain,
-      options: {preflightCommitment: "confirmed", commitment: "confirmed", skipPreflight: false}
-    });
-    if (!sent?.signature) throw new Error("The wallet did not return a Solana transaction signature.");
-    signature = encodeBase58(sent.signature);
-  } else if (features[SolanaSignTransaction]) {
+  if (features[SolanaSignTransaction]) {
     const [signed] = await features[SolanaSignTransaction].signTransaction({
       account: input.account,
       transaction: transaction.serialize({requireAllSignatures: false, verifySignatures: false}),
@@ -231,13 +296,35 @@ export async function sendUsdcPayment(input: SendUsdcPaymentInput): Promise<Sola
       options: {preflightCommitment: "confirmed"}
     });
     if (!signed?.signedTransaction) throw new Error("The wallet did not return a signed Solana transaction.");
-    signature = await connection.sendRawTransaction(signed.signedTransaction, {preflightCommitment: "confirmed"});
+    const prepared = verifiedSignedPayment(transaction, signed.signedTransaction);
+    signature = prepared.signature;
+    input.onPrepared({version: 1, kind: "signed", authorization: paymentAuthorization(input), ...prepared, lastValidBlockHeight: latestBlockhash.lastValidBlockHeight});
+    // Derive and durably save the signature before broadcast. A lost RPC
+    // response must retain it rather than enable a newly signed payment.
+    input.onSubmitted?.(signature, paymentExplorerUrl(signature, input.cluster));
+    try {
+      await connection.sendRawTransaction(signed.signedTransaction, {preflightCommitment: "confirmed"});
+    } catch {
+      return {signature, explorerUrl: paymentExplorerUrl(signature, input.cluster), confirmation: "pending"};
+    }
+  } else if (features[SolanaSignAndSendTransaction]) {
+    // These wallets may broadcast without returning a signature. Persist an
+    // unresolved attempt before calling them, so a timeout survives refresh.
+    input.onPrepared({version: 1, kind: "wallet_submission", authorization: paymentAuthorization(input)});
+    const [sent] = await features[SolanaSignAndSendTransaction].signAndSendTransaction({
+      account: input.account,
+      transaction: transaction.serialize({requireAllSignatures: false, verifySignatures: false}),
+      chain,
+      options: {preflightCommitment: "confirmed", commitment: "confirmed", skipPreflight: false}
+    });
+    if (sent?.signature?.length !== 64) throw new Error("The wallet did not return a valid Solana transaction signature. Check the original wallet receipt before continuing.");
+    signature = encodeBase58(sent.signature);
+    input.onSubmitted?.(signature, paymentExplorerUrl(signature, input.cluster));
   } else {
     throw new Error("This wallet does not support Solana transaction signing.");
   }
 
-  const explorerUrl = `https://explorer.solana.com/tx/${encodeURIComponent(signature)}?cluster=${encodeURIComponent(input.cluster)}`;
-  input.onSubmitted?.(signature, explorerUrl);
+  const explorerUrl = paymentExplorerUrl(signature, input.cluster);
   const confirmation = await pollFinality(connection, signature, latestBlockhash.lastValidBlockHeight);
   return {
     signature,

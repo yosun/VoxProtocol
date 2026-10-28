@@ -11,7 +11,7 @@ import {
   utf8
 } from "@vox/protocol";
 import {ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID} from "@solana/spl-token";
-import {PublicKey, Transaction} from "@solana/web3.js";
+import {Keypair, PublicKey, Transaction} from "@solana/web3.js";
 
 const CREATOR_ID = "vox:agent:realize-test-creator";
 const CAPABILITY_ID = "capability:video";
@@ -23,7 +23,8 @@ const AGREEMENT_ID = `vox:rights:first-party-ai:v1:${CREATOR_ID}`;
 const COMMISSION_ID = "commission:e2e-realize";
 const PROVENANCE_ID = "provenance:e2e-realize";
 const USDC_MINT = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
-const PAYER = new PublicKey("11111111111111111111111111111111");
+const PAYER_KEYPAIR = Keypair.fromSeed(new Uint8Array(32).fill(13));
+const PAYER = PAYER_KEYPAIR.publicKey;
 const TREASURY_OWNER = new PublicKey("5Uvtth32oEiA9BG8XjzfTgwn9kry9iUQsYHnggxLpzgA");
 const DESTINATION = getAssociatedTokenAddressSync(USDC_MINT, TREASURY_OWNER, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
 const ISSUER_ID = "vox.gold:e2e";
@@ -58,6 +59,10 @@ type MockState = {
   nftPublicationConsent?: boolean;
   capabilityFailures?: number;
   supportedResolutions: string[];
+  rpcBroadcasts: string[];
+  broadcastResponseLoss?: boolean;
+  signatureMissing?: boolean;
+  checkpointBeforeBroadcast?: Record<string, any>;
 };
 
 function tokenAccountData(mint: PublicKey, owner: PublicKey, amount: bigint): string {
@@ -166,14 +171,19 @@ function makePublicProvenance(quote: Record<string, any>, publicAttribution?: st
   return {...unsigned, signature: signBytes(payload, ISSUER.secretKey)};
 }
 
-function createWallet(page: Page, disableOnRecovery = false) {
-  return page.addInitScript(({address, publicKey, disableOnRecovery}) => {
+async function createWallet(page: Page, disableOnRecovery = false, signing = false) {
+  if (signing) await page.exposeFunction("__voxSignTestTransaction", (raw: number[]) => {
+    const transaction = Transaction.from(Uint8Array.from(raw));
+    transaction.partialSign(PAYER_KEYPAIR);
+    return Array.from(transaction.serialize());
+  });
+  return page.addInitScript(({address, publicKey, disableOnRecovery, signing}) => {
     if (disableOnRecovery && sessionStorage.getItem("vox:e2e:recover-without-wallet") === "true") return;
     const account = {
       address,
       publicKey: new Uint8Array(publicKey),
       chains: ["solana:mainnet"],
-      features: ["solana:signAndSendTransaction"]
+      features: signing ? ["solana:signTransaction", "solana:signAndSendTransaction"] : ["solana:signAndSendTransaction"]
     };
     const wallet = {
       version: "1.0.0",
@@ -189,21 +199,33 @@ function createWallet(page: Page, disableOnRecovery = false) {
           version: "1.0.0",
           supportedTransactionVersions: ["legacy"],
           signAndSendTransaction: async (...inputs: Array<{transaction: Uint8Array}>) => inputs.map(({transaction}) => {
+            (window as any).__voxWalletSubmissionCheckpoint = JSON.parse(sessionStorage.getItem("vox.realize.v1.checkout")!);
+            (window as any).__voxWalletRequestCount = ((window as any).__voxWalletRequestCount ?? 0) + 1;
+            if ((window as any).__voxWalletFailure === "rejected") throw Object.assign(new Error("User rejected the request"), {code: 4001});
             (window as any).__voxPaymentSendCount = ((window as any).__voxPaymentSendCount ?? 0) + 1;
             (window as any).__voxLastSentTransaction = Array.from(transaction);
+            if ((window as any).__voxWalletFailure === "ambiguous") throw Object.assign(new Error("RPC connection lost after wallet submission"), {name: "WalletSignTransactionError"});
             return {signature: new Uint8Array(64).fill(1)};
           })
-        }
+        },
+        ...(signing ? {"solana:signTransaction": {
+          version: "1.0.0",
+          supportedTransactionVersions: ["legacy"],
+          signTransaction: async (...inputs: Array<{transaction: Uint8Array}>) => Promise.all(inputs.map(async ({transaction}) => {
+            (window as any).__voxWalletSignCount = ((window as any).__voxWalletSignCount ?? 0) + 1;
+            return {signedTransaction: new Uint8Array(await (window as any).__voxSignTestTransaction(Array.from(transaction)))};
+          }))
+        }} : {})
       }
     };
     window.addEventListener("wallet-standard:app-ready", (event: Event) => {
       (event as CustomEvent<{register: (candidate: unknown) => void}>).detail.register(wallet);
     });
-  }, {address: PAYER.toBase58(), publicKey: Array.from(PAYER.toBytes()), disableOnRecovery});
+  }, {address: PAYER.toBase58(), publicKey: Array.from(PAYER.toBytes()), disableOnRecovery, signing});
 }
 
 async function installMocks(page: Page, sourceBalance = PAYER_USDC, rejectFunding = false): Promise<MockState> {
-  const state: MockState = {funded: false, sourceBalance, fundCalls: [], rejectFunding, supportedResolutions: ["480P", "768P", "1080P"]};
+  const state: MockState = {funded: false, sourceBalance, fundCalls: [], rejectFunding, supportedResolutions: ["480P", "768P", "1080P"], rpcBroadcasts: []};
   page.on("pageerror", (error) => console.error("Browser page error:", error.message));
   await page.route("https://api.mainnet-beta.solana.com/**", async (route) => {
     const request = route.request().postDataJSON() as {id: number | string; method: string; params?: unknown[]};
@@ -227,9 +249,15 @@ async function installMocks(page: Page, sourceBalance = PAYER_USDC, rejectFundin
       case "simulateTransaction":
         return result({context: {slot: 10}, value: {err: null, logs: [], accounts: null, unitsConsumed: 50_000, returnData: null}});
       case "getSignatureStatuses":
-        return result({context: {slot: 11}, value: [{slot: 11, confirmations: null, err: null, confirmationStatus: "finalized"}]});
+        return result({context: {slot: 11}, value: [state.signatureMissing ? null : {slot: 11, confirmations: null, err: null, confirmationStatus: "finalized"}]});
       case "getBlockHeight":
         return result(11);
+      case "sendTransaction": {
+        state.rpcBroadcasts.push(String(request.params?.[0]));
+        state.checkpointBeforeBroadcast = await page.evaluate(() => JSON.parse(sessionStorage.getItem("vox.realize.v1.checkout")!));
+        if (state.broadcastResponseLoss) return route.abort("connectionreset");
+        return result("rpc-response-does-not-replace-the-saved-signature");
+      }
       default:
         return json(route, {jsonrpc: "2.0", id: request.id, error: {code: -32601, message: `Unhandled test RPC method ${request.method}`}}, 200);
     }
@@ -568,6 +596,126 @@ test("reloading an unverified payment restores the signature and prevents a seco
   await expect(dialog.getByRole("button", {name: "Check payment status"})).toBeVisible();
   await expect(dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true})).not.toBeVisible();
   expect(state.fundCalls).toHaveLength(fundingCalls);
+});
+
+test("a lost RPC broadcast response saves the signature before sending and recovers the same signed bytes after reload", async ({page}) => {
+  const state = await installMocks(page);
+  state.broadcastResponseLoss = true;
+  state.signatureMissing = true;
+  await createWallet(page, true, true);
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  let dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
+  await dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true}).click();
+  await expect(dialog.getByRole("button", {name: "Check payment status"})).toBeVisible();
+  const checkpoint = state.checkpointBeforeBroadcast!;
+  expect(checkpoint.paymentAttempt).toMatchObject({kind: "signed", signature: checkpoint.transactionSignature, signedTransaction: state.rpcBroadcasts[0]});
+  expect(state.fundCalls).toHaveLength(0);
+  expect(await page.evaluate(() => (window as any).__voxWalletSignCount)).toBe(1);
+  expect(await page.evaluate(() => (window as any).__voxPaymentSendCount ?? 0)).toBe(0);
+  await page.evaluate(() => sessionStorage.setItem("vox:e2e:recover-without-wallet", "true"));
+  await page.reload();
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await expect(dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true})).toHaveCount(0);
+  state.broadcastResponseLoss = false;
+  await dialog.getByRole("button", {name: "Check payment status"}).click();
+  await expect(dialog.getByText("Your creation is ready and settled")).toBeVisible();
+  expect(state.rpcBroadcasts).toHaveLength(2);
+  expect(state.rpcBroadcasts[1]).toBe(state.rpcBroadcasts[0]);
+  expect(state.fundCalls[0]?.transaction_signature).toBe(checkpoint.transactionSignature);
+  expect(await page.evaluate(() => (window as any).__voxWalletSignCount)).toBeUndefined();
+  expect(await page.evaluate(() => (window as any).__voxPaymentSendCount)).toBeUndefined();
+});
+
+test("an ambiguous sign-and-send wallet failure survives expiry and reload and accepts only a verified receipt", async ({page}) => {
+  const state = await installMocks(page, PAYER_USDC, true);
+  await createWallet(page, true);
+  await page.clock.install();
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  let dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
+  await page.evaluate(() => { (window as any).__voxWalletFailure = "ambiguous"; });
+  await dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true}).click();
+  await expect(dialog.getByText("Payment outcome needs checking.")).toBeVisible();
+  expect(await page.evaluate(() => (window as any).__voxWalletSubmissionCheckpoint.paymentAttempt.kind)).toBe("wallet_submission");
+  expect(await page.evaluate(() => (window as any).__voxPaymentSendCount)).toBe(1);
+  expect(state.fundCalls).toHaveLength(0);
+  await page.evaluate(() => sessionStorage.setItem("vox:e2e:recover-without-wallet", "true"));
+  await page.clock.setSystemTime(Date.now() + 20 * 60_000);
+  await page.reload();
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await expect(dialog.getByText("Payment outcome needs checking.")).toBeVisible();
+  await expect(dialog.getByText("Price expired · update it to continue")).toBeVisible();
+  await expect(dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true})).toHaveCount(0);
+  await expect(dialog.getByRole("button", {name: "Update my price"})).toBeDisabled();
+  await expect(dialog.getByLabel("Your idea")).toBeDisabled();
+  await dialog.getByLabel("Transaction signature from your wallet").fill("2".repeat(88));
+  state.signatureMissing = true;
+  await dialog.getByRole("button", {name: "Verify wallet receipt"}).click();
+  await expect(dialog.getByRole("alert").filter({hasText: "Solana has not finalized this receipt"})).toBeVisible();
+  expect(state.fundCalls).toHaveLength(0);
+  state.signatureMissing = false;
+  await dialog.getByRole("button", {name: "Verify wallet receipt"}).click();
+  await expect(dialog.getByRole("alert").filter({hasText: "mock verifier"})).toBeVisible();
+  await expect(dialog.getByText("Verified by VOX.gold")).toHaveCount(0);
+  expect(JSON.parse((await page.evaluate(() => sessionStorage.getItem("vox.realize.v1.checkout")))!).paymentAttempt.kind).toBe("wallet_submission");
+  state.rejectFunding = false;
+  await dialog.getByRole("button", {name: "Verify wallet receipt"}).click();
+  await expect(dialog.getByText("Your creation is ready and settled")).toBeVisible();
+  expect(state.fundCalls).toHaveLength(2);
+  expect(state.fundCalls[1]?.transaction_signature).toBe("2".repeat(88));
+  expect(await page.evaluate(() => (window as any).__voxPaymentSendCount)).toBeUndefined();
+});
+
+test("an explicit wallet rejection clears the unresolved marker and permits the customer to try again", async ({page}) => {
+  const state = await installMocks(page);
+  await createWallet(page);
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
+  await page.evaluate(() => { (window as any).__voxWalletFailure = "rejected"; });
+  await dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true}).click();
+  await expect(dialog.getByRole("alert").filter({hasText: "Payment canceled in your wallet"})).toBeVisible();
+  await expect(dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true})).toBeEnabled();
+  expect(JSON.parse((await page.evaluate(() => sessionStorage.getItem("vox.realize.v1.checkout")))!).paymentAttempt).toBeUndefined();
+  expect(await page.evaluate(() => (window as any).__voxPaymentSendCount ?? 0)).toBe(0);
+  expect(state.fundCalls).toHaveLength(0);
+  await page.evaluate(() => { (window as any).__voxWalletFailure = undefined; });
+  await dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true}).click();
+  await expect(dialog.getByText("Your creation is ready and settled")).toBeVisible();
+  expect(await page.evaluate(() => (window as any).__voxPaymentSendCount)).toBe(1);
+});
+
+test("disabled browser storage stops payment before a sign-and-send wallet is invoked", async ({page}) => {
+  const state = await installMocks(page);
+  await createWallet(page);
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
+  await page.evaluate(() => { Storage.prototype.setItem = () => { throw new Error("Storage unavailable"); }; });
+  await dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true}).click();
+  await expect(dialog.getByRole("alert").filter({hasText: "Could not save payment recovery"})).toBeVisible();
+  expect(await page.evaluate(() => (window as any).__voxWalletRequestCount ?? 0)).toBe(0);
+  expect(state.fundCalls).toHaveLength(0);
+  await expect(dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true})).toBeEnabled();
 });
 
 test("an expired submitted payment can be verified after reload without reconnecting or sending again", async ({page}) => {
