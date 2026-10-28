@@ -106,6 +106,11 @@ function money(value: string | undefined): string {
   return `${whole}.${(decimal || "00").padEnd(2, "0")}`;
 }
 
+/** Refund states also prove the original order received its payment. */
+function paymentWasReceived(status: string | undefined): boolean {
+  return ["captured", "settled", "refund_pending", "refunded"].includes(status ?? "");
+}
+
 function short(value: string): string { return value.length > 18 ? `${value.slice(0, 8)}…${value.slice(-6)}` : value; }
 
 function commissionPath(id: string): string { return `/v1/realize/commissions/${encodeURIComponent(id)}`; }
@@ -272,14 +277,14 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
   const quoteExpired = !!quote && Date.parse(quote.expires_at) <= now;
   const quoteValid = !!quote && !!health && verifyQuote(quote, health) && quoteComponentsSum(quote) === BigInt(quote.total_amount_usdc_atomic) && quotePayoutSum(quote) === BigInt(quote.total_amount_usdc_atomic);
   const quoteAccepted = !!commissionStatus?.commission.accepted_quote_hash && commissionStatus.commission.accepted_quote_hash === quote?.canonical_quote_hash;
-  const paymentPending = (!!pendingSignature || !!pendingPaymentAttempt) && commissionStatus?.commission.payment_state !== "captured" && commissionStatus?.commission.payment_state !== "settled";
+  const paymentPending = (!!pendingSignature || !!pendingPaymentAttempt) && !paymentWasReceived(commissionStatus?.commission.payment_state);
   const networkName = quote?.network_id?.replace("solana:", "") ?? "";
   const mainnetRealizeDisabled = networkName === "mainnet-beta" && import.meta.env.VITE_REALIZE_MAINNET_ENABLED !== "true";
   const expectedChain = walletChainForCluster(networkName);
   const networkMismatch = !!quote && !!expectedChain && configuredWalletCluster() !== networkName;
   const walletChainMismatch = !!quote && !!connected && !!expectedChain && !connected.account.chains.includes(expectedChain as never);
   const payerWalletMismatch = !!quoteAccepted && !!funding && !!connected && connected.account.address !== funding.payer_wallet;
-  const paymentIsVerified = ["captured", "settled"].includes(commissionStatus?.commission.payment_state ?? "");
+  const paymentIsVerified = paymentWasReceived(commissionStatus?.commission.payment_state);
   const currentTermsMatchQuote = !quote || (!!rights && rightsPolicyMode(rights) === (quote.rights_policy_mode ?? "signed_agreement") && rightsPolicyId(rights) === quote.rights_agreement_reference && rights.terms_hash === quote.rights_agreement_hash && rightsPolicyVersion(rights) === quote.rights_agreement_version && validateRightsPolicy(rights, quote.rights_policy_mode ?? "signed_agreement", quote.creator_id));
   const canAcceptQuote = !!quote && quoteMatches && quoteValid && !quoteExpired && !mainnetRealizeDisabled && currentTermsMatchQuote && !!rights && rightsReviewed && !!connectedAddress && !quoteAccepted && !busy;
   const attributionReady = !publicConsent || !!publicAttribution.trim();
@@ -373,7 +378,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       else throw new Error("The provenance signature could not be verified against this VOX.gold issuer.");
     }
     if (updated.commission.accepted_quote_hash) setRightsReviewed(true);
-    if (financialAtRequest?.outcome === "pending" && ["captured", "settled"].includes(updated.commission.payment_state)) {
+    if (financialAtRequest?.outcome === "pending" && paymentWasReceived(updated.commission.payment_state)) {
       const {transactionSignature: _signature, paymentAttempt: _attempt, ...checkout} = financialAtRequest.checkout;
       try {
         const resolved = await writeFinancialCheckpoint({...financialAtRequest, outcome: "captured", updatedAt: Date.now(), checkout}, {expectedAttemptId: financialAtRequest.attemptId});
@@ -614,7 +619,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       await api.fundRealizeCommission(commissionId, body, await signRealizeRequest(identity, "POST", path, body));
       setPendingSignature(signature);
       const updated = await refreshStatus(commissionId, identity);
-      if (["captured", "settled"].includes(updated.commission.payment_state)) {
+      if (paymentWasReceived(updated.commission.payment_state)) {
         await resolveFinancial("captured", expectedAttemptId, signature);
       }
     } catch (reason) {
@@ -622,7 +627,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       setError(checkoutError(reason));
       try {
         const updated = await refreshStatus(commissionId, identity);
-        if (["captured", "settled"].includes(updated.commission.payment_state)) {
+        if (paymentWasReceived(updated.commission.payment_state)) {
           await resolveFinancial("captured", expectedAttemptId, signature);
         }
       } catch { /* The signed transaction remains saved for a later check. */ }

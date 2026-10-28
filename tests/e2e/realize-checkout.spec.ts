@@ -635,6 +635,42 @@ test("a lost RPC broadcast response saves the signature before sending and recov
   expect(await page.evaluate(() => (window as any).__voxPaymentSendCount)).toBeUndefined();
 });
 
+for (const paymentState of ["refund_pending", "refunded"] as const) test(`restored ${paymentState} orders settle their recovery marker without offering another payment`, async ({page}) => {
+  const state = await installMocks(page, PAYER_USDC, true);
+  await createWallet(page);
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  let dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await dialog.getByLabel("Your idea").fill("A paid order resolved while its payment tab was closed.");
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
+  await dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true}).click();
+  await expect(dialog.getByRole("button", {name: "Check payment status"})).toBeVisible();
+  state.commission = {...state.commission!, state: paymentState === "refunded" ? "REFUNDED" : "REFUND_PENDING", payment_state: paymentState, fulfillment_state: "failed"};
+  await page.reload();
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await expect(dialog.getByRole("region", {name: "Your price and checkout"}).getByText(paymentState.replaceAll("_", " "), {exact: true})).toBeVisible();
+  await expect(dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true})).not.toBeVisible();
+  await expect(dialog.getByRole("button", {name: "Check payment status"})).not.toBeVisible();
+  await expect.poll(() => page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("vox.realize.financial-checkpoints.v1", 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const outcome = await new Promise<string>((resolve, reject) => {
+      const request = database.transaction("commissions", "readonly").objectStore("commissions").get("commission:e2e-realize");
+      request.onsuccess = () => resolve(request.result?.outcome);
+      request.onerror = () => reject(request.error);
+    });
+    database.close();
+    return outcome;
+  })).toBe("captured");
+});
+
 test("a confirmed fork error retains payment recovery and only finalized failure permits another payment", async ({page}) => {
   const state = await installMocks(page, PAYER_USDC, true);
   state.broadcastResponseLoss = true;
