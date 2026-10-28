@@ -60,7 +60,7 @@ function LiveStreamCard({character, onViewersChange}: {character: LiveCharacter;
   const [localTime, setLocalTime] = useState(() => character.timeZone ? formatCharacterTime(character.timeZone) : null);
   const name = character.agent.registration.display_name;
   const avatarUrl = trustedAvatarUrl(character.agent.profile?.avatar?.url);
-  const embedUrl = `${POPULI_ORIGIN}/${encodeURIComponent(character.username)}/embed`;
+  const embedUrl = `${POPULI_ORIGIN}/${encodeURIComponent(character.username)}/embed?audience=preview`;
   const voxUsername = character.agent.registration.username;
   const voxProfilePath = voxUsername
     ? `/${encodeURIComponent(voxUsername)}/?livestream=true`
@@ -105,8 +105,8 @@ function LiveStreamCard({character, onViewersChange}: {character: LiveCharacter;
       if (event.origin !== POPULI_ORIGIN || event.source !== frameRef.current?.contentWindow) return;
       const data = event.data;
       if (!data || data.type !== "populi-live-widget-status") return;
-      setActivity(data.activity?.trim().slice(0, 90) || "Broadcasting now");
-      const nextViewers = typeof data.viewers === "number" && Number.isFinite(data.viewers) ? data.viewers : null;
+      setActivity(typeof data.activity === "string" ? data.activity.trim().slice(0, 90) || "Broadcasting now" : "Broadcasting now");
+      const nextViewers = typeof data.viewers === "number" && Number.isSafeInteger(data.viewers) && data.viewers >= 0 ? data.viewers : null;
       setViewers(nextViewers);
       onViewersChange(character.username, nextViewers);
     };
