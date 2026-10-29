@@ -1,6 +1,6 @@
 import {createHash, timingSafeEqual} from "node:crypto";
 import {canonicalize, SettlementInstructionV1Schema, type SettlementInstructionV1} from "@vox/protocol";
-import {isValidSolanaAddress, verifyFinalizedUsdcTransfer} from "@vox/solana";
+import {isSolanaTransactionSignature, isValidSolanaAddress, verifyFinalizedUsdcTransfer} from "@vox/solana";
 import Fastify, {type FastifyInstance} from "fastify";
 import {z} from "zod";
 import type {SettlementBatchRecord, SettlementLedger, SettlementRecord, SettlementRecordKind} from "./ledger.js";
@@ -27,7 +27,7 @@ export const RefundRequestSchema = z.object({
   network_id: z.literal("solana:mainnet-beta"),
   usdc_mint: z.literal(MAINNET_USDC_MINT),
   payer_wallet: solanaAddress,
-  funding_transaction_signature: z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{64,88}$/),
+  funding_transaction_signature: z.string().refine(isSolanaTransactionSignature),
   payment_reference: z.string().min(1).max(512),
   idempotency_key: z.string().min(1).max(256)
 }).strict();
@@ -78,8 +78,8 @@ function amount(value: string): bigint {
 }
 
 function assertTerminalTransactionEvidence(batch: SettlementBatchRecord): void {
-  if ((batch.status === "finalized" || batch.status === "failed") && !batch.transaction_signature) {
-    throw new SettlementError(503, "transaction_record_invalid", "terminal settlement transaction is missing its signature evidence");
+  if ((batch.status === "finalized" || batch.status === "failed") && !isSolanaTransactionSignature(batch.transaction_signature)) {
+    throw new SettlementError(503, "transaction_record_invalid", "terminal settlement transaction requires valid 64-byte signature evidence");
   }
 }
 
