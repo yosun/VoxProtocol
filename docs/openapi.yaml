@@ -1133,6 +1133,20 @@ paths:
             minimum: 1
             maximum: 10
             default: 10
+        - name: include_populi
+          in: query
+          required: false
+          description: Include active public Populi rooms, including those without a VOX profile.
+          schema:
+            type: boolean
+            default: false
+        - name: include_viewers
+          in: query
+          required: false
+          description: Include cached Populi viewer counts for available rooms. Counts are refreshed at most once every 30 seconds per API instance; unavailable counts are omitted.
+          schema:
+            type: boolean
+            default: false
       responses:
         '200':
           description: Bounded list of live-character agent records
@@ -1146,6 +1160,23 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/AgentRecord'
+                  viewers:
+                    type: object
+                    description: Available viewer counts keyed by Populi username, present when include_viewers is true.
+                    additionalProperties:
+                      type: integer
+                      minimum: 0
+                  rooms:
+                    type: array
+                    description: Public Populi rooms, present when include_populi is true. These entries do not imply a VOX identity.
+                    items:
+                      type: object
+                      required: [username, display_name]
+                      properties:
+                        username:
+                          type: string
+                        display_name:
+                          type: string
   /v1/agents/{id}:
     parameters:
       - $ref: '#/components/parameters/AgentId'

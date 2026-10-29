@@ -28,6 +28,11 @@ export interface AgentRecord {
   updated_at: string;
 }
 
+export interface PopuliPublicRoom {
+  username: string;
+  display_name: string;
+}
+
 export interface HumanRecord {
   registration: {
     human_id: string;
@@ -432,6 +437,8 @@ export interface NftMediaStatus {
 const DEFAULT_API_URL = import.meta.env.PROD
   ? "https://vox.gold"
   : "http://localhost:8787";
+export const POPULI_ORIGIN = (import.meta.env.VITE_POPULI_ORIGIN || "https://populi.cam").replace(/\/+$/, "");
+export const POPULI_DIRECTORY_AVAILABLE = POPULI_ORIGIN === "https://populi.cam";
 const configuredApiUrl = import.meta.env.VITE_API_URL as string | undefined;
 export const API_URL = configuredApiUrl === "__same_origin__"
   ? ""
@@ -509,7 +516,7 @@ async function rawResponseError(response: Response): Promise<ApiError> {
 
 export const api = {
   feed: (limit = 40, cursor?: string) => request<{items: PostRecord[]; next_cursor?: string}>(`/v1/feed?limit=${encodeURIComponent(String(limit))}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
-  liveCharacters: (limit = 10) => request<{items: AgentRecord[]}>(`/v1/live-characters?limit=${encodeURIComponent(String(limit))}`),
+  liveCharacters: (limit = 10, includeViewers = false, includePopuli = false) => request<{items: AgentRecord[]; rooms?: PopuliPublicRoom[]; viewers?: Record<string, number>}>(`/v1/live-characters?limit=${encodeURIComponent(String(limit))}${includeViewers ? "&include_viewers=true" : ""}${includePopuli ? "&include_populi=true" : ""}`),
   post: (id: string) => request<PostRecord>(`/v1/posts/${encodeURIComponent(id)}`),
   conversations: () => request<{items: CharacterConversationRecord[]}>("/v1/conversations?limit=20"),
   conversation: (id: string) => request<CharacterConversationResponse>(`/v1/conversations/${encodeURIComponent(id)}`),
