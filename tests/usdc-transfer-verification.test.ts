@@ -136,6 +136,12 @@ describe("historical finalized USDC ownership (offline)", () => {
     expect(test.accountLookup).not.toHaveBeenCalled();
   });
 
+  it("rejects an RPC response belonging to a different transaction signature", async () => {
+    const test = fixture();
+    test.transaction.transaction.signatures[0] = "2".repeat(88);
+    await expect(test.verify()).resolves.toMatchObject({finalized: false, matched: false, reason: "RPC returned a different payment transaction signature."});
+  });
+
   it("rejects pre-balance evidence indexed to another account or a different token program", async () => {
     const test = fixture();
     test.meta.preTokenBalances = [{...test.balance, accountIndex: 2}];

@@ -45,6 +45,16 @@ function recordDocId(recordId: string): string {
   return createHash("sha256").update(recordId).digest("hex");
 }
 
+/** A slow poll may finish after another instance has replaced a proven failure. */
+function isReplacedFailedAttempt(current: SettlementBatchRecord, incoming: SettlementBatchRecord): boolean {
+  return incoming.status !== "finalized" && !!incoming.transaction_signature
+    && current.amount_usdc_atomic === incoming.amount_usdc_atomic
+    && JSON.stringify(current.payout_ids) === JSON.stringify(incoming.payout_ids)
+    && !!current.previous_attempts?.some((attempt) => attempt.status === "failed"
+      && attempt.transaction_signature === incoming.transaction_signature
+      && attempt.attempt_number === (incoming.attempt_number ?? 1));
+}
+
 export class FirestoreSettlementLedger implements SettlementLedger {
   private readonly records;
   constructor(private readonly db: Firestore) {
@@ -93,6 +103,7 @@ export class FirestoreSettlementLedger implements SettlementLedger {
       const snapshot = await transaction.get(ref);
       if (!snapshot.exists) throw new Error("settlement record is missing");
       const record = snapshot.data() as SettlementRecord;
+      if (record.kind === "refund" && record.state === "refunded" && state !== "refunded") return;
       const intentRef = this.records.doc("payment-" + recordDocId(record.payment_intent_id));
       const intentSnapshot = await transaction.get(intentRef);
       transaction.update(ref, {state});
@@ -145,6 +156,7 @@ export class FirestoreSettlementLedger implements SettlementLedger {
       const snapshot = await transaction.get(ref);
       if (!snapshot.exists) throw new Error("settlement batch reservation is missing");
       const prior = snapshot.data() as SettlementBatchRecord;
+      if (isReplacedFailedAttempt(prior, batch)) return;
       if (prior.transaction_signature !== batch.transaction_signature || prior.amount_usdc_atomic !== batch.amount_usdc_atomic || JSON.stringify(prior.payout_ids) !== JSON.stringify(batch.payout_ids)) throw new Error("settlement batch transaction binding changed");
       if ((prior.status === "finalized" || prior.status === "failed") && batch.status !== prior.status || prior.status === "uncertain" && batch.status === "prepared") return;
       transaction.set(ref, batch);
@@ -178,6 +190,7 @@ export class MemorySettlementLedger implements SettlementLedger {
   async updateRecordState(recordId: string, state: SettlementRecordState) {
     const record = this.records.get(recordId);
     if (!record) throw new Error("settlement record is missing");
+    if (record.kind === "refund" && record.state === "refunded" && state !== "refunded") return;
     this.records.set(recordId, {...record, state});
     const active = this.paymentIntents.get(record.payment_intent_id);
     if (active?.record_id === recordId) this.paymentIntents.set(record.payment_intent_id, {...active, state});
@@ -208,7 +221,8 @@ export class MemorySettlementLedger implements SettlementLedger {
   async updateBatch(recordId: string, batch: SettlementBatchRecord) {
     const batches = this.batches.get(recordId);
     const prior = batches?.get(batch.batch_index);
-    if (!prior || prior.transaction_signature !== batch.transaction_signature) throw new Error("settlement batch transaction binding changed");
+    if (prior && isReplacedFailedAttempt(prior, batch)) return;
+    if (!prior || prior.transaction_signature !== batch.transaction_signature || prior.amount_usdc_atomic !== batch.amount_usdc_atomic || JSON.stringify(prior.payout_ids) !== JSON.stringify(batch.payout_ids)) throw new Error("settlement batch transaction binding changed");
     if (prior.status === "finalized" || prior.status === "failed" || prior.status === "uncertain" && batch.status === "prepared") return;
     batches!.set(batch.batch_index, batch);
   }

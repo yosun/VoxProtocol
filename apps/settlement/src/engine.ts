@@ -77,6 +77,12 @@ function amount(value: string): bigint {
   return BigInt(value);
 }
 
+function assertTerminalTransactionEvidence(batch: SettlementBatchRecord): void {
+  if ((batch.status === "finalized" || batch.status === "failed") && !batch.transaction_signature) {
+    throw new SettlementError(503, "transaction_record_invalid", "terminal settlement transaction is missing its signature evidence");
+  }
+}
+
 export class RealizeSettlementProcessor {
   constructor(private readonly ledger: SettlementLedger, private readonly chain: MainnetSettlementChain, private readonly maxPaymentAtomic: bigint) {
     if (maxPaymentAtomic <= 0n || maxPaymentAtomic > 10_000_000_000n) throw new Error("Mainnet settlement payment limit is invalid");
@@ -133,6 +139,7 @@ export class RealizeSettlementProcessor {
     const batches = await this.ledger.listBatches(record.record_id);
     const instruction = record.kind === "settlement" ? SettlementInstructionV1Schema.parse(record.request) : undefined;
     const heldIds = new Set(instruction?.payout_recipients.filter((payout) => this.chain.isTreasuryDestination(payout.destination)).map((payout) => payout.payout_id));
+    batches.filter((batch) => batch.payout_ids.some((payoutId) => !heldIds.has(payoutId))).forEach(assertTerminalTransactionEvidence);
     const settledIds = new Set(batches.filter((batch) => batch.status === "finalized" && batch.transaction_signature).flatMap((batch) => batch.payout_ids.filter((payoutId) => !heldIds.has(payoutId))));
     const settledAmount = instruction
       ? instruction.payout_recipients.filter((payout) => settledIds.has(payout.payout_id)).reduce((sum, payout) => sum + amount(payout.amount_usdc_atomic), 0n).toString()
@@ -233,6 +240,7 @@ export class RealizeSettlementProcessor {
       const prepared = await this.chain.prepareBatch({recordId, batchIndex, attemptNumber: 1, transfers});
       batch = await this.ledger.createBatchIfAbsent(recordId, prepared);
     }
+    assertTerminalTransactionEvidence(batch);
     if (batch.status === "failed" && allowRefundReplacement) {
       if ((batch.attempt_number ?? 1) >= 3) return batch;
       const prepared = await this.chain.prepareBatch({recordId, batchIndex, attemptNumber: (batch.attempt_number ?? 1) + 1, transfers});
@@ -241,6 +249,7 @@ export class RealizeSettlementProcessor {
     if (batch.status === "finalized" || batch.status === "failed") return batch;
     const status = await this.chain.executeBatch(batch as PreparedSettlementBatch);
     const updated = {...batch, status, updated_at: new Date().toISOString()};
+    assertTerminalTransactionEvidence(updated);
     await this.ledger.updateBatch(recordId, updated);
     return updated;
   }
