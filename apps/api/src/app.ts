@@ -80,7 +80,7 @@ import {
 } from "@vox/identity";
 import { buildMerkleBatch, proofForManifest, verifyManifest } from "@vox/merkle";
 import { MockMediaProvider, MediaStyleSchema } from "@vox/media-provider";
-import { verifyFinalizedUsdcTransfer, isValidSolanaAddress } from "@vox/solana";
+import { verifyFinalizedUsdcTransfer, isValidSolanaAddress, isSolanaTransactionSignature } from "@vox/solana";
 import { domainHash, utf8 } from "@vox/protocol";
 import { dependencyHttpError, HttpError, UsernameConflict } from "./errors.js";
 import { decodeCursor, encodeCursor } from "./cursor.js";
@@ -1018,7 +1018,7 @@ async function runRealizeRefund(context: AppContext, input: RealizeCommissionRec
       }
     }
     if (mainnet && response.refund_id !== expectedRealizeRefundId(current.commission.commission_id, current.commission.accepted_quote_hash)) throw new HttpError(503, "refund_response_mismatch", "settlement service returned a different refund id");
-    if (mainnet && response.status === "refunded" && (!response.transaction_signature || !/^[1-9A-HJ-NP-Za-km-z]{64,88}$/.test(response.transaction_signature))) throw new HttpError(503, "refund_finalization_evidence_missing", "a finalized Mainnet refund requires its transaction signature");
+    if (mainnet && response.status === "refunded" && !isSolanaTransactionSignature(response.transaction_signature)) throw new HttpError(503, "refund_finalization_evidence_missing", "a finalized Mainnet refund requires its canonical 64-byte transaction signature");
     if (response.status === "refunded") {
       const event = resolutionEvent({commissionId: current.commission.commission_id, action: "refund_finalized", actorType: "system", actorId: "vox-api", evidenceHash: response.transaction_signature ?? response.refund_id});
       const updated = updatedRealizeCommission(current, {state: "REFUNDED", payment_state: "refunded"}, {refund_response: response, resolution_outcome: "refunded", resolution_reason: current.resolution_reason ?? "confirmed_generation_failure", resolution_events: appendResolutionEvent(current, event)});

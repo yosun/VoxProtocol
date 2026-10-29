@@ -19,7 +19,23 @@ import type {RealizeCommissionRecord} from "../apps/api/src/types.js";
 const payer = Keypair.generate().publicKey.toBase58();
 const treasuryOwner = Keypair.generate().publicKey.toBase58();
 const treasuryTokenAccount = getAssociatedTokenAddressSync(new PublicKey(MAINNET_USDC_MINT), new PublicKey(treasuryOwner)).toBase58();
-const mainnetSignature = "1".repeat(88);
+/** Fabricated encoded receipt bytes for mocked chain responses. They do not
+ * sign any message and are never broadcast or claimed as live refund proof. */
+function mockReceiptSignature(fill: number, leadingZeroBytes = 0): string {
+  const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  const bytes = new Uint8Array(64).fill(fill);
+  bytes.fill(0, 0, leadingZeroBytes);
+  let value = bytes.reduce((encoded, byte) => encoded * 256n + BigInt(byte), 0n);
+  let encoded = "";
+  while (value > 0n) {
+    encoded = alphabet[Number(value % 58n)]! + encoded;
+    value /= 58n;
+  }
+  const firstNonzero = bytes.findIndex((byte) => byte !== 0);
+  return "1".repeat(firstNonzero < 0 ? bytes.length : firstNonzero) + encoded;
+}
+const mainnetSignature = mockReceiptSignature(1);
+const refundSignature = mockReceiptSignature(9);
 let app: Awaited<ReturnType<typeof buildApp>> | undefined;
 
 afterEach(async () => {
@@ -132,7 +148,7 @@ describe("Mainnet refund terminal evidence", () => {
     await audit.fund();
     const settlementId = `vox:settlement:${createHash("sha256").update(`${audit.commissionId}\u0000${audit.quote.canonical_quote_hash}`).digest("hex")}`;
     audit.settlement.requestSettlement.mockResolvedValue({protocol_version: "realize/1", settlement_id: settlementId, accepted: true});
-    const failedSettlement = {settlement_id: settlementId, status: "failed", settled_amount_usdc_atomic: "0", failed_payout_ids: audit.quote.payout_recipients.map((payout) => payout.payout_id), transaction_signatures: ["8".repeat(88)], updated_at: new Date().toISOString()};
+    const failedSettlement = {settlement_id: settlementId, status: "failed", settled_amount_usdc_atomic: "0", failed_payout_ids: audit.quote.payout_recipients.map((payout) => payout.payout_id), transaction_signatures: [mockReceiptSignature(8)], updated_at: new Date().toISOString()};
     audit.settlement.getSettlement.mockResolvedValue(failedSettlement);
     const content = new Uint8Array([1, 2, 3, 4]);
     vi.stubGlobal("fetch", vi.fn(async () => new Response(content, {headers: {"content-type": "video/mp4"}})));
@@ -171,7 +187,7 @@ describe("Mainnet refund terminal evidence", () => {
     vi.setSystemTime(new Date(Date.parse(audit.quote.expires_at) + 2_000));
     const funded = await audit.fund();
     expect(funded.json()).toMatchObject({state: "MANUAL_REVIEW", payment_state: "captured", fulfillment_state: "not_started"});
-    audit.settlement.requestRefund.mockResolvedValueOnce({refund_id: audit.refundId, status: "refunded", transaction_signature: "9".repeat(88), updated_at: new Date().toISOString()});
+    audit.settlement.requestRefund.mockResolvedValueOnce({refund_id: audit.refundId, status: "refunded", transaction_signature: refundSignature, updated_at: new Date().toISOString()});
     const refunded = await audit.approve();
     expect(refunded.statusCode, refunded.body).toBe(200);
     expect(refunded.json()).toMatchObject({commission: {state: "REFUNDED", payment_state: "refunded", fulfillment_state: "not_started"}, resolution_outcome: "refunded"});
@@ -190,7 +206,7 @@ describe("Mainnet refund terminal evidence", () => {
     const audit = await refundAuditHarness();
     await audit.fund();
     await audit.failProvider();
-    audit.settlement.requestRefund.mockResolvedValueOnce({refund_id: "vox:refund:another-payment", status, transaction_signature: "9".repeat(88), updated_at: new Date().toISOString()});
+    audit.settlement.requestRefund.mockResolvedValueOnce({refund_id: "vox:refund:another-payment", status, transaction_signature: refundSignature, updated_at: new Date().toISOString()});
     const response = await audit.approve();
     expect(response.statusCode, response.body).toBe(200);
     expect(response.json()).toMatchObject({commission: {state: "MANUAL_REVIEW"}, resolution_reason: "refund_response_mismatch"});
@@ -207,6 +223,34 @@ describe("Mainnet refund terminal evidence", () => {
     const response = await audit.approve();
     expect(response.json()).toMatchObject({commission: {state: "MANUAL_REVIEW"}, resolution_reason: "refund_finalization_evidence_missing"});
     expect((await audit.store.getRealizeCommission(audit.commissionId))?.resolution_outcome).toBe("manual_review");
+  });
+
+  it.each([
+    ["truncated", "a".repeat(64)],
+    ["overlong", "z".repeat(88)],
+    ["extra leading-zero byte", `1${refundSignature}`]
+  ])("rejects a %s terminal receipt whose decoded signature is not 64 bytes", async (_description, transactionSignature) => {
+    const audit = await refundAuditHarness();
+    await audit.fund();
+    await audit.failProvider();
+    audit.settlement.requestRefund.mockResolvedValueOnce({refund_id: audit.refundId, status: "refunded", transaction_signature: transactionSignature, updated_at: new Date().toISOString()});
+    const response = await audit.approve();
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({commission: {state: "MANUAL_REVIEW"}, resolution_reason: "refund_finalization_evidence_missing"});
+    expect((await audit.store.getRealizeCommission(audit.commissionId))?.resolution_events?.some((event) => event.action === "refund_finalized")).toBe(false);
+  });
+
+  it("preserves canonical leading-zero signature bytes in mocked terminal refund evidence", async () => {
+    const audit = await refundAuditHarness();
+    await audit.fund();
+    await audit.failProvider();
+    const withLeadingZeros = mockReceiptSignature(9, 2);
+    expect(withLeadingZeros.startsWith("11")).toBe(true);
+    audit.settlement.requestRefund.mockResolvedValueOnce({refund_id: audit.refundId, status: "refunded", transaction_signature: withLeadingZeros, updated_at: new Date().toISOString()});
+    const response = await audit.approve();
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({commission: {state: "REFUNDED"}, refund_response: {transaction_signature: withLeadingZeros}});
+    expect((await audit.store.getRealizeCommission(audit.commissionId))?.refund_response?.transaction_signature).toBe(withLeadingZeros);
   });
 
   it("does not approve a refund when an empty resolution contradicts evidence of a payout", async () => {
@@ -243,6 +287,14 @@ describe("Mainnet SPL USDC Realize payment rail", () => {
     const verification = await rail.verifyFunding(funding, mainnetSignature, payer);
     expect(verification).toEqual({finalized: true, matched: true});
     expect(verifyTransfer).toHaveBeenCalledWith(expect.objectContaining({network_id: "solana:mainnet-beta", rpc_url: "https://rpc.example.test/mainnet", transaction_signature: mainnetSignature, usdc_mint: MAINNET_USDC_MINT, destination_token_account: treasuryTokenAccount, amount_atomic: "2000000", payer_address: payer, payment_reference: funding.payment_reference}));
+    for (const malformed of ["a".repeat(64), "z".repeat(88), `1${mainnetSignature}`]) {
+      const calls = verifyTransfer.mock.calls.length;
+      expect(await rail.verifyFunding(funding, malformed, payer)).toMatchObject({finalized: true, matched: false, reason: "Payment transaction signature is invalid."});
+      expect(verifyTransfer).toHaveBeenCalledTimes(calls);
+    }
+    const leadingZeroFixture = mockReceiptSignature(1, 2);
+    expect(await rail.verifyFunding(funding, leadingZeroFixture, payer)).toMatchObject({finalized: true, matched: true});
+    expect(verifyTransfer).toHaveBeenLastCalledWith(expect.objectContaining({transaction_signature: leadingZeroFixture}));
   });
 
   it("allows an uninitialized treasury ATA and binds the first payment to its exact owner", async () => {
@@ -377,9 +429,9 @@ describe("Mainnet SPL USDC Realize payment rail", () => {
     let boundaryPaymentExpiresAt = 0;
     let retryPaymentExpiresAt = 0;
     let retryRpcFailuresRemaining = 1;
-    const lateSignature = "2".repeat(88);
-    const retrySignature = "3".repeat(88);
-    const boundarySignature = "4".repeat(88);
+    const lateSignature = mockReceiptSignature(2);
+    const retrySignature = mockReceiptSignature(3);
+    const boundarySignature = mockReceiptSignature(4);
     const verifyFunding = vi.fn(async (_funding: MainnetSplUsdcFundingAuthorization, signature: string) => {
       if (signature === lateSignature) return {finalized: true, matched: true, block_time: Math.floor(latePaymentExpiresAt / 1_000) + 1};
       if (signature === boundarySignature) return {finalized: true, matched: true, block_time: Math.floor(boundaryPaymentExpiresAt / 1_000)};
@@ -480,7 +532,7 @@ describe("Mainnet SPL USDC Realize payment rail", () => {
     vi.setSystemTime(new Date(Date.parse(late.quote.expires_at) + 60_000));
     try {
       const latePath = `/v1/realize/commissions/${encodeURIComponent(late.commissionId)}/fund`;
-      const lateBody = {payer_wallet: payer, transaction_signature: "6".repeat(88)};
+      const lateBody = {payer_wallet: payer, transaction_signature: mockReceiptSignature(6)};
       verifyFunding.mockResolvedValueOnce({finalized: false, matched: false});
       expect((await signedRequest(latePath, lateBody)).json().code).toBe("payment_pending");
       expect((await store.getRealizeCommission(late.commissionId))?.funding_signature).toBeUndefined();
@@ -615,8 +667,8 @@ describe("Mainnet SPL USDC Realize payment rail", () => {
     const acceptedRetry = await signedRequest(`/v1/realize/commissions/${encodeURIComponent(failedRetry.commissionId)}/accept-quote`, {quote_id: failedRetry.quote.quote_id, canonical_quote_hash: failedRetry.quote.canonical_quote_hash, payer_wallet: payer, rights_reviewed: true});
     expect(acceptedRetry.statusCode, acceptedRetry.body).toBe(201);
     const failedPath = `/v1/realize/commissions/${encodeURIComponent(failedRetry.commissionId)}/fund`;
-    const failedSignature = "7".repeat(88);
-    const replacementSignature = "8".repeat(88);
+    const failedSignature = mockReceiptSignature(7);
+    const replacementSignature = mockReceiptSignature(8);
     verifyFunding.mockResolvedValueOnce({finalized: false, matched: false});
     const pendingFailure = await signedRequest(failedPath, {payer_wallet: payer, transaction_signature: failedSignature});
     expect(pendingFailure.statusCode, pendingFailure.body).toBe(409);

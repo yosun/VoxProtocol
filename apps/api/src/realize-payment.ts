@@ -2,7 +2,7 @@ import {Connection, PublicKey} from "@solana/web3.js";
 import {getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, unpackAccount} from "@solana/spl-token";
 import {createHash} from "node:crypto";
 import {MAINNET_USDC_MINT} from "@vox/realize-solana";
-import {verifyFinalizedUsdcTransfer, isValidSolanaAddress} from "@vox/solana";
+import {verifyFinalizedUsdcTransfer, isValidSolanaAddress, isSolanaTransactionSignature} from "@vox/solana";
 import type {CommissionV1, RealizeQuoteV1} from "@vox/protocol";
 
 export const SOLANA_MAINNET_GENESIS_HASH = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
@@ -145,7 +145,7 @@ export class MainnetSplUsdcRealizePaymentRail implements RealizePaymentRail<Main
     if (funding.mode !== "direct" || funding.custody_model !== "backend_managed" || funding.network_id !== this.networkId || funding.usdc_mint !== this.usdcMint || funding.destination_token_account !== this.treasuryTokenAccount || funding.destination_owner !== this.treasuryOwner || funding.payer_wallet !== payerWallet || funding.payment_reference !== paymentReference(paymentIntentId, funding.accepted_quote_hash) || !/^[1-9][0-9]{0,19}$/.test(funding.amount_usdc_atomic) || BigInt(funding.amount_usdc_atomic) < this.minPaymentAtomic || BigInt(funding.amount_usdc_atomic) > this.maxPaymentAtomic) {
       return {finalized: true, matched: false, reason: "Payment authorization does not match the configured Mainnet treasury and USDC policy."};
     }
-    if (!/^[1-9A-HJ-NP-Za-km-z]{64,88}$/.test(transactionSignature)) return {finalized: true, matched: false, reason: "Payment transaction signature is invalid."};
+    if (!isSolanaTransactionSignature(transactionSignature)) return {finalized: true, matched: false, reason: "Payment transaction signature is invalid."};
     await this.assertMainnet();
     const result = await this.verifyTransfer({
       rpc_url: this.connection.rpcEndpoint,
