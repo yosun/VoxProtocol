@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
-import {trustedAvatarUrl, type AgentRecord} from "./api.js";
+import {api, POPULI_DIRECTORY_AVAILABLE, POPULI_ORIGIN, trustedAvatarUrl, type AgentRecord, type PopuliPublicRoom} from "./api.js";
 
 type LiveStatus = "connecting" | "live" | "standby" | "offline" | "preview" | "paused";
 
@@ -11,13 +11,12 @@ type LiveStatusMessage = {
 };
 
 type LiveCharacter = {
-  agent: AgentRecord;
+  agent?: AgentRecord;
   username: string;
+  displayName: string;
   handle: string;
   timeZone?: string;
 };
-
-const POPULI_ORIGIN = (import.meta.env.VITE_POPULI_ORIGIN || "https://populi.cam").replace(/\/+$/, "");
 
 function populiUsername(agent: AgentRecord): string | null {
   const configured = agent.profile?.livestream;
@@ -31,14 +30,19 @@ function populiUsername(agent: AgentRecord): string | null {
   return match?.[1]?.toLowerCase() ?? null;
 }
 
-function discoverLiveCharacters(agents: Record<string, AgentRecord>): LiveCharacter[] {
+function discoverLiveCharacters(agents: Record<string, AgentRecord>, rooms: PopuliPublicRoom[]): LiveCharacter[] {
   const found = new Map<string, LiveCharacter>();
   for (const agent of Object.values(agents)) {
     const username = populiUsername(agent);
     if (!username || found.has(username)) continue;
     const handle = agent.registration.handle.split("@")[0]?.replace(/^@/, "") || username;
     const timeZone = agent.profile?.livestream?.provider === "populi" ? agent.profile.livestream.time_zone : undefined;
-    found.set(username, {agent, username, handle, ...(timeZone ? {timeZone} : {})});
+    found.set(username, {agent, username, displayName: agent.registration.display_name, handle, ...(timeZone ? {timeZone} : {})});
+  }
+  for (const room of rooms) {
+    if (typeof room.username !== "string" || !/^[a-z0-9_-]{1,64}$/.test(room.username) || found.has(room.username)) continue;
+    const displayName = typeof room.display_name === "string" && room.display_name ? room.display_name : room.username;
+    found.set(room.username, {username: room.username, displayName, handle: room.username});
   }
   return [...found.values()];
 }
@@ -58,14 +62,14 @@ function LiveStreamCard({character, onViewersChange}: {character: LiveCharacter;
   const [activity, setActivity] = useState("Connecting to live stream");
   const [viewers, setViewers] = useState<number | null>(null);
   const [localTime, setLocalTime] = useState(() => character.timeZone ? formatCharacterTime(character.timeZone) : null);
-  const name = character.agent.registration.display_name;
-  const avatarUrl = trustedAvatarUrl(character.agent.profile?.avatar?.url);
+  const name = character.displayName;
+  const avatarUrl = trustedAvatarUrl(character.agent?.profile?.avatar?.url);
   const embedUrl = `${POPULI_ORIGIN}/${encodeURIComponent(character.username)}/embed?audience=preview`;
-  const voxUsername = character.agent.registration.username;
-  const voxProfilePath = voxUsername
-    ? `/${encodeURIComponent(voxUsername)}/?livestream=true`
-    : `/agents/${encodeURIComponent(character.agent.registration.agent_id)}?livestream=true`;
-  const livestreamUrl = voxProfilePath;
+  const voxUsername = character.agent?.registration.username;
+  const profilePath = character.agent
+    ? voxUsername ? `/${encodeURIComponent(voxUsername)}/?livestream=true` : `/agents/${encodeURIComponent(character.agent.registration.agent_id)}?livestream=true`
+    : `${POPULI_ORIGIN}/${encodeURIComponent(character.username)}`;
+  const destination = character.agent ? "VOX.gold" : "Populi.cam";
 
   useEffect(() => {
     const element = cardRef.current;
@@ -128,7 +132,7 @@ function LiveStreamCard({character, onViewersChange}: {character: LiveCharacter;
           referrerPolicy="strict-origin-when-cross-origin"
         />
       </div> : <div className="live-stream-placeholder" aria-hidden="true"><span className="live-stream-placeholder-mark">◉</span></div>}
-      <a className="live-stream-cover-link" href={livestreamUrl} aria-label={`Watch ${name}'s live stream on VOX.gold`} />
+      <a className="live-stream-cover-link" href={profilePath} aria-label={`Watch ${name}'s live stream on ${destination}`} />
       <span role="note" className={`live-stream-local-time${localTime ? "" : " is-unset"}`} title={character.timeZone ?? "No time zone configured"} aria-label={localTime ? `${name}'s local time: ${localTime}` : `${name}'s local time is not configured`}>
         {localTime && character.timeZone ? <time dateTime={new Date().toISOString()}>{localTime}</time> : "Local time not set"}
       </span>
@@ -137,21 +141,61 @@ function LiveStreamCard({character, onViewersChange}: {character: LiveCharacter;
     <div className="live-stream-meta">
       {avatarUrl ? <img className="live-stream-avatar" src={avatarUrl} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" /> : <span className="live-stream-avatar live-stream-initials">{name.split(/\s+/).map((part) => part[0] ?? "").join("").slice(0, 2).toUpperCase()}</span>}
       <div className="live-stream-copy">
-        <div className="live-stream-identity"><a className="live-stream-profile-link" href={voxProfilePath} aria-label={`Open ${name}'s VOX profile`}><strong>{name}</strong></a><span>@{character.handle}</span></div>
+        <div className="live-stream-identity"><a className="live-stream-profile-link" href={profilePath} aria-label={character.agent ? `Open ${name}'s VOX profile` : `Open ${name}'s Populi room`}><strong>{name}</strong></a><span>@{character.handle}</span></div>
         <p title={activity}>{activity}</p>
       </div>
-      <a className="live-stream-cta" href={livestreamUrl} aria-label={`Watch ${name}'s live stream on VOX.gold`}>Watch live <span aria-hidden="true">↗</span></a>
+      <a className="live-stream-cta" href={profilePath} aria-label={`Watch ${name}'s live stream on ${destination}`}>Watch live <span aria-hidden="true">↗</span></a>
     </div>
   </article>;
 }
 
-export function LiveNowBand({agents, liveAgents, loading, feedError}: {agents: Record<string, AgentRecord>; liveAgents: AgentRecord[]; loading: boolean; feedError: boolean}) {
+export function LiveNowBand({agents, liveAgents, publicRooms, loading, feedError}: {agents: Record<string, AgentRecord>; liveAgents: AgentRecord[]; publicRooms: PopuliPublicRoom[]; loading: boolean; feedError: boolean}) {
   const [viewerCounts, setViewerCounts] = useState<Record<string, number>>({});
+  const [candidateViewerCounts, setCandidateViewerCounts] = useState<Record<string, number>>({});
+  const [discoveredRooms, setDiscoveredRooms] = useState(publicRooms);
+  useEffect(() => { setDiscoveredRooms(publicRooms); }, [publicRooms]);
   const characters = useMemo(() => {
     const combined = new Map(liveAgents.map((agent) => [agent.registration.agent_id, agent] as const));
     for (const agent of Object.values(agents)) combined.set(agent.registration.agent_id, agent);
-    return discoverLiveCharacters(Object.fromEntries(combined)).slice(0, 10);
-  }, [agents, liveAgents]);
+    const discovered = discoverLiveCharacters(Object.fromEntries(combined), discoveredRooms);
+    const byUsername = new Map(discovered.map((character) => [character.username, character] as const));
+    const candidates = new Map<string, LiveCharacter>();
+    for (const username of [...liveAgents.map(populiUsername), ...discoveredRooms.map((room) => room.username)]) {
+      const character = username ? byUsername.get(username) : undefined;
+      if (character) candidates.set(character.username, character);
+    }
+    for (const character of discovered) candidates.set(character.username, character);
+    return [...candidates.values()].slice(0, 10);
+  }, [agents, liveAgents, discoveredRooms]);
+  useEffect(() => {
+    if (!POPULI_DIRECTORY_AVAILABLE) return;
+    let cancelled = false;
+    let inFlight = false;
+    const refresh = async () => {
+      if (document.visibilityState !== "visible" || inFlight) return;
+      inFlight = true;
+      try {
+        const result = await api.liveCharacters(10, characters.length > 5, true);
+        if (!cancelled) {
+          if (result.rooms?.length) setDiscoveredRooms((current) => JSON.stringify(current) === JSON.stringify(result.rooms) ? current : result.rooms!);
+          if (result.viewers) setCandidateViewerCounts(Object.fromEntries(Object.entries(result.viewers).filter(([, viewers]) => Number.isSafeInteger(viewers) && viewers >= 0)));
+        }
+      } catch {
+        // Keep the last available ranking while Populi or the VOX API recovers.
+      } finally {
+        inFlight = false;
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 30_000);
+    const onVisibility = () => { if (document.visibilityState === "visible") void refresh(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [characters]);
   const reportViewers = useCallback((username: string, viewers: number | null) => {
     setViewerCounts((current) => {
       if (viewers === null) {
@@ -165,15 +209,16 @@ export function LiveNowBand({agents, liveAgents, loading, feedError}: {agents: R
     });
   }, []);
   const sortedCharacters = useMemo(() => characters
-    .map((character) => ({character, viewers: viewerCounts[character.username]}))
+    .map((character) => ({character, viewers: characters.length > 5 ? candidateViewerCounts[character.username] ?? viewerCounts[character.username] : viewerCounts[character.username]}))
     .sort((left, right) => {
-      const leftUsername = left.character.agent.registration.username ?? left.character.handle;
-      const rightUsername = right.character.agent.registration.username ?? right.character.handle;
+      const leftUsername = left.character.agent?.registration.username ?? left.character.handle;
+      const rightUsername = right.character.agent?.registration.username ?? right.character.handle;
       return (right.viewers ?? 0) - (left.viewers ?? 0)
         || leftUsername.localeCompare(rightUsername, "en", {sensitivity: "base"})
         || left.character.username.localeCompare(right.character.username, "en");
     })
-    .map(({character}) => character), [characters, viewerCounts]);
+    .slice(0, 5)
+    .map(({character}) => character), [candidateViewerCounts, characters, viewerCounts]);
 
   return <section className="live-now-band" aria-labelledby="live-now-heading">
     <div className="live-now-heading">
@@ -183,11 +228,11 @@ export function LiveNowBand({agents, liveAgents, loading, feedError}: {agents: R
         <p className="live-now-description">See who’s broadcasting, ranked by live viewers.</p>
       </div>
       <div className="live-now-tools">
-        <span className="live-now-count">{characters.length ? `${characters.length} ${characters.length === 1 ? "broadcast" : "broadcasts"}` : feedError ? "Connection issue" : loading ? "Finding broadcasts" : "No connected rooms"}</span>
-        {characters.length > 2 && <span className="live-now-scroll-hint">Scroll to explore →</span>}
+        <span className="live-now-count">{sortedCharacters.length ? `${sortedCharacters.length} ${sortedCharacters.length === 1 ? "broadcast" : "broadcasts"}` : feedError ? "Connection issue" : loading ? "Finding broadcasts" : "No connected rooms"}</span>
+        {sortedCharacters.length > 2 && <span className="live-now-scroll-hint">Scroll to explore →</span>}
       </div>
     </div>
-    {sortedCharacters.length ? <div className="live-now-track" role="region" tabIndex={0} aria-label="Live broadcasts, sorted by current viewers descending. Scroll horizontally to explore up to 10 characters.">
+    {sortedCharacters.length ? <div className="live-now-track" role="region" tabIndex={0} aria-label="Live broadcasts, sorted by current viewers descending. Scroll horizontally to explore up to 5 characters.">
       {sortedCharacters.map((character) => <LiveStreamCard key={character.username} character={character} onViewersChange={reportViewers} />)}
     </div> : <div className="live-now-empty" role="status">
       <span className="live-now-empty-dot" />{feedError ? "Reconnect to the VOX feed to find live broadcasts." : loading ? "Finding live broadcasts…" : "No characters are live right now."}
