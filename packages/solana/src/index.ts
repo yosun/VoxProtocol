@@ -160,6 +160,7 @@ export async function submitCommitment(input: SubmitCommitmentInput): Promise<{s
 
 
 function base58Decode(value: string): Uint8Array {
+  if (!value.length) return new Uint8Array();
   const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
   const bytes = [0];
   for (const character of value) {
@@ -173,8 +174,17 @@ function base58Decode(value: string): Uint8Array {
     }
     while (carry > 0) { bytes.push(carry & 0xff); carry >>= 8; }
   }
-  for (let index = 0; index < value.length && value[index] === "1"; index += 1) bytes.push(0);
+  // The initial accumulator already represents one zero when every digit is
+  // '1'; preserve leading zero bytes without adding a spurious extra byte.
+  for (let index = 0; index < value.length - 1 && value[index] === "1"; index += 1) bytes.push(0);
   return Uint8Array.from(bytes.reverse());
+}
+
+/** Validate the canonical base58 encoding of a 64-byte Ed25519 signature.
+ * This checks its representation; transaction/RPC verification still proves execution. */
+export function isSolanaTransactionSignature(value: unknown): value is string {
+  if (typeof value !== "string" || !/^[1-9A-HJ-NP-Za-km-z]{64,88}$/.test(value)) return false;
+  return base58Decode(value).length === 64;
 }
 
 async function transactionMemoPayloadAt(rpcUrl: string, signature: string, commitment: "confirmed" | "finalized"): Promise<Uint8Array | undefined> {

@@ -1,6 +1,23 @@
 import {describe, expect, it} from "vitest";
 import {bytesToBase64Url, bytesToHex} from "@vox/protocol";
-import {commitmentMatches, createMemoTransaction, decodeCommitment, encodeCommitment, epochReferenceHash, MEMO_PROGRAM_ID} from "@vox/solana";
+import {getBase58Decoder} from "@solana/kit";
+import {commitmentMatches, createMemoTransaction, decodeCommitment, encodeCommitment, epochReferenceHash, isSolanaTransactionSignature, MEMO_PROGRAM_ID} from "@vox/solana";
+
+describe("Solana transaction signature representation", () => {
+  it("accepts exactly 64 decoded bytes, including leading zero bytes", () => {
+    // Fabricated representation fixtures; these are not signatures of transactions.
+    for (const leadingZeroes of [0, 1, 10, 63, 64]) {
+      const bytes = new Uint8Array(64).fill(1);
+      bytes.fill(0, 0, leadingZeroes);
+      expect(isSolanaTransactionSignature(getBase58Decoder().decode(bytes))).toBe(true);
+    }
+    expect(isSolanaTransactionSignature("1".repeat(64))).toBe(true);
+  });
+
+  it.each([undefined, null, 123, "", "a".repeat(64), "z".repeat(88), "1".repeat(63), "1".repeat(65), "0" + "1".repeat(64), "1".repeat(64) + "I", " " + "1".repeat(64), "1".repeat(64) + "\n"])("rejects malformed or wrong-size signature %j", (value) => {
+    expect(isSolanaTransactionSignature(value)).toBe(false);
+  });
+});
 
 describe("Solana commitment encoding", () => {
   const input = {type: "BATCH" as const, authority_id: "vox:anchor:test", reference_hash: epochReferenceHash("2026-10-09Z"), root_or_post_hash: "ab".repeat(32), manifest_hash: "cd".repeat(32)};
