@@ -127,6 +127,8 @@ import {configuredDevnetRealizeEscrow, type DevnetRealizeEscrowClient} from "./r
 import {configuredNftService, fulfillmentOutputToNftInput, isMainnetNftChain, legacyRealizationToNftInput, NftMintService, verifyNftWalletProof} from "./nft.js";
 import {configuredMainnetRealizePaymentRail, isManagedRealizeSettlementConfigured, type MainnetSplUsdcFundingAuthorization, type RealizePaymentRail} from "./realize-payment.js";
 import {summarizeCharacterAccount} from "./character-account.js";
+import {createPopuliPublicRoomReader} from "./populi-public-rooms.js";
+import {createPopuliViewerCountReader} from "./populi-viewer-counts.js";
 
 const DIRECT_MESSAGE_MAX_TEXT_LENGTH = 280;
 const DIRECT_MESSAGE_MAX_ATTACHMENTS = 4;
@@ -1572,6 +1574,8 @@ function directMessageId(humanId: string, clientMessageId: string): string {
 
 export async function buildApp(options: AppOptions = {}): Promise<FastifyInstance> {
   const keys = createInstanceKeys(options);
+  const readPopuliPublicRooms = createPopuliPublicRoomReader();
+  const readPopuliViewerCounts = createPopuliViewerCountReader();
   const publicBaseUrl = (options.publicBaseUrl ?? process.env.VOX_PUBLIC_BASE_URL ?? "http://localhost:8787").replace(/\/+$/, "");
   const devnetRealizeEscrowClient = options.devnetRealizeEscrowClient ?? configuredDevnetRealizeEscrow();
   const mainnetRealizePaymentRail = options.mainnetRealizePaymentRail ?? configuredMainnetRealizePaymentRail();
@@ -2256,10 +2260,16 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   });
 
   app.get("/v1/live-characters", async (request, reply) => {
-    const query = request.query as {limit?: string};
+    const query = request.query as {limit?: string; include_populi?: string; include_viewers?: string};
     const parsedLimit = Number.parseInt(query.limit ?? "10", 10) || 10;
     const items = await context.store.listPopuliLivestreamAgents(parsedLimit);
-    return reply.send({items});
+    const rooms = query.include_populi === "true" ? await readPopuliPublicRooms() : undefined;
+    if (query.include_viewers === "true") {
+      const usernames = [...items.flatMap((agent) => agent.profile?.livestream?.provider === "populi" ? [agent.profile.livestream.username] : []), ...(rooms ?? []).map((room) => room.username)];
+      const viewers = await readPopuliViewerCounts(usernames);
+      return reply.header("cache-control", "no-store").send({items, ...(rooms ? {rooms} : {}), viewers});
+    }
+    return reply.send({items, ...(rooms ? {rooms} : {})});
   });
 
   app.get("/v1/humans/by-username/:username", async (request, reply) => {
