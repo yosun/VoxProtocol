@@ -723,7 +723,8 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       setPaymentProgress("vox_verification");
       await submitFunding(sent.signature, attemptId);
     } catch (reason) {
-      if (preparedAttempt?.kind === "wallet_submission" && walletRejected(reason)) {
+      const expiredBeforeWalletInvocation = reason instanceof PaymentQuoteExpiredError && reason.checkpointState === "wallet_not_invoked";
+      if (preparedAttempt?.kind === "wallet_submission" && (walletRejected(reason) || expiredBeforeWalletInvocation)) {
         await resolveFinancial("rejected", attemptId);
         paymentSubmitted = false;
       }

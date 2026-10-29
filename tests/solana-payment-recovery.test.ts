@@ -142,7 +142,7 @@ describe("USDC wallet broadcast recovery", () => {
     const input = paymentInput();
     input.account = {...input.account, features: [SolanaSignAndSendTransaction]};
     input.onPrepared = vi.fn(() => { vi.setSystemTime(Date.parse(input.quoteExpiresAt) + 1); });
-    await expect(sendUsdcPayment(input)).rejects.toThrow("quote expired");
+    await expect(sendUsdcPayment(input)).rejects.toMatchObject({name: "PaymentQuoteExpiredError", checkpointState: "wallet_not_invoked"});
     expect(input.onPrepared).toHaveBeenCalledWith(expect.objectContaining({kind: "wallet_submission"}));
     expect(wallet.signAndSendTransaction).not.toHaveBeenCalled();
     expect(Connection.prototype.sendRawTransaction).not.toHaveBeenCalled();

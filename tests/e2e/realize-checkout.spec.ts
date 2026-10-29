@@ -524,6 +524,46 @@ for (const [field, value] of [
   expect(state.fundCalls).toHaveLength(0);
 });
 
+test("expiry during durable preparation releases a receipt marker only when the wallet was never invoked", async ({page}) => {
+  const state = await installMocks(page);
+  await createWallet(page);
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
+  await page.evaluate(({expiresAt}) => {
+    const put = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function(value, ...keys) {
+      const request = put.call(this, value, ...keys);
+      if (value.outcome === "pending" && value.checkout?.paymentAttempt?.kind === "wallet_submission") {
+        // The durable write begins while the quote is current, then finishes
+        // after expiry, before the sign-and-send wallet can be invoked.
+        Date.now = () => expiresAt + 1;
+      }
+      return request;
+    };
+  }, {expiresAt: Date.parse(state.quote!.expires_at)});
+  await dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true}).click();
+  await expect(dialog.getByRole("alert").filter({hasText: "quote expired"})).toBeVisible();
+  await expect(dialog.getByRole("button", {name: "Update my price"})).toBeEnabled();
+  await expect(dialog.getByRole("button", {name: "Check payment status"})).toHaveCount(0);
+  await expect(dialog.getByText("Payment outcome needs checking.")).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).__voxWalletRequestCount ?? 0)).toBe(0);
+  expect(state.rpcBroadcasts).toHaveLength(0);
+  expect(state.fundCalls).toHaveLength(0);
+  const record = await page.evaluate(async () => {
+    const journalPath = "/src/financial-checkpoints.ts";
+    const journal = await import(journalPath);
+    return journal.readFinancialCheckpoint(`vox:post:${"b".repeat(64)}`);
+  });
+  expect(record).toMatchObject({outcome: "rejected"});
+  expect(record.checkout.paymentAttempt).toBeUndefined();
+  expect(record.checkout.transactionSignature).toBeUndefined();
+});
+
 test("an approval crossing quote expiry preserves signed recovery without broadcasting or enabling another charge", async ({page}) => {
   const state = await installMocks(page, PAYER_USDC, true);
   state.signatureMissing = true;

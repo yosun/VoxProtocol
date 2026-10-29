@@ -97,18 +97,18 @@ export interface SolanaPaymentResult {
 }
 
 export class PaymentQuoteExpiredError extends Error {
-  constructor(hasSavedAttempt = false) {
-    super(hasSavedAttempt
+  constructor(readonly checkpointState: "not_prepared" | "signed" | "wallet_not_invoked" = "not_prepared") {
+    super(checkpointState === "signed"
       ? "This quote expired while preparing your payment. The saved payment still needs verification; do not pay again."
       : "This quote expired. Request a fresh quote before paying.");
     this.name = "PaymentQuoteExpiredError";
   }
 }
 
-function assertPaymentQuoteCurrent(expiresAt: string, hasSavedAttempt = false): void {
+function assertPaymentQuoteCurrent(expiresAt: string, checkpointState?: PaymentQuoteExpiredError["checkpointState"]): void {
   // The browser clock only stops a new submission. The API still decides
   // whether a receipt was funded on time using finalized transaction block time.
-  if (!(Date.parse(expiresAt) > Date.now())) throw new PaymentQuoteExpiredError(hasSavedAttempt);
+  if (!(Date.parse(expiresAt) > Date.now())) throw new PaymentQuoteExpiredError(checkpointState);
 }
 
 function walletRejected(error: unknown): boolean {
@@ -347,7 +347,7 @@ export async function sendUsdcPayment(input: SendUsdcPaymentInput): Promise<Sola
     await input.onSubmitted?.(signature, paymentExplorerUrl(signature, input.cluster));
     // Approval or durable storage may outlast the quote. Keep the verified
     // signed bytes for reconciliation, but never newly broadcast an expired quote.
-    assertPaymentQuoteCurrent(input.quoteExpiresAt, true);
+    assertPaymentQuoteCurrent(input.quoteExpiresAt, "signed");
     try {
       await connection.sendRawTransaction(signed.signedTransaction, {preflightCommitment: "confirmed"});
     } catch {
@@ -357,7 +357,7 @@ export async function sendUsdcPayment(input: SendUsdcPaymentInput): Promise<Sola
     // These wallets may broadcast without returning a signature. Persist an
     // unresolved attempt before calling them, so a timeout survives refresh.
     await input.onPrepared({version: 1, kind: "wallet_submission", authorization: paymentAuthorization(input)});
-    assertPaymentQuoteCurrent(input.quoteExpiresAt, true);
+    assertPaymentQuoteCurrent(input.quoteExpiresAt, "wallet_not_invoked");
     const [sent] = await features[SolanaSignAndSendTransaction].signAndSendTransaction({
       account: input.account,
       transaction: transaction.serialize({requireAllSignatures: false, verifySignatures: false}),
