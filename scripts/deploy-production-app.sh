@@ -74,7 +74,9 @@ deploy_service_candidate() {
   local service="$1"
   local candidate_url="$2"
   local revision
-  local -a extra_env_args=()
+  # Keep the array nonempty for Bash 3's nounset behavior on macOS, and make
+  # every protected release invocation explicitly noninteractive.
+  local -a extra_env_args=(--quiet)
 
   if [[ "$service" == "$API_SERVICE" ]]; then
     # Buffered 25 MB private uploads include encryption and storage copies.

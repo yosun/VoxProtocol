@@ -34,6 +34,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - name: Install Java for Firestore transactional regression tests
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Verify Firestore payment and refund transactions
+        run: npx --yes --package=firebase-tools@15.24.0 firebase emulators:exec --only firestore --project voxprotocol-emulator "npm run test:firestore:run"
       - name: Install Foundry for NFT contract regression tests
         uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1
         with:

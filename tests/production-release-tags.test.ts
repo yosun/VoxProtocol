@@ -4,7 +4,7 @@ import {join, resolve} from "node:path";
 import {spawnSync} from "node:child_process";
 import {describe, expect, it} from "vitest";
 
-function release(failHealth = false, preserveTags = false, failCleanup = false) {
+function release(failHealth = false, preserveTags = false, failCleanup = false, anchorOnly = false) {
   const directory = mkdtempSync(join(tmpdir(), "vox-release-tags-"));
   const log = join(directory, "cloud-calls.jsonl");
   writeFileSync(join(directory, "gcloud"), `#!${process.execPath}\n` + String.raw`
@@ -40,7 +40,7 @@ if (args[0] === 'run' && args[1] === 'revisions' && args[2] === 'describe') {
       env: {...process.env, PATH: directory + ":" + process.env.PATH, MOCK_CLOUD_LOG: log, MOCK_HEALTH_FAIL: String(failHealth), MOCK_PRESERVE_TAGS: String(preserveTags), MOCK_CLEANUP_FAIL: String(failCleanup),
         GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: "yosun/VoxProtocol", GITHUB_REF: "refs/heads/main", GITHUB_REF_PROTECTED: "true", GITHUB_WORKFLOW_REF: "yosun/VoxProtocol/.github/workflows/production.yml@refs/heads/main", GITHUB_EVENT_NAME: "push", GITHUB_RUN_ID: "12345",
         VOX_PRODUCTION_VERIFIED: "true", VOX_PRODUCTION_IMAGE: "us-central1-docker.pkg.dev/voxprotocol/vox/vox-api@sha256:" + "a".repeat(64), VOX_INDEXES_READY: "true", VOX_REALIZE_OPERATOR_HUMAN_IDS: "vox:human:" + "A".repeat(43),
-        VOX_DEPLOY_API: "true", VOX_DEPLOY_HOSTING: "false", VOX_DEPLOY_SETTLEMENT: "false", VOX_DEPLOY_RECONCILE: "false", VOX_DEPLOY_ANCHOR: "false", VOX_DEPLOY_INDEXES: "false"}
+        VOX_DEPLOY_API: String(!anchorOnly), VOX_DEPLOY_HOSTING: "false", VOX_DEPLOY_SETTLEMENT: "false", VOX_DEPLOY_RECONCILE: "false", VOX_DEPLOY_ANCHOR: String(anchorOnly), VOX_DEPLOY_INDEXES: "false"}
     });
     const calls = readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as string[]);
     return {...result, calls};
@@ -69,5 +69,13 @@ describe("protected release removes alternate old-runtime entry points", () => {
     const result = release(true, false, true);
     expect(result.status).toBe(17);
     expect(result.stderr).toContain('Could not remove');
+  });
+  it("checks worker readiness and the pinned image before clearing anchor tags", () => {
+    const result = release(false, false, false, true);
+    expect(result.status, result.stderr).toBe(0);
+    const readiness = result.calls.findIndex(args => args[1] === 'revisions' && args[3] === 'vox-anchor-worker-new');
+    const promotion = result.calls.findIndex(args => args.includes('--to-revisions=vox-anchor-worker-new=100') && args.includes('--clear-tags'));
+    expect(readiness, JSON.stringify(result.calls)).toBeGreaterThan(-1);
+    expect(promotion).toBeGreaterThan(readiness);
   });
 });
