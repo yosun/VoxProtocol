@@ -11,6 +11,7 @@ import type {RealizeCreatorPayoutConfigurationV1} from "./realize-engine.js";
 import {projectCharacterAccountTransaction, summarizeCharacterAccount, type CharacterAccountTransaction} from "./character-account.js";
 import {UsernameConflict} from "./errors.js";
 import {canonicalUsername, isReservedUsername} from "./usernames.js";
+import {assertImmutableRealizePaymentEvidence} from "./realize-integrity.js";
 
 function clone<T>(value: T): T {
   return structuredClone(value);
@@ -1047,6 +1048,7 @@ export class MemoryStore implements VoxStore {
       const current = this.realizeCommissions.get(record.commission.commission_id);
       if (!current) throw new Error("Realize commission not found");
       if (current.updated_at !== expectedUpdatedAt) throw new Error("Realize commission changed concurrently");
+      assertImmutableRealizePaymentEvidence(current, record);
       if (current.commission.commissioner_id !== record.commission.commissioner_id || current.commission.creator_id !== record.commission.creator_id || current.commission.capability_id !== record.commission.capability_id || current.source_post_id !== record.source_post_id || !equalCanonical(current.commission.requested_generation_parameters, record.commission.requested_generation_parameters) || current.commission.rights_agreement_reference !== record.commission.rights_agreement_reference) throw new Error("immutable Realize commission terms cannot be changed");
       if (current.fulfillment_request && (!record.fulfillment_request || !equalCanonical(current.fulfillment_request, record.fulfillment_request) || current.commission.fulfillment_request_id !== record.commission.fulfillment_request_id)) throw new Error("persisted Realize provider request and idempotency key are immutable");
       if (current.nft_media_ids && JSON.stringify(current.nft_media_ids) !== JSON.stringify(record.nft_media_ids)) throw new Error("Realize NFT media binding is immutable");

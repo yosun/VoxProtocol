@@ -8,6 +8,7 @@ import {bytesToBase64Url, bytesToHex, commissionRequestHashHex, commissionReques
 import type {DirectMessageConversationRecord, DirectMessageRecord, PaymentRecord, QuoteRecord, RealizationRecord} from "@vox/api";
 import type {VoxPostIntentV1} from "@vox/protocol";
 import {FirestoreSettlementLedger, type SettlementBatchRecord} from "../apps/settlement/src/ledger.js";
+import {seedPaidNftSource} from "./nft-fixtures.js";
 
 const emulatorConfigured = Boolean(process.env.FIRESTORE_EMULATOR_HOST);
 const firestoreDescribe = emulatorConfigured ? describe : describe.skip;
@@ -295,10 +296,39 @@ firestoreDescribe("Firestore emulator transactional integration", () => {
     const winner = results[0]!;
     expect(winner).toMatchObject({attempt_number: 2, previous_attempts: [{attempt_number: 1, status: "failed", transaction_signature: failed.transaction_signature}]});
     expect(await second.getBatch(recordId, 0)).toEqual(winner);
+    // An older poll may report the exact already-failed previous attempt after
+    // another instance reserved a replacement. It must not fail or clobber it.
+    await first.updateBatch(recordId, {...failed, status: "failed"});
+    expect(await second.getBatch(recordId, 0)).toEqual(winner);
     await expect(first.updateBatch(recordId, {...failed, status: "finalized"})).rejects.toThrow("transaction binding changed");
     await second.updateBatch(recordId, {...winner, status: "finalized"});
     await first.updateBatch(recordId, winner);
     expect(await second.getBatch(recordId, 0)).toMatchObject({status: "finalized", transaction_signature: winner.transaction_signature, raw_transaction_base64: winner.raw_transaction_base64});
+  });
+
+  it("preserves accepted Realize funding and verified receipt bindings across API instances", async () => {
+    const first = newStore();
+    const second = newStore();
+    const sourceId = `vox:commission:emulator-refund-integrity:${randomUUID()}`;
+    const current = await seedPaidNftSource(first, {
+      source_kind: "realize_commission", source_id: sourceId, output_index: 0, publication_consent: true,
+      owner_id: "vox:human:emulator-refund", creator_id: "vox:agent:emulator-refund", provider_id: "provider:emulator-refund",
+      request_parameters: {concept: "Emulator payment recovery"}, media_uri: "https://artifacts.example.test/emulator.mp4",
+      media_sha256: "a".repeat(64), media_type: "video/mp4", byte_length: 512, provenance_record_id: `${sourceId}:provenance`
+    });
+    for (const changes of [
+      {payer_wallet: "different-payer"}, {funding_signature: current.funding_signature!.slice(1)}, {funding_signature: undefined},
+      {funding_network_id: "solana:devnet"}, {funding_verified_at: undefined},
+      {payment_intent: {...current.payment_intent!, amount_usdc_atomic: "1000001"}},
+      {commission: {...current.commission, payment_intent_id: "payment:replacement"}},
+      {direct_funding: {...current.direct_funding!, payment_reference: "payment:replacement"}},
+      {provenance_record_id: "provenance:replacement"}
+    ]) await expect(second.updateRealizeCommission({...current, ...changes}, current.updated_at)).rejects.toThrow(/immutable/);
+    const updatedAt = new Date(Date.parse(current.updated_at) + 1).toISOString();
+    await first.updateRealizeCommission({...current, failure_reason: "A harmless reconciliation note", updated_at: updatedAt}, current.updated_at);
+    expect((await second.getRealizeCommission(sourceId))?.funding_signature).toBe(current.funding_signature);
+    expect(await first.reserveRealizePaymentSignature(current.funding_signature!, sourceId)).toBe(true);
+    expect(await second.reserveRealizePaymentSignature(current.funding_signature!, `${sourceId}:replay`)).toBe(false);
   });
 
   it("finds due NFT mints beyond a full page of leased and delayed records", async () => {

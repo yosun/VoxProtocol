@@ -11,9 +11,9 @@ import {
 import {MAINNET_USDC_MINT} from "@vox/realize-solana";
 import {buildApp} from "../apps/api/src/app.js";
 import {MemoryStore} from "../apps/api/src/store.js";
-import {buildRealizeQuote, generationParametersHash, RealizeCreatorPayoutConfigurationV1Schema} from "../apps/api/src/realize-engine.js";
+import {buildRealizeQuote, createFirstPartyRealizeRightsPolicy, generationParametersHash, RealizeCreatorPayoutConfigurationV1Schema} from "../apps/api/src/realize-engine.js";
 import {MainnetSplUsdcRealizePaymentRail, SOLANA_MAINNET_GENESIS_HASH, type MainnetSplUsdcFundingAuthorization, type RealizePaymentRail} from "../apps/api/src/realize-payment.js";
-import type {PopuliRealizeClient} from "../apps/api/src/realize-engine.js";
+import type {PopuliRealizeClient, RealizeRefundResponseV1} from "../apps/api/src/realize-engine.js";
 import type {RealizeCommissionRecord} from "../apps/api/src/types.js";
 
 const payer = Keypair.generate().publicKey.toBase58();
@@ -27,7 +27,199 @@ afterEach(async () => {
   app = undefined;
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   vi.setSystemTime();
+  vi.useRealTimers();
+});
+
+/** Exercise the real signed API/operator routes without a wallet, RPC or paid provider. */
+async function refundAuditHarness() {
+  const store = new MemoryStore();
+  const creator = createAgent({display_name: "Refund audit creator", handle: "@refund-audit", description: "test"});
+  const customer = createHuman({display_name: "Refund audit customer", handle: "@refund-customer", description: "test"});
+  const operator = createHuman({display_name: "Refund audit operator", handle: "@refund-operator", description: "test"});
+  await store.registerAgent(creator.registration);
+  await store.registerHuman(customer.registration);
+  await store.registerHuman(operator.registration);
+  const policyTerms = {creator_id: creator.registration.agent_id, character_owner_id: creator.registration.agent_id, rights_subject_id: "vox:creator:refund-audit"};
+  const policy = createFirstPartyRealizeRightsPolicy(policyTerms);
+  const configuration = RealizeCreatorPayoutConfigurationV1Schema.parse({
+    ...policyTerms, protocol_version: "realize/1", version: 1,
+    populi_api_base_url: "https://provider.example.test", artifact_hosts: ["provider.example.test"],
+    rights_policy_mode: "first_party", rights_agreement_reference: policy.policy.policy_id, rights_agreement_version: 1, rights_agreement_hash: policy.terms_hash,
+    usdc_mint: MAINNET_USDC_MINT, network_id: "solana:mainnet-beta", settlement_program_version: "spl-usdc-mainnet-v1",
+    funding_destination_token_account: treasuryTokenAccount, quote_ttl_seconds: 300,
+    provider_payouts: [{provider_id: "provider:audit", recipients: [{recipient_id: "provider:audit", destination: treasuryOwner, basis_points: 10_000}]}],
+    character_owner_markup: {fee: {}, recipients: [{recipient_id: creator.registration.agent_id, destination: treasuryOwner, basis_points: 10_000}]},
+    platform_fee: {fee: {}, recipients: [{recipient_id: "vox:platform", destination: treasuryOwner, basis_points: 10_000}]}, additional_beneficiaries: []
+  });
+  await store.createRealizePayoutConfiguration(configuration);
+  const issuer = generateKeyPair();
+  const instanceId = "instance:refund-audit";
+  const instancePublicKey = publicKeyBase64(issuer.publicKey);
+  const issuedAt = new Date().toISOString();
+  const commissionId = "vox:commission:refund-audit";
+  const quote = buildRealizeQuote({configuration, commissionId, pricingRequestId: "pricing:refund-audit", pricingRequestHash: "a".repeat(64),
+    capabilityId: "video:short-form", generationProviderId: "provider:audit", generationParameters: {concept: "An audit scene"}, outputMediaTypes: ["video/mp4"],
+    providerPrice: {protocol_version: "realize/1", request_id: "pricing:refund-audit", provider_quote_id: "provider-price:refund-audit", creator_id: creator.registration.agent_id,
+      capability_id: "video:short-form", generation_provider_id: "provider:audit", requested_generation_parameters_hash: generationParametersHash({concept: "An audit scene"}),
+      price_usdc_atomic: "250000", issued_at: issuedAt, expires_at: new Date(Date.now() + 600_000).toISOString()},
+    issuedAt, issuerId: instanceId, issuerKeyId: `vox:key:${bytesToHex(domainHash("vox.realize.issuer.key.v1", utf8(`${instanceId}\u0000${instancePublicKey}`)))}`,
+    issuerPublicKey: instancePublicKey, issuerSecretKey: issuer.secretKey});
+  await store.createRealizeQuote(quote);
+  await store.createRealizeCommission({commission: {protocol_version: "realize/1", commission_id: commissionId, commissioner_id: customer.registration.human_id,
+    creator_id: creator.registration.agent_id, capability_id: "video:short-form", requested_generation_parameters: quote.requested_generation_parameters,
+    rights_agreement_reference: policy.policy.policy_id, quote_id: quote.quote_id, state: "QUOTED", payment_state: "not_started", fulfillment_state: "not_started", created_at: issuedAt, updated_at: issuedAt},
+    payout_configuration_version: 1, settlement_status: "not_started", created_at: issuedAt, updated_at: issuedAt});
+  vi.stubEnv("VOX_REALIZE_FIRST_PARTY_CREATOR_IDS", creator.registration.agent_id);
+  vi.stubEnv("VOX_REALIZE_OPERATOR_HUMAN_IDS", operator.registration.human_id);
+  vi.stubEnv("VOX_REALIZE_SETTLEMENT_URL", "https://settlement.example.test");
+  vi.stubEnv("VOX_REALIZE_SETTLEMENT_TOKEN", "test-only-token");
+  vi.stubEnv("VOX_REALIZE_POPULI_WEBHOOK_SECRET", "test-only-webhook-secret");
+  const verifyFunding = vi.fn(async () => ({finalized: true, matched: true, block_time: Math.floor(Date.now() / 1_000)}));
+  const rail: RealizePaymentRail<MainnetSplUsdcFundingAuthorization> = {mode: "direct", networkId: "solana:mainnet-beta", usdcMint: MAINNET_USDC_MINT,
+    prepareFunding: async ({quote: accepted, commission, payerWallet}) => ({mode: "direct", custody_model: "backend_managed", network_id: "solana:mainnet-beta", usdc_mint: MAINNET_USDC_MINT,
+      destination_token_account: treasuryTokenAccount, destination_owner: treasuryOwner, amount_usdc_atomic: accepted.total_amount_usdc_atomic,
+      payment_reference: `vox:realize:payment:${commission.payment_intent_id}:${accepted.canonical_quote_hash}`, payer_wallet: payerWallet,
+      commission_id: commissionId, quote_id: accepted.quote_id, accepted_quote_hash: accepted.canonical_quote_hash, expires_at: accepted.expires_at}), verifyFunding};
+  const requestFulfillment = vi.fn(async (_configuration: unknown, request: {fulfillment_request_id: string}) => ({protocol_version: "realize/1" as const,
+    fulfillment_request_id: request.fulfillment_request_id, commission_id: commissionId, generation_provider_id: "provider:audit", status: "queued" as const, outputs: []}));
+  const provider = {getCapabilities: vi.fn(), getInputSchema: vi.fn(), getCurrentPrice: vi.fn(), getFulfillment: vi.fn(), requestFulfillment};
+  const refundId = `vox:refund:${createHash("sha256").update(`vox:refund:${commissionId}:${quote.canonical_quote_hash}`).digest("hex")}`;
+  let reserved = false;
+  const response = (): RealizeRefundResponseV1 => ({refund_id: refundId, status: "processing", updated_at: new Date().toISOString()});
+  const settlement = {requestSettlement: vi.fn(), getSettlement: vi.fn(),
+    getPaymentIntentResolution: vi.fn(async (paymentIntentId: string) => ({payment_intent_id: paymentIntentId, kind: reserved ? "refund" : "none", ...(reserved ? {record_id: refundId, state: "active"} : {})})),
+    requestRefund: vi.fn(async () => { reserved = true; return response(); }), getRefund: vi.fn(async () => response())};
+  app = await buildApp({store, instanceId, instanceSecretKey: issuer.secretKey, internalToken: "test-only-internal-token", mainnetRealizePaymentRail: rail,
+    populiRealizeClient: provider, solanaRealizeSettlementClient: settlement as never});
+  const base = `/v1/realize/commissions/${encodeURIComponent(commissionId)}`;
+  const approvalPath = `/v1/internal/realize/commissions/${encodeURIComponent(commissionId)}/refund-approval`;
+  async function signed(path: string, body?: unknown, signer = customer) {
+    const method = body === undefined ? "GET" as const : "POST" as const;
+    const issued_at = new Date().toISOString();
+    return app!.inject({method, url: path, ...(body === undefined ? {} : {payload: body}), headers: {
+      "x-vox-internal-token": "test-only-internal-token", "x-vox-realize-human-id": signer.registration.human_id, "x-vox-realize-timestamp": issued_at,
+      "x-vox-realize-signature": signRealizeClientRequest({method, path, principal_id: signer.registration.human_id, issued_at, ...(body === undefined ? {} : {body})}, parseSecretKey(signer.key_material.identitySecretKey))}});
+  }
+  const accepted = await signed(`${base}/accept-quote`, {quote_id: quote.quote_id, canonical_quote_hash: quote.canonical_quote_hash, payer_wallet: payer, rights_reviewed: true});
+  expect(accepted.statusCode, accepted.body).toBe(201);
+  async function fund() {
+    const funded = await signed(`${base}/fund`, {payer_wallet: payer, transaction_signature: mainnetSignature});
+    expect(funded.statusCode, funded.body).toBe(202);
+    return funded;
+  }
+  async function providerCallback(callbackResult: Record<string, unknown>, deliveryId: string) {
+    const current = (await store.getRealizeCommission(commissionId))!;
+    const body = JSON.stringify({protocol_version: "realize/1", fulfillment_request_id: current.commission.fulfillment_request_id,
+      commission_id: commissionId, generation_provider_id: "provider:audit", completed_at: new Date().toISOString(), ...callbackResult});
+    const timestamp = Math.floor(Date.now() / 1_000).toString();
+    const result = await app!.inject({method: "POST", url: "/v1/realize/webhooks/populi", payload: body, headers: {"content-type": "application/json",
+      "x-realize-webhook-id": deliveryId, "x-realize-webhook-timestamp": timestamp,
+      "x-realize-webhook-signature": `v1=${createHmac("sha256", "test-only-webhook-secret").update(`${timestamp}.`).update(body).digest("hex")}`}});
+    expect(result.statusCode, result.body).toBe(200);
+  }
+  const failProvider = () => providerCallback({status: "failed", outputs: [], error_code: "GENERATION_PROVIDER_FAILED"}, "refund-audit-failure");
+  const approval = {payer_wallet: payer, funding_signature: mainnetSignature, payment_intent_id: accepted.json().payment_intent.payment_intent_id,
+    accepted_quote_hash: quote.canonical_quote_hash, amount_usdc_atomic: quote.total_amount_usdc_atomic, reason: "Refund the exact verified original payment under the audit."};
+  return {store, quote, commissionId, base, refundId, rail, settlement, requestFulfillment, signed, fund, failProvider, providerCallback, approval,
+    approve: (body = approval) => signed(approvalPath, body, operator)};
+}
+
+describe("Mainnet refund terminal evidence", () => {
+  it("records a failed payout after delivery without refunding or losing the successful fulfillment", async () => {
+    const audit = await refundAuditHarness();
+    await audit.fund();
+    const settlementId = `vox:settlement:${createHash("sha256").update(`${audit.commissionId}\u0000${audit.quote.canonical_quote_hash}`).digest("hex")}`;
+    audit.settlement.requestSettlement.mockResolvedValue({protocol_version: "realize/1", settlement_id: settlementId, accepted: true});
+    const failedSettlement = {settlement_id: settlementId, status: "failed", settled_amount_usdc_atomic: "0", failed_payout_ids: audit.quote.payout_recipients.map((payout) => payout.payout_id), transaction_signatures: ["8".repeat(88)], updated_at: new Date().toISOString()};
+    audit.settlement.getSettlement.mockResolvedValue(failedSettlement);
+    const content = new Uint8Array([1, 2, 3, 4]);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(content, {headers: {"content-type": "video/mp4"}})));
+    await audit.providerCallback({status: "completed", outputs: [{uri: "https://provider.example.test/completed.mp4", media_type: "video/mp4", byte_length: content.length, sha256: createHash("sha256").update(content).digest("hex")}]}, "refund-audit-completed");
+    const delivered = await audit.signed(audit.base);
+    expect(delivered.json()).toMatchObject({commission: {state: "COMPLETED", payment_state: "captured", fulfillment_state: "completed"}, resolution_outcome: "fulfilled", settlement_status: "failed", settlement_response: failedSettlement});
+    expect(delivered.json().failure_reason).toMatch(/payout.*review/);
+    expect((await audit.store.getRealizeCommission(audit.commissionId))?.provenance_record_id).toEqual(expect.any(String));
+    expect((await audit.approve()).statusCode).toBe(409);
+    expect(audit.settlement.requestRefund).not.toHaveBeenCalled();
+    expect(audit.requestFulfillment).toHaveBeenCalledOnce();
+  });
+
+  it("preserves the exact accepted payer, payment authorization and finalized funding receipt during updates", async () => {
+    const audit = await refundAuditHarness();
+    const accepted = (await audit.store.getRealizeCommission(audit.commissionId))!;
+    for (const changes of [
+      {payer_wallet: Keypair.generate().publicKey.toBase58()},
+      {payment_intent: {...accepted.payment_intent!, amount_usdc_atomic: "1000001"}},
+      {commission: {...accepted.commission, payment_intent_id: "payment:replacement"}},
+      {direct_funding: {...accepted.direct_funding!, destination_token_account: Keypair.generate().publicKey.toBase58()}},
+      {rights_reviewed_at: undefined}
+    ]) await expect(audit.store.updateRealizeCommission({...accepted, ...changes}, accepted.updated_at)).rejects.toThrow(/immutable/);
+    await audit.fund();
+    const funded = (await audit.store.getRealizeCommission(audit.commissionId))!;
+    for (const changes of [
+      {funding_signature: mainnetSignature.slice(1)}, {funding_signature: undefined}, {funding_network_id: "solana:devnet"},
+      {funding_verified_at: undefined}, {funding_timing_status: "after_quote_expiry" as const}
+    ]) await expect(audit.store.updateRealizeCommission({...funded, ...changes}, funded.updated_at)).rejects.toThrow(/immutable/);
+    expect((await audit.store.getRealizeCommission(audit.commissionId))?.funding_signature).toBe(mainnetSignature);
+  });
+
+  it("completes an exact refund after a late payment without ever requesting a provider render", async () => {
+    const audit = await refundAuditHarness();
+    vi.useFakeTimers({toFake: ["Date"]});
+    vi.setSystemTime(new Date(Date.parse(audit.quote.expires_at) + 2_000));
+    const funded = await audit.fund();
+    expect(funded.json()).toMatchObject({state: "MANUAL_REVIEW", payment_state: "captured", fulfillment_state: "not_started"});
+    audit.settlement.requestRefund.mockResolvedValueOnce({refund_id: audit.refundId, status: "refunded", transaction_signature: "9".repeat(88), updated_at: new Date().toISOString()});
+    const refunded = await audit.approve();
+    expect(refunded.statusCode, refunded.body).toBe(200);
+    expect(refunded.json()).toMatchObject({commission: {state: "REFUNDED", payment_state: "refunded", fulfillment_state: "not_started"}, resolution_outcome: "refunded"});
+    const saved = (await audit.store.getRealizeCommission(audit.commissionId))!;
+    expect(saved.resolution_events?.map((event) => event.action)).toEqual(["manual_review_required", "refund_approved", "refund_finalized"]);
+    expect(saved.fulfillment_request).toBeUndefined();
+    expect(audit.requestFulfillment).not.toHaveBeenCalled();
+    expect(audit.settlement.requestRefund).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({payer_wallet: payer, funding_transaction_signature: mainnetSignature,
+      amount_usdc_atomic: audit.quote.total_amount_usdc_atomic, payment_intent_id: audit.approval.payment_intent_id}));
+    const retry = await audit.signed(audit.base);
+    expect(retry.json().commission.state).toBe("REFUNDED");
+    expect(audit.settlement.requestRefund).toHaveBeenCalledOnce();
+  });
+
+  it.each(["processing", "refunded"] as const)("rejects a %s response for a different refund", async (status) => {
+    const audit = await refundAuditHarness();
+    await audit.fund();
+    await audit.failProvider();
+    audit.settlement.requestRefund.mockResolvedValueOnce({refund_id: "vox:refund:another-payment", status, transaction_signature: "9".repeat(88), updated_at: new Date().toISOString()});
+    const response = await audit.approve();
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({commission: {state: "MANUAL_REVIEW"}, resolution_reason: "refund_response_mismatch"});
+    const current = await audit.store.getRealizeCommission(audit.commissionId);
+    expect(current?.refund_response).toBeUndefined();
+    expect(current?.resolution_events?.some((event) => event.action === "refund_finalized")).toBe(false);
+  });
+
+  it("rejects terminal refund claims without a transaction signature", async () => {
+    const audit = await refundAuditHarness();
+    await audit.fund();
+    await audit.failProvider();
+    audit.settlement.requestRefund.mockResolvedValueOnce({refund_id: audit.refundId, status: "refunded", updated_at: new Date().toISOString()});
+    const response = await audit.approve();
+    expect(response.json()).toMatchObject({commission: {state: "MANUAL_REVIEW"}, resolution_reason: "refund_finalization_evidence_missing"});
+    expect((await audit.store.getRealizeCommission(audit.commissionId))?.resolution_outcome).toBe("manual_review");
+  });
+
+  it("does not approve a refund when an empty resolution contradicts evidence of a payout", async () => {
+    const audit = await refundAuditHarness();
+    await audit.fund();
+    await audit.failProvider();
+    audit.settlement.getPaymentIntentResolution.mockResolvedValueOnce({payment_intent_id: audit.approval.payment_intent_id, kind: "none", settled_amount_usdc_atomic: "1"} as never);
+    const response = await audit.approve();
+    expect(response.statusCode, response.body).toBe(409);
+    expect(response.json().code).toBe("settlement_requires_review");
+    expect(audit.settlement.requestRefund).not.toHaveBeenCalled();
+    expect((await audit.store.getRealizeCommission(audit.commissionId))?.refund_approval).toBeUndefined();
+  });
 });
 
 describe("Mainnet SPL USDC Realize payment rail", () => {
@@ -208,13 +400,16 @@ describe("Mainnet SPL USDC Realize payment rail", () => {
     };
     const requestFulfillment = vi.fn(async (configuration: never, request: any) => ({protocol_version: "realize/1" as const, fulfillment_request_id: request.fulfillment_request_id, commission_id: request.commission_id, generation_provider_id: request.generation_provider_id, status: "queued" as const, outputs: [], started_at: new Date().toISOString()}));
     const populi: PopuliRealizeClient = {getCapabilities: vi.fn(), getInputSchema: vi.fn(), getCurrentPrice: vi.fn(), requestFulfillment, getFulfillment: vi.fn()};
-    let refundReserved = false;
-    const refundId = `vox:refund:${createHash("sha256").update(`vox:refund:${first.commissionId}:${first.quote.canonical_quote_hash}`).digest("hex")}`;
+    const reservedRefunds = new Map<string, string>();
     const settlement = {
       requestSettlement: vi.fn(), getSettlement: vi.fn(),
-      getPaymentIntentResolution: vi.fn(async (paymentIntentId: string) => ({payment_intent_id: paymentIntentId, kind: refundReserved ? "refund" : "none", ...(refundReserved ? {record_id: refundId, state: "active", batch_statuses: ["prepared"]} : {})})),
-      requestRefund: vi.fn(async () => { refundReserved = true; return {refund_id: refundId, status: "processing", updated_at: new Date().toISOString()}; }),
-      getRefund: vi.fn(async () => ({refund_id: refundId, status: "processing", updated_at: new Date().toISOString()}))
+      getPaymentIntentResolution: vi.fn(async (paymentIntentId: string) => ({payment_intent_id: paymentIntentId, kind: reservedRefunds.has(paymentIntentId) ? "refund" : "none", ...(reservedRefunds.has(paymentIntentId) ? {record_id: reservedRefunds.get(paymentIntentId), state: "active", batch_statuses: ["prepared"]} : {})})),
+      requestRefund: vi.fn(async (input: {payment_intent_id: string; idempotency_key: string}) => {
+        const refundId = `vox:refund:${createHash("sha256").update(input.idempotency_key).digest("hex")}`;
+        reservedRefunds.set(input.payment_intent_id, refundId);
+        return {refund_id: refundId, status: "processing", updated_at: new Date().toISOString()};
+      }),
+      getRefund: vi.fn(async (refundId: string) => ({refund_id: refundId, status: "processing", updated_at: new Date().toISOString()}))
     };
     vi.stubEnv("VOX_REALIZE_POPULI_WEBHOOK_SECRET", "test-only-populi-webhook-secret");
     vi.stubEnv("VOX_INTERNAL_TOKEN", "test-only-internal-token");

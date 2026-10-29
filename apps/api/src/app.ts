@@ -956,8 +956,8 @@ async function verifyAndRecordMainnetFunding(
   return {record: current, status: reasonCode ? "manual_review" : "captured"};
 }
 
-function settlementResolutionIsRefundable(resolution: RealizePaymentIntentResolutionV1): boolean {
-  return resolution.kind === "settlement" && resolution.state === "refundable" && resolution.settled_amount_usdc_atomic === "0" && Boolean(resolution.batch_statuses?.length) && resolution.batch_statuses!.every((status) => status === "failed");
+function settlementResolutionIsRefundable(resolution: RealizePaymentIntentResolutionV1, expectedSettlementId: string): boolean {
+  return resolution.kind === "settlement" && resolution.record_id === expectedSettlementId && resolution.state === "refundable" && resolution.settled_amount_usdc_atomic === "0" && Boolean(resolution.batch_statuses?.length) && resolution.batch_statuses!.every((status) => status === "failed");
 }
 
 async function mainnetRefundPreflight(context: AppContext, current: RealizeCommissionRecord): Promise<{quote: import("@vox/protocol").RealizeQuoteV1; resolution: RealizePaymentIntentResolutionV1}> {
@@ -976,7 +976,10 @@ async function mainnetRefundPreflight(context: AppContext, current: RealizeCommi
   const resolution = await context.solanaRealizeSettlementClient.getPaymentIntentResolution(paymentIntent.payment_intent_id);
   if (resolution.payment_intent_id !== paymentIntent.payment_intent_id) throw new HttpError(503, "settlement_resolution_mismatch", "settlement service returned a different payment intent");
   const expectedRefundId = expectedRealizeRefundId(current.commission.commission_id, quote.canonical_quote_hash);
-  const safeNoPayout = resolution.kind === "none" || settlementResolutionIsRefundable(resolution) || resolution.kind === "refund" && resolution.record_id === expectedRefundId && ["active", "refund_failed", "refunded"].includes(resolution.state ?? "");
+  const expectedSettlementId = `vox:settlement:${createHash("sha256").update(`${current.commission.commission_id}\u0000${quote.canonical_quote_hash}`).digest("hex")}`;
+  const noReportedPayout = resolution.settled_amount_usdc_atomic === undefined || resolution.settled_amount_usdc_atomic === "0";
+  const emptyResolution = resolution.kind === "none" && !resolution.record_id && !resolution.state && !resolution.batch_statuses?.length && noReportedPayout && (resolution.held_amount_usdc_atomic === undefined || resolution.held_amount_usdc_atomic === "0");
+  const safeNoPayout = emptyResolution || settlementResolutionIsRefundable(resolution, expectedSettlementId) || resolution.kind === "refund" && resolution.record_id === expectedRefundId && noReportedPayout && ["active", "refund_failed", "refunded"].includes(resolution.state ?? "");
   if (!safeNoPayout) throw new HttpError(409, "settlement_requires_review", "settlement or refund activity is partial, active, or uncertain and requires manual review");
   return {quote, resolution};
 }
@@ -993,6 +996,10 @@ async function runRealizeRefund(context: AppContext, input: RealizeCommissionRec
   if (stagingNoRenderFailureEnabled(context) && current.no_render_failure_armed && !current.refund_approval) return current;
   try {
     let response: RealizeRefundResponseV1;
+    if (mainnet) {
+      const approval = current.refund_approval!;
+      if (approval.payer_wallet !== current.payer_wallet || approval.funding_signature !== current.funding_signature || approval.payment_intent_id !== paymentIntent.payment_intent_id || approval.accepted_quote_hash !== current.commission.accepted_quote_hash || approval.amount_usdc_atomic !== paymentIntent.amount_usdc_atomic) throw new HttpError(409, "refund_approval_binding_mismatch", "persisted approval does not match this exact original payer, finalized funding transaction, payment intent, quote and amount");
+    }
     if (context.devnetRealizeEscrowClient && current.escrow_funding) {
       if (!current.refund_response) {
         const failureHash = current.failure_evidence?.payload_hash ?? realizeCanonicalHash({commission_id: current.commission.commission_id, accepted_quote_hash: current.commission.accepted_quote_hash, reason: current.failure_reason ?? "fulfillment failed"}, "vox.realize.fulfillment-failure.v1");
@@ -1010,6 +1017,8 @@ async function runRealizeRefund(context: AppContext, input: RealizeCommissionRec
         response = await context.solanaRealizeSettlementClient.requestRefund({commission_id: current.commission.commission_id, payment_intent_id: paymentIntent.payment_intent_id, accepted_quote_hash: current.commission.accepted_quote_hash, amount_usdc_atomic: paymentIntent.amount_usdc_atomic, network_id: quote.network_id, usdc_mint: quote.usdc_mint, payer_wallet: current.payer_wallet, funding_transaction_signature: current.funding_signature, payment_reference: `vox:realize:payment:${paymentIntent.payment_intent_id}:${current.commission.accepted_quote_hash}`, idempotency_key: `vox:refund:${current.commission.commission_id}:${current.commission.accepted_quote_hash}`});
       }
     }
+    if (mainnet && response.refund_id !== expectedRealizeRefundId(current.commission.commission_id, current.commission.accepted_quote_hash)) throw new HttpError(503, "refund_response_mismatch", "settlement service returned a different refund id");
+    if (mainnet && response.status === "refunded" && (!response.transaction_signature || !/^[1-9A-HJ-NP-Za-km-z]{64,88}$/.test(response.transaction_signature))) throw new HttpError(503, "refund_finalization_evidence_missing", "a finalized Mainnet refund requires its transaction signature");
     if (response.status === "refunded") {
       const event = resolutionEvent({commissionId: current.commission.commission_id, action: "refund_finalized", actorType: "system", actorId: "vox-api", evidenceHash: response.transaction_signature ?? response.refund_id});
       const updated = updatedRealizeCommission(current, {state: "REFUNDED", payment_state: "refunded"}, {refund_response: response, resolution_outcome: "refunded", resolution_reason: current.resolution_reason ?? "confirmed_generation_failure", resolution_events: appendResolutionEvent(current, event)});
@@ -1107,9 +1116,11 @@ async function processRealizeSettlement(context: AppContext, input: RealizeCommi
       return await context.store.updateRealizeCommission(updated, current.updated_at);
     }
     if (response.status === "failed" && settledAmount === 0n) {
-      const updated = updatedRealizeCommission(current, {state: "REFUND_PENDING", payment_state: "refund_pending"}, {settlement_response: normalizedResponse, settlement_status: "failed", failure_reason: "settlement failed before any recipient payout was confirmed"});
-      const saved = await context.store.updateRealizeCommission(updated, current.updated_at);
-      return runRealizeRefund(context, saved);
+      // Delivery has already won the immutable fulfillment resolution. A payout
+      // failure is not provider failure or permission to refund delivered work.
+      // Retain the exact failed payout evidence for operator reconciliation.
+      const updated = updatedRealizeCommission(current, {}, {settlement_response: normalizedResponse, settlement_status: "failed", failure_reason: "recipient payout failed after successful delivery; payout resolution requires operator review"});
+      return context.store.updateRealizeCommission(updated, current.updated_at);
     }
     const partial = response.status === "partial" || response.status === "failed" || settledAmount !== undefined && settledAmount !== 0n;
     const mismatch = response.status === "settled" && settledAmount !== quoteTotal;
