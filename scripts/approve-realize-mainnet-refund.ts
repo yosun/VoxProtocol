@@ -3,6 +3,7 @@ import {createInterface} from "node:readline/promises";
 import {stdin, stdout} from "node:process";
 import {derivePublicKeyFromSecret, verifyHumanAccount} from "@vox/identity";
 import {parseSecretKey, realizeClientRequestSigningPayload, signBytes} from "@vox/protocol";
+import {parseSecretJson} from "./secret-json.mjs";
 
 const PROJECT_ID = "voxprotocol";
 const API_ORIGIN = "https://vox.gold";
@@ -64,7 +65,7 @@ async function main(): Promise<void> {
   let secretKey: Uint8Array | undefined;
   try {
     internalToken = readSecret(INTERNAL_TOKEN_SECRET);
-    bundle = JSON.parse(readSecret(OPERATOR_SECRET)) as AdminHumanBundle;
+    bundle = parseSecretJson(readSecret(OPERATOR_SECRET), "Stored VOX Admin identity") as AdminHumanBundle;
     if (bundle.format !== "vox-human-identity/v1" || !bundle.registration?.human_id || !bundle.registration.identity_public_key || !bundle.key_material?.identitySecretKey || !verifyHumanAccount(bundle.registration as never) || derivePublicKeyFromSecret(bundle.key_material.identitySecretKey) !== bundle.registration.identity_public_key) {
       throw new Error("The stored VOX Admin identity failed its registration or key-pair check.");
     }
