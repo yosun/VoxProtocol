@@ -1,10 +1,11 @@
 import {Buffer} from "node:buffer";
+import {createHash} from "node:crypto";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {Connection, Keypair, PublicKey, Transaction} from "@solana/web3.js";
 import {ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID} from "@solana/spl-token";
 import {SolanaSignAndSendTransaction, SolanaSignTransaction} from "@solana/wallet-standard-features";
 import {getBase58Decoder} from "@solana/kit";
-import {checkSolanaTransaction, recoverUsdcPayment, sendUsdcPayment, walletRejected, type SendUsdcPaymentInput, type UsdcPaymentAttempt} from "../apps/web/src/solana-payment.js";
+import {checkSolanaTransaction, directFundingAuthorization, recoverUsdcPayment, sendUsdcPayment, walletRejected, type SendUsdcPaymentInput, type UsdcPaymentAttempt} from "../apps/web/src/solana-payment.js";
 
 const registry = vi.hoisted(() => ({getWallet: vi.fn()}));
 const rpc = vi.hoisted(() => ({getBlockHeight: vi.fn()}));
@@ -43,6 +44,7 @@ function paymentInput(onPrepared = vi.fn()): SendUsdcPaymentInput {
     amountAtomic: "1000000",
     paymentReference: "vox:realize:payment:recovery-test",
     cluster: "mainnet-beta",
+    quoteExpiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
     rpcUrl: "http://127.0.0.1:8899",
     onPrepared
   };
@@ -78,6 +80,91 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.useRealTimers(); });
 
 describe("USDC wallet broadcast recovery", () => {
+  it("refuses an expired quote before invoking either wallet signing method", async () => {
+    const wallet = walletFeatures();
+    const input = {...paymentInput(), quoteExpiresAt: new Date(Date.now() - 1).toISOString()};
+    await expect(sendUsdcPayment(input)).rejects.toThrow("quote expired");
+    expect(wallet.signTransaction).not.toHaveBeenCalled();
+    expect(wallet.signAndSendTransaction).not.toHaveBeenCalled();
+    expect(input.onPrepared).not.toHaveBeenCalled();
+    expect(Connection.prototype.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("rechecks quote expiry after RPC preparation before asking the wallet to sign", async () => {
+    vi.useFakeTimers();
+    const wallet = walletFeatures();
+    const input = paymentInput();
+    vi.mocked(Connection.prototype.simulateTransaction).mockImplementation(async () => {
+      vi.setSystemTime(Date.parse(input.quoteExpiresAt) + 1);
+      return {context: {slot: 10}, value: {err: null, logs: []}};
+    });
+    await expect(sendUsdcPayment(input)).rejects.toThrow("quote expired");
+    expect(wallet.signTransaction).not.toHaveBeenCalled();
+    expect(wallet.signAndSendTransaction).not.toHaveBeenCalled();
+    expect(input.onPrepared).not.toHaveBeenCalled();
+    expect(Connection.prototype.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("saves a wallet-signed payment but does not broadcast it when approval crosses quote expiry", async () => {
+    vi.useFakeTimers();
+    const wallet = walletFeatures();
+    const checkpoint = vi.fn();
+    const submitted = vi.fn();
+    const input = {...paymentInput(checkpoint), onSubmitted: submitted};
+    const sign = wallet.signTransaction.getMockImplementation()!;
+    wallet.signTransaction.mockImplementation(async (...inputs) => {
+      const signed = await sign(...inputs);
+      vi.setSystemTime(Date.parse(input.quoteExpiresAt) + 1);
+      return signed;
+    });
+    await expect(sendUsdcPayment(input)).rejects.toThrow("quote expired");
+    expect(checkpoint).toHaveBeenCalledWith(expect.objectContaining({kind: "signed"}));
+    const attempt = checkpoint.mock.calls[0]![0] as Extract<UsdcPaymentAttempt, {kind: "signed"}>;
+    expect(Transaction.from(Buffer.from(attempt.signedTransaction, "base64")).verifySignatures()).toBe(true);
+    expect(submitted).toHaveBeenCalledWith(attempt.signature, expect.any(String));
+    expect(Connection.prototype.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("does not broadcast after quote expiry while the durable submitted receipt is saved", async () => {
+    vi.useFakeTimers();
+    walletFeatures();
+    const checkpoint = vi.fn();
+    const input = paymentInput(checkpoint);
+    input.onSubmitted = vi.fn(() => { vi.setSystemTime(Date.parse(input.quoteExpiresAt) + 1); });
+    await expect(sendUsdcPayment(input)).rejects.toThrow("quote expired");
+    expect(checkpoint).toHaveBeenCalledWith(expect.objectContaining({kind: "signed"}));
+    expect(Connection.prototype.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("does not invoke a sign-and-send wallet when durable preparation crosses quote expiry", async () => {
+    vi.useFakeTimers();
+    const wallet = walletFeatures();
+    const input = paymentInput();
+    input.account = {...input.account, features: [SolanaSignAndSendTransaction]};
+    input.onPrepared = vi.fn(() => { vi.setSystemTime(Date.parse(input.quoteExpiresAt) + 1); });
+    await expect(sendUsdcPayment(input)).rejects.toThrow("quote expired");
+    expect(input.onPrepared).toHaveBeenCalledWith(expect.objectContaining({kind: "wallet_submission"}));
+    expect(wallet.signAndSendTransaction).not.toHaveBeenCalled();
+    expect(Connection.prototype.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("retains and verifies a sign-and-send receipt even if wallet approval finished after quote expiry", async () => {
+    vi.useFakeTimers();
+    const wallet = walletFeatures();
+    const input = paymentInput();
+    input.account = {...input.account, features: [SolanaSignAndSendTransaction]};
+    wallet.signAndSendTransaction.mockImplementation(async () => {
+      vi.setSystemTime(Date.parse(input.quoteExpiresAt) + 1);
+      return [{signature: new Uint8Array(64).fill(1)}];
+    });
+    input.onSubmitted = vi.fn();
+    await expect(sendUsdcPayment(input)).resolves.toMatchObject({confirmation: "finalized"});
+    expect(input.onPrepared).toHaveBeenCalledWith(expect.objectContaining({kind: "wallet_submission"}));
+    expect(input.onSubmitted).toHaveBeenCalledWith(expect.any(String), expect.any(String));
+    expect(wallet.signAndSendTransaction).toHaveBeenCalledTimes(1);
+    expect(Connection.prototype.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
   it("prefers signing and checkpoints the verified signature and bytes before broadcast", async () => {
     const wallet = walletFeatures();
     let checkpoint: UsdcPaymentAttempt | undefined;
@@ -295,5 +382,43 @@ describe("USDC wallet broadcast recovery", () => {
     expect(walletRejected({name: "WalletSignTransactionError", message: "Disconnected during submission"})).toBe(false);
     expect(walletRejected({name: "WalletConnectionError", message: "Network rejected the connection"})).toBe(false);
     expect(walletRejected(new Error("Request rejected by the RPC rate limiter"))).toBe(false);
+  });
+});
+
+describe("Mainnet funding binding to the verified accepted quote", () => {
+  function acceptedFunding() {
+    const hash = "a".repeat(64);
+    const commission = {commission_id: "commission:binding-test", quote_id: "quote:binding-test", accepted_quote_hash: hash} as Parameters<typeof directFundingAuthorization>[0];
+    const quote = {commission_id: commission.commission_id, quote_id: commission.quote_id, canonical_quote_hash: hash, network_id: "solana:mainnet-beta", usdc_mint: mint.toBase58(), total_amount_usdc_atomic: "1000000", expires_at: new Date(Date.now() + 60_000).toISOString()} as Parameters<typeof directFundingAuthorization>[1];
+    const intent = `vox:payment-intent:${createHash("sha256").update(`${commission.commission_id}\u0000${hash}`).digest("hex")}`;
+    const funding = {mode: "direct", custody_model: "backend_managed", commission_id: commission.commission_id, quote_id: quote.quote_id, accepted_quote_hash: hash, network_id: quote.network_id, usdc_mint: quote.usdc_mint, amount_usdc_atomic: quote.total_amount_usdc_atomic, expires_at: quote.expires_at, payer_wallet: payer.publicKey.toBase58(), destination_token_account: destination.toBase58(), destination_owner: treasury.toBase58(), payment_reference: `vox:realize:payment:${intent}:${hash}`} as Parameters<typeof directFundingAuthorization>[2];
+    return {commission, quote, funding};
+  }
+
+  it("uses only funding matching the accepted quote and the backend's deterministic payment reference", () => {
+    const {commission, quote, funding} = acceptedFunding();
+    expect(directFundingAuthorization(commission, quote, funding)).toEqual({payerAddress: funding.payer_wallet, usdcMint: mint.toBase58(), destinationTokenAccount: destination.toBase58(), destinationOwnerAddress: treasury.toBase58(), amountAtomic: "1000000", paymentReference: funding.payment_reference, cluster: "mainnet-beta"});
+  });
+
+  it.each([
+    ["amount_usdc_atomic", "500000"], ["usdc_mint", payer.publicKey.toBase58()],
+    ["network_id", "solana:devnet"], ["commission_id", "commission:other"],
+    ["quote_id", "quote:other"], ["accepted_quote_hash", "b".repeat(64)],
+    ["expires_at", "2099-01-01T00:00:00.000Z"], ["custody_model", "escrow"],
+    ["payment_reference", "vox:realize:payment:another-intent"]
+  ])("rejects a different funding %s before any transfer is constructed", (field, value) => {
+    const {commission, quote, funding} = acceptedFunding();
+    expect(() => directFundingAuthorization(commission, quote, {...funding, [field]: value})).toThrow("does not match your verified accepted quote");
+  });
+
+  it("rejects a quote not accepted by this commission", () => {
+    const {commission, quote, funding} = acceptedFunding();
+    expect(() => directFundingAuthorization({...commission, accepted_quote_hash: "b".repeat(64)}, quote, funding)).toThrow("does not match your verified accepted quote");
+  });
+
+  it("keeps a matching expired authorization available to inspect an existing receipt", () => {
+    const {commission, quote, funding} = acceptedFunding();
+    const expires_at = new Date(Date.now() - 1).toISOString();
+    expect(() => directFundingAuthorization(commission, {...quote, expires_at}, {...funding, expires_at})).not.toThrow();
   });
 });
