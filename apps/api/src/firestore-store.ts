@@ -10,6 +10,7 @@ import type {ProvenanceRecordV1, RealizeQuoteV1} from "@vox/protocol";
 import type {DistributionRewardV1, ReferralAttributionV1, RightsAuditEventV1, RightsRevenueAllocationV1, RightsRevenueEventV1} from "@vox/protocol";
 import type {RealizeCreatorPayoutConfigurationV1} from "./realize-engine.js";
 import {applyCharacterAccountBalanceDelta, projectCharacterAccountTransaction, type CharacterAccountBalance, type CharacterAccountTransaction} from "./character-account.js";
+import {assertImmutableRealizePaymentEvidence} from "./realize-integrity.js";
 
 function normalizeFollowRecord(record: FollowRecord): FollowRecord {
   const followerType = record.follower_type ?? (record.follower_id.startsWith("vox:agent:") ? "agent" : "human");
@@ -1157,6 +1158,7 @@ export class FirestoreStore implements VoxStore {
       if (!snapshot.exists) throw new Error("Realize commission not found");
       const current = snapshot.data() as RealizeCommissionRecord;
       if (current.updated_at !== expectedUpdatedAt) throw new Error("Realize commission changed concurrently");
+      assertImmutableRealizePaymentEvidence(current, record);
       if (current.commission.commissioner_id !== record.commission.commissioner_id || current.commission.creator_id !== record.commission.creator_id || current.commission.capability_id !== record.commission.capability_id || current.source_post_id !== record.source_post_id || !canonicalEqual(current.commission.requested_generation_parameters, record.commission.requested_generation_parameters) || current.commission.rights_agreement_reference !== record.commission.rights_agreement_reference) throw new Error("immutable Realize commission terms cannot be changed");
       if (current.fulfillment_request && (!record.fulfillment_request || !canonicalEqual(current.fulfillment_request, record.fulfillment_request) || current.commission.fulfillment_request_id !== record.commission.fulfillment_request_id)) throw new Error("persisted Realize provider request and idempotency key are immutable");
       if (current.nft_media_ids && JSON.stringify(current.nft_media_ids) !== JSON.stringify(record.nft_media_ids)) throw new Error("Realize NFT media binding is immutable");

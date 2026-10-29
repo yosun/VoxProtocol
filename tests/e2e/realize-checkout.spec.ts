@@ -1,4 +1,5 @@
 import {expect, test, type Page, type Route} from "@playwright/test";
+import {createHash} from "node:crypto";
 import {
   canonicalBytes,
   computeFirstPartyRealizeRightsPolicyHash,
@@ -48,6 +49,7 @@ type MockState = {
   quote?: Record<string, any>;
   commission?: Record<string, any>;
   funding?: Record<string, string>;
+  fundingOverrides?: Record<string, string>;
   funded: boolean;
   nftMediaIds?: string[];
   sourceBalance: bigint;
@@ -323,7 +325,8 @@ async function installMocks(page: Page, sourceBalance = PAYER_USDC, rejectFundin
       state.publicAttribution = body.public_attribution;
       state.nftPublicationConsent = body.nft_publication_consent;
       state.commission = makeCommission(state.commission ?? {}, {state: "AWAITING_PAYMENT", payment_state: "pending", quote_id: state.quote?.quote_id, accepted_quote_hash: state.quote?.canonical_quote_hash, payment_intent_id: "payment-intent:e2e"});
-      state.funding = {mode: "direct", custody_model: "backend_managed", usdc_mint: USDC_MINT.toBase58(), network_id: "solana:mainnet-beta", destination_token_account: DESTINATION.toBase58(), destination_owner: TREASURY_OWNER.toBase58(), amount_usdc_atomic: TOTAL_USDC, payment_reference: "vox:realize:payment:e2e", payer_wallet: PAYER.toBase58()};
+      const paymentIntentId = `vox:payment-intent:${createHash("sha256").update(`${COMMISSION_ID}\u0000${state.quote!.canonical_quote_hash}`).digest("hex")}`;
+      state.funding = {mode: "direct", custody_model: "backend_managed", usdc_mint: USDC_MINT.toBase58(), network_id: "solana:mainnet-beta", destination_token_account: DESTINATION.toBase58(), destination_owner: TREASURY_OWNER.toBase58(), amount_usdc_atomic: TOTAL_USDC, payment_reference: `vox:realize:payment:${paymentIntentId}:${state.quote!.canonical_quote_hash}`, payer_wallet: PAYER.toBase58(), commission_id: COMMISSION_ID, quote_id: state.quote!.quote_id, accepted_quote_hash: state.quote!.canonical_quote_hash, expires_at: state.quote!.expires_at, ...state.fundingOverrides};
       return json(route, {commission: state.commission, payment_intent: {payment_intent_id: "payment-intent:e2e", amount_usdc_atomic: TOTAL_USDC, expires_at: new Date(Date.now() + 5 * 60_000).toISOString(), status: "pending"}, funding: state.funding});
     }
     if (request.method() === "POST" && path === `/v1/realize/commissions/${COMMISSION_ID}/fund`) {
@@ -413,7 +416,7 @@ test("commissioner reviews rights, pays from the backend quote, and sees mocked 
   expect(transfer!.keys[2]!.pubkey.toBase58()).toBe(DESTINATION.toBase58());
   expect(transfer!.data[0]).toBe(12); // SPL Token TransferChecked.
   expect(transfer!.data.readBigUInt64LE(1).toString()).toBe(TOTAL_USDC);
-  expect(transaction.instructions.some((instruction) => instruction.programId.toBase58() === "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr" && instruction.data.toString("utf8") === "vox:realize:payment:e2e")).toBe(true);
+  expect(transaction.instructions.some((instruction) => instruction.programId.toBase58() === "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr" && instruction.data.toString("utf8") === state.funding!.payment_reference)).toBe(true);
 });
 
 test("retains separate NFT publication consent when acceptance succeeds but status fails", async ({page}) => {
@@ -497,6 +500,101 @@ test("a restored draft adopts the provider's current settings before quoting", a
   await dialog.getByRole("button", {name: "Get my price"}).click();
   await expect(dialog.locator(".quote-price-hero")).toBeVisible();
   expect(state.quote?.requested_generation_parameters.resolution).toBe("480P");
+});
+
+for (const [field, value] of [
+  ["amount_usdc_atomic", "500000"], ["network_id", "solana:devnet"],
+  ["commission_id", "commission:another-order"], ["payment_reference", "vox:realize:payment:another-order"]
+]) test(`a mismatched direct funding ${field} never reaches the wallet`, async ({page}) => {
+  const state = await installMocks(page);
+  state.fundingOverrides = {[field!]: value!};
+  await createWallet(page, false, true);
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
+  await dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true}).click();
+  await expect(dialog.getByRole("alert").filter({hasText: "does not match your verified accepted quote"})).toBeVisible();
+  expect(await page.evaluate(() => (window as any).__voxWalletSignCount ?? 0)).toBe(0);
+  expect(await page.evaluate(() => (window as any).__voxPaymentSendCount ?? 0)).toBe(0);
+  expect(state.rpcBroadcasts).toHaveLength(0);
+  expect(state.fundCalls).toHaveLength(0);
+});
+
+test("expiry during durable preparation releases a receipt marker only when the wallet was never invoked", async ({page}) => {
+  const state = await installMocks(page);
+  await createWallet(page);
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  const dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
+  await page.evaluate(({expiresAt}) => {
+    const put = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function(value, ...keys) {
+      const request = put.call(this, value, ...keys);
+      if (value.outcome === "pending" && value.checkout?.paymentAttempt?.kind === "wallet_submission") {
+        // The durable write begins while the quote is current, then finishes
+        // after expiry, before the sign-and-send wallet can be invoked.
+        Date.now = () => expiresAt + 1;
+      }
+      return request;
+    };
+  }, {expiresAt: Date.parse(state.quote!.expires_at)});
+  await dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true}).click();
+  await expect(dialog.getByRole("alert").filter({hasText: "quote expired"})).toBeVisible();
+  await expect(dialog.getByRole("button", {name: "Update my price"})).toBeEnabled();
+  await expect(dialog.getByRole("button", {name: "Check payment status"})).toHaveCount(0);
+  await expect(dialog.getByText("Payment outcome needs checking.")).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).__voxWalletRequestCount ?? 0)).toBe(0);
+  expect(state.rpcBroadcasts).toHaveLength(0);
+  expect(state.fundCalls).toHaveLength(0);
+  const record = await page.evaluate(async () => {
+    const journalPath = "/src/financial-checkpoints.ts";
+    const journal = await import(journalPath);
+    return journal.readFinancialCheckpoint(`vox:post:${"b".repeat(64)}`);
+  });
+  expect(record).toMatchObject({outcome: "rejected"});
+  expect(record.checkout.paymentAttempt).toBeUndefined();
+  expect(record.checkout.transactionSignature).toBeUndefined();
+});
+
+test("an approval crossing quote expiry preserves signed recovery without broadcasting or enabling another charge", async ({page}) => {
+  const state = await installMocks(page, PAYER_USDC, true);
+  state.signatureMissing = true;
+  await createWallet(page, false, true);
+  await page.clock.install();
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  let dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await dialog.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
+  await page.evaluate(() => { (window as any).__voxSignatureGate = new Promise<void>((resolve) => { (window as any).__voxReleaseSignature = resolve; }); });
+  await dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true}).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__voxWalletSignCount)).toBe(1);
+  await page.clock.setSystemTime(new Date(Date.parse(state.quote!.expires_at) + 1));
+  await page.evaluate(() => (window as any).__voxReleaseSignature());
+  await expect(dialog.getByRole("alert").filter({hasText: "quote expired while preparing your payment"})).toBeVisible();
+  await expect(dialog.getByRole("button", {name: "Check payment status"})).toBeVisible();
+  const checkpoint = JSON.parse((await page.evaluate(() => sessionStorage.getItem("vox.realize.v1.checkout")))!);
+  expect(checkpoint.paymentAttempt).toMatchObject({kind: "signed", signature: checkpoint.transactionSignature});
+  expect(state.rpcBroadcasts).toHaveLength(0);
+  expect(state.fundCalls).toHaveLength(0);
+  await page.reload();
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await expect(dialog.getByRole("button", {name: "Pay 1.00 USDC", exact: true})).toHaveCount(0);
+  await dialog.getByRole("button", {name: "Check payment status"}).click();
+  await expect(dialog.getByRole("alert").filter({hasText: "mock verifier"})).toBeVisible();
+  expect(state.rpcBroadcasts).toHaveLength(0);
+  expect(state.fundCalls[0]?.transaction_signature).toBe(checkpoint.transactionSignature);
 });
 
 test("insufficient USDC leaves the accepted quote unfunded", async ({page}) => {

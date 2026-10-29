@@ -78,6 +78,7 @@ export class SolanaMainnetSettlementChain implements MainnetSettlementChain {
     if (!info || !info.owner.equals(TOKEN_PROGRAM_ID)) throw new SettlementError(503, "treasury_not_ready", "treasury USDC associated account has not been created");
     const token = unpackAccount(this.tokenAccount, info, TOKEN_PROGRAM_ID);
     if (!token.owner.equals(this.owner) || !token.mint.equals(this.mint)) throw new SettlementError(503, "treasury_mismatch", "treasury token account owner or mint is incorrect");
+    if (!token.isInitialized || token.isFrozen) throw new SettlementError(503, "treasury_not_ready", "treasury USDC account must be initialized and unfrozen before settlement");
   }
 
   async verifyFunding(input: RefundRequest): Promise<boolean> {
@@ -161,6 +162,17 @@ export class SolanaMainnetSettlementChain implements MainnetSettlementChain {
   async executeBatch(batch: PreparedSettlementBatch): Promise<"prepared" | "finalized" | "failed" | "uncertain"> {
     if (batch.status === "finalized" || batch.status === "failed") return batch.status;
     if (!batch.transaction_signature || !batch.raw_transaction_base64 || !batch.blockhash || batch.last_valid_block_height === undefined) throw new SettlementError(500, "transaction_record_invalid", "persisted settlement transaction is incomplete");
+    let raw: Buffer;
+    try {
+      raw = Buffer.from(batch.raw_transaction_base64, "base64");
+      const transaction = Transaction.from(raw);
+      if (raw.toString("base64") !== batch.raw_transaction_base64 || transaction.signatures.length !== 1
+        || !transaction.feePayer?.equals(this.owner) || transaction.recentBlockhash !== batch.blockhash
+        || !transaction.signature || encodeBase58(transaction.signature) !== batch.transaction_signature
+        || !transaction.verifySignatures()) throw new Error("persisted signed transaction binding is invalid");
+    } catch {
+      throw new SettlementError(500, "transaction_record_invalid", "persisted settlement bytes do not match the treasury signature and blockhash");
+    }
     const signature = batch.transaction_signature;
     const readStatus = async () => (await this.connection.getSignatureStatuses([signature], {searchTransactionHistory: true})).value[0];
     let status = await readStatus();
@@ -172,7 +184,7 @@ export class SolanaMainnetSettlementChain implements MainnetSettlementChain {
     // temporarily unable to find a transaction that already landed.
     if (!status && blockHeight > batch.last_valid_block_height) return "uncertain";
     try {
-      const sentSignature = await this.connection.sendRawTransaction(Buffer.from(batch.raw_transaction_base64, "base64"), {maxRetries: 3, preflightCommitment: "confirmed"});
+      const sentSignature = await this.connection.sendRawTransaction(raw, {maxRetries: 3, preflightCommitment: "confirmed"});
       if (sentSignature !== signature) throw new SettlementError(502, "signature_mismatch", "RPC returned a different settlement transaction signature");
     } catch (error) {
       if (error instanceof SettlementError) throw error;

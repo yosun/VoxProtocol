@@ -15,12 +15,12 @@ import {getWalletForHandle} from "@wallet-standard/ui-registry";
 import type {WalletState} from "@solana/kit-plugin-wallet";
 import {base64UrlToBytes, bytesToHex, sha256, utf8, verifyBytes, verifyRealizeQuoteSignature, type CommissionV1, type RealizeQuoteV1} from "@vox/protocol";
 import {
-  DEVNET_USDC_MINT, INSTRUCTIONS_SYSVAR, SETTLEMENT_NETWORKS,
+  DEVNET_USDC_MINT, MAINNET_USDC_MINT, INSTRUCTIONS_SYSVAR, SETTLEMENT_NETWORKS,
   SYSTEM_PROGRAM, TOKEN_PROGRAM, assertConfigMatchesNetwork, commissionSeed, configAddress,
   decodeConfigAccount, escrowAddresses, getEscrowInstruction, prepareEscrow,
   quoteVerificationInstruction
 } from "@vox/realize-solana";
-import type {RealizeCommission, RealizeEscrowFunding, RealizeQuote} from "./api.js";
+import type {RealizeCommission, RealizeDirectFunding, RealizeEscrowFunding, RealizeQuote} from "./api.js";
 import {walletChainForCluster} from "./solana-wallet.js";
 
 const MEMO_PROGRAM_ID = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
@@ -42,6 +42,31 @@ export interface UsdcPaymentAuthorization {
   cluster: string;
 }
 
+/** Call only after verifying the quote against the trusted VOX issuer. */
+export function directFundingAuthorization(commission: RealizeCommission, quote: RealizeQuote, funding: RealizeDirectFunding): UsdcPaymentAuthorization {
+  const paymentIntentId = `vox:payment-intent:${bytesToHex(sha256(utf8(`${commission.commission_id}\u0000${quote.canonical_quote_hash}`)))}`;
+  const expectedReference = `vox:realize:payment:${paymentIntentId}:${quote.canonical_quote_hash}`;
+  if (funding.mode !== "direct" || funding.custody_model !== "backend_managed" ||
+    quote.network_id !== "solana:mainnet-beta" || quote.usdc_mint !== MAINNET_USDC_MINT ||
+    funding.network_id !== quote.network_id || funding.usdc_mint !== quote.usdc_mint ||
+    funding.amount_usdc_atomic !== quote.total_amount_usdc_atomic || funding.expires_at !== quote.expires_at ||
+    commission.commission_id !== quote.commission_id || funding.commission_id !== quote.commission_id ||
+    commission.quote_id !== quote.quote_id || funding.quote_id !== quote.quote_id ||
+    commission.accepted_quote_hash !== quote.canonical_quote_hash || funding.accepted_quote_hash !== quote.canonical_quote_hash ||
+    funding.payment_reference !== expectedReference) {
+    throw new Error("The payment authorization does not match your verified accepted quote. Refresh this checkout before paying.");
+  }
+  return {
+    payerAddress: funding.payer_wallet,
+    usdcMint: funding.usdc_mint,
+    destinationTokenAccount: funding.destination_token_account,
+    destinationOwnerAddress: funding.destination_owner,
+    amountAtomic: funding.amount_usdc_atomic,
+    paymentReference: funding.payment_reference,
+    cluster: "mainnet-beta"
+  };
+}
+
 export type UsdcPaymentAttempt = {
   version: 1;
   authorization: UsdcPaymentAuthorization;
@@ -57,6 +82,7 @@ export interface SendUsdcPaymentInput extends UsdcPaymentAuthorization {
   account: ConnectedWallet["account"];
   supportedTransactionVersions: ConnectedWallet["supportedTransactionVersions"];
   rpcUrl?: string;
+  quoteExpiresAt: string;
   /** Must durably save this attempt or throw, before any possible broadcast. */
   onPrepared: (attempt: UsdcPaymentAttempt) => void | Promise<void>;
   onWalletApprovalRequested?: () => void;
@@ -68,6 +94,21 @@ export interface SolanaPaymentResult {
   explorerUrl: string;
   confirmation: "finalized" | "pending" | "failed";
   fundingComplete?: boolean;
+}
+
+export class PaymentQuoteExpiredError extends Error {
+  constructor(readonly checkpointState: "not_prepared" | "signed" | "wallet_not_invoked" = "not_prepared") {
+    super(checkpointState === "signed"
+      ? "This quote expired while preparing your payment. The saved payment still needs verification; do not pay again."
+      : "This quote expired. Request a fresh quote before paying.");
+    this.name = "PaymentQuoteExpiredError";
+  }
+}
+
+function assertPaymentQuoteCurrent(expiresAt: string, checkpointState?: PaymentQuoteExpiredError["checkpointState"]): void {
+  // The browser clock only stops a new submission. The API still decides
+  // whether a receipt was funded on time using finalized transaction block time.
+  if (!(Date.parse(expiresAt) > Date.now())) throw new PaymentQuoteExpiredError(checkpointState);
 }
 
 function walletRejected(error: unknown): boolean {
@@ -212,6 +253,7 @@ async function pollFinality(connection: Connection, signature: string, lastValid
  * from user input or commission data.
  */
 export async function sendUsdcPayment(input: SendUsdcPaymentInput): Promise<SolanaPaymentResult> {
+  assertPaymentQuoteCurrent(input.quoteExpiresAt);
   if (input.cluster === "mainnet-beta" && import.meta.env.VITE_REALIZE_MAINNET_ENABLED !== "true") {
     throw new Error("Realize Mainnet checkout is disabled in this web build.");
   }
@@ -285,6 +327,7 @@ export async function sendUsdcPayment(input: SendUsdcPaymentInput): Promise<Sola
     throw new Error(`Solana rejected the payment simulation: ${details}`);
   }
 
+  assertPaymentQuoteCurrent(input.quoteExpiresAt);
   const features = walletSigningFeatures(input.wallet);
   input.onWalletApprovalRequested?.();
   let signature: string;
@@ -302,6 +345,9 @@ export async function sendUsdcPayment(input: SendUsdcPaymentInput): Promise<Sola
     // Derive and durably save the signature before broadcast. A lost RPC
     // response must retain it rather than enable a newly signed payment.
     await input.onSubmitted?.(signature, paymentExplorerUrl(signature, input.cluster));
+    // Approval or durable storage may outlast the quote. Keep the verified
+    // signed bytes for reconciliation, but never newly broadcast an expired quote.
+    assertPaymentQuoteCurrent(input.quoteExpiresAt, "signed");
     try {
       await connection.sendRawTransaction(signed.signedTransaction, {preflightCommitment: "confirmed"});
     } catch {
@@ -311,6 +357,7 @@ export async function sendUsdcPayment(input: SendUsdcPaymentInput): Promise<Sola
     // These wallets may broadcast without returning a signature. Persist an
     // unresolved attempt before calling them, so a timeout survives refresh.
     await input.onPrepared({version: 1, kind: "wallet_submission", authorization: paymentAuthorization(input)});
+    assertPaymentQuoteCurrent(input.quoteExpiresAt, "wallet_not_invoked");
     const [sent] = await features[SolanaSignAndSendTransaction].signAndSendTransaction({
       account: input.account,
       transaction: transaction.serialize({requireAllSignatures: false, verifySignatures: false}),

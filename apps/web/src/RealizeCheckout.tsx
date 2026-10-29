@@ -3,7 +3,7 @@ import {videoBriefPrompt, base64UrlToBytes, canonicalBytes, computeFirstPartyRea
 import {useConnectedWallet, useWalletStatus, useWallets} from "@solana/kit-plugin-wallet/react";
 import {ApiError, api, type AgentRecord, type PostRecord, type RealizeCapabilities, type RealizeCommissionStatus, type RealizeFunding, type RealizeProvenance, type RealizeQuote, type RealizeRightsAgreement} from "./api.js";
 import {getRealizeIdentity, signRealizeRequest, type RealizeIdentity} from "./realize-identity.js";
-import {checkSolanaTransaction, recoverUsdcPayment, sendRealizeEscrowPayment, sendRealizeEscrowRefund, sendUsdcPayment, walletRejected, type UsdcPaymentAttempt} from "./solana-payment.js";
+import {checkSolanaTransaction, directFundingAuthorization, PaymentQuoteExpiredError, recoverUsdcPayment, sendRealizeEscrowPayment, sendRealizeEscrowRefund, sendUsdcPayment, walletRejected, type UsdcPaymentAttempt} from "./solana-payment.js";
 import {configuredWalletCluster, solanaWalletClient, walletChainForCluster} from "./solana-wallet.js";
 import {RealizeNfts} from "./RealizeNfts.js";
 import {generationDescription, videoOptions, type VideoOptions} from "./realize-parameters.js";
@@ -655,6 +655,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
 
   async function payLocked(previousRecord?: FinancialCheckpoint<SavedCheckout>): Promise<void> {
     if (!identity || !quote || !funding || !commissionId || !connected || !quoteAccepted || quoteExpired || busy || paymentPending) return;
+    if (!quoteValid) { setError("The quote signature or price could not be verified. Refresh this checkout before paying."); return; }
     if (mainnetRealizeDisabled) { setError("Realize Mainnet checkout is disabled in this web build."); return; }
     if (networkMismatch) { setError(`This checkout is configured for ${networkName}, but the wallet connector is configured for ${configuredWalletCluster()}.`); return; }
     if (walletChainMismatch) { setError(`Wrong network. Switch the wallet to Solana ${networkName} and reconnect.`); return; }
@@ -702,7 +703,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       };
       const sent = funding.mode === "escrow"
         ? await sendRealizeEscrowPayment({wallet: connected.wallet, account: connected.account, supportedTransactionVersions: connected.supportedTransactionVersions, payerAddress: connected.account.address, commission: commissionStatus!.commission, quote, issuerPublicKey: quote.issuer_public_key, funding, cluster: networkName, onWalletApprovalRequested, onSubmitted})
-        : await sendUsdcPayment({wallet: connected.wallet, account: connected.account, supportedTransactionVersions: connected.supportedTransactionVersions, payerAddress: connected.account.address, usdcMint: funding.usdc_mint, destinationTokenAccount: funding.destination_token_account, destinationOwnerAddress: funding.destination_owner, amountAtomic: funding.amount_usdc_atomic, paymentReference: funding.payment_reference, cluster: networkName, onWalletApprovalRequested, onPrepared, onSubmitted});
+        : await sendUsdcPayment({...directFundingAuthorization(commissionStatus!.commission, quote, funding), wallet: connected.wallet, account: connected.account, supportedTransactionVersions: connected.supportedTransactionVersions, quoteExpiresAt: quote.expires_at, onWalletApprovalRequested, onPrepared, onSubmitted});
       if (sent.confirmation === "failed") {
         paymentSubmitted = false;
         setPaymentProgress(undefined);
@@ -722,12 +723,13 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       setPaymentProgress("vox_verification");
       await submitFunding(sent.signature, attemptId);
     } catch (reason) {
-      if (preparedAttempt?.kind === "wallet_submission" && walletRejected(reason)) {
+      const expiredBeforeWalletInvocation = reason instanceof PaymentQuoteExpiredError && reason.checkpointState === "wallet_not_invoked";
+      if (preparedAttempt?.kind === "wallet_submission" && (walletRejected(reason) || expiredBeforeWalletInvocation)) {
         await resolveFinancial("rejected", attemptId);
         paymentSubmitted = false;
       }
       if (!paymentSubmitted) setPaymentProgress(undefined);
-      setError(walletRejected(reason) ? "Payment canceled in your wallet. No commission was funded." : preparedAttempt?.kind === "wallet_submission" ? "Your wallet may have sent this payment before its response was lost. Do not pay again. Verify the transaction from your wallet history below." : checkoutError(reason));
+      setError(reason instanceof PaymentQuoteExpiredError ? reason.message : walletRejected(reason) ? "Payment canceled in your wallet. No commission was funded." : preparedAttempt?.kind === "wallet_submission" ? "Your wallet may have sent this payment before its response was lost. Do not pay again. Verify the transaction from your wallet history below." : checkoutError(reason));
     }
     finally {
       setBusy(false);
@@ -740,7 +742,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       setBusy(true);
       setError("");
       try {
-        const checked = await recoverUsdcPayment(pendingPaymentAttempt, {payerAddress: funding.payer_wallet, usdcMint: funding.usdc_mint, destinationTokenAccount: funding.destination_token_account, destinationOwnerAddress: funding.destination_owner, amountAtomic: funding.amount_usdc_atomic, paymentReference: funding.payment_reference, cluster: networkName}, {quoteExpiresAt: quote!.expires_at});
+        const checked = await recoverUsdcPayment(pendingPaymentAttempt, directFundingAuthorization(commissionStatus!.commission, quote!, funding), {quoteExpiresAt: quote!.expires_at});
         if (checked.confirmation === "failed") {
           await resolveFinancial("failed", financialAttemptId, checked.signature);
           setError("The Solana transaction failed. No commission was funded; request a fresh quote before retrying.");

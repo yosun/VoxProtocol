@@ -1,5 +1,7 @@
+import {createHash} from "node:crypto";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {Keypair, type Connection} from "@solana/web3.js";
+import {getBase58Decoder} from "@solana/kit";
 import {MAINNET_USDC_MINT, RealizeSettlementProcessor, createSettlementApp, type MainnetSettlementChain, type PreparedSettlementBatch, type RefundRequest, type SettlementTransfer} from "../apps/settlement/src/engine.js";
 import {MemorySettlementLedger} from "../apps/settlement/src/ledger.js";
 import {SolanaMainnetSettlementChain, solanaMainnetPayoutAddress} from "../apps/settlement/src/solana-chain.js";
@@ -23,7 +25,8 @@ class FakeSettlementChain implements MainnetSettlementChain {
       payout_ids: input.transfers.map((transfer) => transfer.payout_id),
       amount_usdc_atomic: input.transfers.reduce((sum, transfer) => sum + BigInt(transfer.amount_usdc_atomic), 0n).toString(),
       status: "prepared",
-      transaction_signature: Keypair.generate().publicKey.toBase58(),
+      // Fabricated canonical 64-byte evidence; this fake adapter never signs.
+      transaction_signature: getBase58Decoder().decode(new Uint8Array(64).fill(this.prepareCount)),
       raw_transaction_base64: "dGVzdA==",
       blockhash: Keypair.generate().publicKey.toBase58(),
       last_valid_block_height: 100,
@@ -350,6 +353,99 @@ describe("Mainnet Realize settlement adapter", () => {
     expect(chain.executedSignatures[1]).not.toBe(chain.executedSignatures[0]);
     expect(chain.prepareBatch.mock.calls.slice(1).every(([input]) => input.attemptNumber === 2)).toBe(true);
     expect(await ledger.getBatch(first.refund_id, 0)).toMatchObject({attempt_number: 2, previous_attempts: [{attempt_number: 1, transaction_signature: chain.executedSignatures[0]}]});
+  });
+
+  it("reconciles a delayed failed-attempt result after another poll finalizes its replacement", async () => {
+    const chain = new FakeSettlementChain();
+    chain.executionResult = "prepared";
+    const ledger = new MemorySettlementLedger();
+    const processor = new RealizeSettlementProcessor(ledger, chain, 1_000_000n);
+    const refund = refundRequest();
+    const first = await processor.requestRefund(refund, refund.idempotency_key);
+    let releaseFailure!: (status: "failed") => void;
+    let signalExecuting!: () => void;
+    const executing = new Promise<void>((resolve) => { signalExecuting = resolve; });
+    chain.executeBatch.mockImplementationOnce(async () => {
+      signalExecuting();
+      return new Promise<"failed">((resolve) => { releaseFailure = resolve; });
+    });
+    const delayedPoll = processor.getRefund(first.refund_id);
+    await executing;
+    chain.executionResult = "failed";
+    expect((await processor.getRefund(first.refund_id)).status).toBe("failed");
+    chain.executionResult = "finalized";
+    const replacement = await processor.getRefund(first.refund_id);
+    expect(replacement.status).toBe("refunded");
+    releaseFailure("failed");
+    await expect(delayedPoll).resolves.toMatchObject({status: "refunded", transaction_signature: replacement.transaction_signature});
+    expect((await ledger.getBatch(first.refund_id, 0))?.transaction_signature).toBe(replacement.transaction_signature);
+  });
+
+  it.each(["finalized", "failed"] as const)("does not accept a stored %s refund without its transaction signature", async (status) => {
+    const chain = new FakeSettlementChain();
+    const ledger = new MemorySettlementLedger();
+    const processor = new RealizeSettlementProcessor(ledger, chain, 1_000_000n);
+    const request = refundRequest();
+    const refundId = "vox:refund:" + createHash("sha256").update(request.idempotency_key).digest("hex");
+    await ledger.reserve({record_id: refundId, payment_intent_id: request.payment_intent_id, kind: "refund", state: "active", request_hash: "persisted", request, created_at: new Date().toISOString()});
+    await ledger.createBatchIfAbsent(refundId, {batch_index: 0, attempt_number: 1, payout_ids: [refundId], amount_usdc_atomic: request.amount_usdc_atomic, status, updated_at: new Date().toISOString()});
+    await expect(processor.getRefund(refundId)).rejects.toMatchObject({code: "transaction_record_invalid"});
+    await expect(processor.getPaymentIntentResolution(request.payment_intent_id)).rejects.toMatchObject({code: "transaction_record_invalid"});
+    expect((await ledger.get(refundId))?.state).toBe("active");
+    expect(chain.executeCount).toBe(0);
+  });
+
+  it.each(["a".repeat(64), "z".repeat(88)])("rejects a terminal refund whose base58 text has the wrong decoded signature size", async (signature) => {
+    const chain = new FakeSettlementChain();
+    const ledger = new MemorySettlementLedger();
+    const processor = new RealizeSettlementProcessor(ledger, chain, 1_000_000n);
+    const request = refundRequest();
+    const refundId = "vox:refund:" + createHash("sha256").update(request.idempotency_key).digest("hex");
+    await ledger.reserve({record_id: refundId, payment_intent_id: request.payment_intent_id, kind: "refund", state: "active", request_hash: "persisted", request, created_at: new Date().toISOString()});
+    await ledger.createBatchIfAbsent(refundId, {batch_index: 0, attempt_number: 1, payout_ids: [refundId], amount_usdc_atomic: request.amount_usdc_atomic, status: "finalized", transaction_signature: signature, updated_at: new Date().toISOString()});
+    await expect(processor.getRefund(refundId)).rejects.toMatchObject({code: "transaction_record_invalid"});
+    expect((await ledger.get(refundId))?.state).toBe("active");
+    expect(chain.executeCount).toBe(0);
+  });
+
+  it("does not downgrade a completed refund when an earlier poll persists its delayed failure", async () => {
+    const chain = new FakeSettlementChain();
+    chain.executionResult = "failed";
+    let releaseStateUpdate!: () => void;
+    let signalStateUpdate!: () => void;
+    const stateUpdating = new Promise<void>((resolve) => { signalStateUpdate = resolve; });
+    class DelayedFailureLedger extends MemorySettlementLedger {
+      override async updateRecordState(...[recordId, state]: Parameters<MemorySettlementLedger["updateRecordState"]>) {
+        if (state === "refund_failed") {
+          signalStateUpdate();
+          await new Promise<void>((resolve) => { releaseStateUpdate = resolve; });
+        }
+        await super.updateRecordState(recordId, state);
+      }
+    }
+    const ledger = new DelayedFailureLedger();
+    const processor = new RealizeSettlementProcessor(ledger, chain, 1_000_000n);
+    const request = refundRequest();
+    const firstPoll = processor.requestRefund(request, request.idempotency_key);
+    await stateUpdating;
+    const refundId = "vox:refund:" + createHash("sha256").update(request.idempotency_key).digest("hex");
+    chain.executionResult = "finalized";
+    expect((await processor.getRefund(refundId)).status).toBe("refunded");
+    releaseStateUpdate();
+    await firstPoll;
+    expect(await processor.getPaymentIntentResolution(request.payment_intent_id)).toMatchObject({kind: "refund", state: "refunded"});
+  });
+
+  it("does not mark an external settlement finalized without its transaction signature", async () => {
+    const chain = new FakeSettlementChain();
+    const ledger = new MemorySettlementLedger();
+    const processor = new RealizeSettlementProcessor(ledger, chain, 1_000_000n);
+    const instruction = settlementInstruction();
+    await ledger.reserve({record_id: instruction.settlement_id, payment_intent_id: instruction.payment_intent_id, kind: "settlement", state: "active", request_hash: "persisted", request: instruction, created_at: instruction.created_at});
+    await ledger.createBatchIfAbsent(instruction.settlement_id, {batch_index: 0, attempt_number: 1, payout_ids: instruction.payout_recipients.map((payout) => payout.payout_id), amount_usdc_atomic: instruction.total_amount_usdc_atomic, status: "finalized", updated_at: instruction.created_at});
+    await expect(processor.getSettlement(instruction.settlement_id)).rejects.toMatchObject({code: "transaction_record_invalid"});
+    expect((await ledger.get(instruction.settlement_id))?.state).toBe("active");
+    expect(chain.executeCount).toBe(0);
   });
 
   it("rejects replacement bytes that reuse a failed signature or skip their durable attempt", async () => {

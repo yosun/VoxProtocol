@@ -1,6 +1,6 @@
 import {createHash, timingSafeEqual} from "node:crypto";
 import {canonicalize, SettlementInstructionV1Schema, type SettlementInstructionV1} from "@vox/protocol";
-import {isValidSolanaAddress, verifyFinalizedUsdcTransfer} from "@vox/solana";
+import {isSolanaTransactionSignature, isValidSolanaAddress, verifyFinalizedUsdcTransfer} from "@vox/solana";
 import Fastify, {type FastifyInstance} from "fastify";
 import {z} from "zod";
 import type {SettlementBatchRecord, SettlementLedger, SettlementRecord, SettlementRecordKind} from "./ledger.js";
@@ -27,7 +27,7 @@ export const RefundRequestSchema = z.object({
   network_id: z.literal("solana:mainnet-beta"),
   usdc_mint: z.literal(MAINNET_USDC_MINT),
   payer_wallet: solanaAddress,
-  funding_transaction_signature: z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{64,88}$/),
+  funding_transaction_signature: z.string().refine(isSolanaTransactionSignature),
   payment_reference: z.string().min(1).max(512),
   idempotency_key: z.string().min(1).max(256)
 }).strict();
@@ -75,6 +75,12 @@ function hash(value: unknown): string {
 function amount(value: string): bigint {
   if (!/^(0|[1-9][0-9]{0,19})$/.test(value) || BigInt(value) > 18_446_744_073_709_551_615n) throw new SettlementError(400, "invalid_amount", "USDC amount is invalid");
   return BigInt(value);
+}
+
+function assertTerminalTransactionEvidence(batch: SettlementBatchRecord): void {
+  if ((batch.status === "finalized" || batch.status === "failed") && !isSolanaTransactionSignature(batch.transaction_signature)) {
+    throw new SettlementError(503, "transaction_record_invalid", "terminal settlement transaction requires valid 64-byte signature evidence");
+  }
 }
 
 export class RealizeSettlementProcessor {
@@ -133,6 +139,7 @@ export class RealizeSettlementProcessor {
     const batches = await this.ledger.listBatches(record.record_id);
     const instruction = record.kind === "settlement" ? SettlementInstructionV1Schema.parse(record.request) : undefined;
     const heldIds = new Set(instruction?.payout_recipients.filter((payout) => this.chain.isTreasuryDestination(payout.destination)).map((payout) => payout.payout_id));
+    batches.filter((batch) => batch.payout_ids.some((payoutId) => !heldIds.has(payoutId))).forEach(assertTerminalTransactionEvidence);
     const settledIds = new Set(batches.filter((batch) => batch.status === "finalized" && batch.transaction_signature).flatMap((batch) => batch.payout_ids.filter((payoutId) => !heldIds.has(payoutId))));
     const settledAmount = instruction
       ? instruction.payout_recipients.filter((payout) => settledIds.has(payout.payout_id)).reduce((sum, payout) => sum + amount(payout.amount_usdc_atomic), 0n).toString()
@@ -233,6 +240,7 @@ export class RealizeSettlementProcessor {
       const prepared = await this.chain.prepareBatch({recordId, batchIndex, attemptNumber: 1, transfers});
       batch = await this.ledger.createBatchIfAbsent(recordId, prepared);
     }
+    assertTerminalTransactionEvidence(batch);
     if (batch.status === "failed" && allowRefundReplacement) {
       if ((batch.attempt_number ?? 1) >= 3) return batch;
       const prepared = await this.chain.prepareBatch({recordId, batchIndex, attemptNumber: (batch.attempt_number ?? 1) + 1, transfers});
@@ -241,6 +249,7 @@ export class RealizeSettlementProcessor {
     if (batch.status === "finalized" || batch.status === "failed") return batch;
     const status = await this.chain.executeBatch(batch as PreparedSettlementBatch);
     const updated = {...batch, status, updated_at: new Date().toISOString()};
+    assertTerminalTransactionEvidence(updated);
     await this.ledger.updateBatch(recordId, updated);
     return updated;
   }
