@@ -45,6 +45,31 @@ if [[ "${VOX_DEPLOY_HOSTING:-false}" == "true" && ! -f apps/web/dist/index.html 
   exit 2
 fi
 
+PENDING_CANDIDATE_SERVICES=()
+cleanup_candidate_tags() {
+  local exit_status="$1"
+  local service
+  for service in "${PENDING_CANDIDATE_SERVICES[@]-}"; do
+    if [[ -z "$service" ]]; then continue; fi
+    if ! gcloud run services update-traffic "$service" --remove-tags="$TAG" --region="$REGION" --project="$PROJECT_ID" >/dev/null; then
+      echo "Could not remove the failed candidate tag from $service." >&2
+      if [[ "$exit_status" -eq 0 ]]; then exit_status=1; fi
+    fi
+  done
+  exit "$exit_status"
+}
+trap 'cleanup_candidate_tags "$?"' EXIT
+
+candidate_promoted() {
+  local service="$1"
+  local index
+  for index in "${!PENDING_CANDIDATE_SERVICES[@]}"; do
+    if [[ "${PENDING_CANDIDATE_SERVICES[$index]}" == "$service" ]]; then
+      unset 'PENDING_CANDIDATE_SERVICES[index]'
+    fi
+  done
+}
+
 deploy_service_candidate() {
   local service="$1"
   local candidate_url="$2"
@@ -64,6 +89,7 @@ deploy_service_candidate() {
     fi
   fi
 
+  PENDING_CANDIDATE_SERVICES+=("$service")
   gcloud run deploy "$service" \
     --image="$IMAGE" \
     --region="$REGION" \
@@ -78,14 +104,20 @@ deploy_service_candidate() {
     echo "Cloud Run did not return a candidate revision for $service." >&2
     exit 1
   fi
+  gcloud run revisions describe "$revision" --region="$REGION" --project="$PROJECT_ID" --format=json | EXPECTED_REVISION="$revision" EXPECTED_IMAGE="$IMAGE" node --input-type=module -e '
+    let text = "";
+    for await (const chunk of process.stdin) text += chunk;
+    const revision = JSON.parse(text);
+    if (revision.metadata?.name !== process.env.EXPECTED_REVISION || revision.spec?.containers?.[0]?.image !== process.env.EXPECTED_IMAGE || !revision.status?.conditions?.some((entry) => entry.type === "Ready" && entry.status === "True")) throw new Error("Candidate revision is not ready with the reviewed immutable image");
+  '
 
   local url
-  url="$(gcloud run services describe "$service" --region="$REGION" --project="$PROJECT_ID" --format=json | SERVICE_TAG="$TAG" node --input-type=module -e '
+  url="$(gcloud run services describe "$service" --region="$REGION" --project="$PROJECT_ID" --format=json | SERVICE_TAG="$TAG" EXPECTED_REVISION="$revision" node --input-type=module -e '
     let text = "";
     for await (const chunk of process.stdin) text += chunk;
     const service = JSON.parse(text);
     const tagged = (service.status?.traffic ?? []).find((entry) => entry.tag === process.env.SERVICE_TAG);
-    if (tagged?.url) process.stdout.write(tagged.url);
+    if (tagged?.url && tagged.revisionName === process.env.EXPECTED_REVISION) process.stdout.write(tagged.url);
   ')"
   if [[ "$url" != https://*.run.app ]]; then
     echo "Could not resolve the no-traffic candidate URL for $service." >&2
@@ -106,6 +138,7 @@ deploy_service_candidate() {
 
   gcloud run services update-traffic "$service" \
     --to-revisions="${revision}=100" \
+    --clear-tags \
     --region="$REGION" \
     --project="$PROJECT_ID"
 
@@ -115,13 +148,14 @@ deploy_service_candidate() {
     for await (const chunk of process.stdin) text += chunk;
     const service = JSON.parse(text);
     const target = (service.status?.traffic ?? []).find((entry) => entry.revisionName === process.env.EXPECTED_REVISION);
-    if (target?.percent === 100) process.stdout.write("ok");
+    if (target?.percent === 100 && !(service.status?.traffic ?? []).some((entry) => entry.tag)) process.stdout.write("ok");
   ')"
   if [[ "$traffic" != "ok" ]]; then
-    echo "Cloud Run did not route 100% of $service traffic to $revision." >&2
+    echo "Cloud Run did not route all $service traffic to the reviewed revision with obsolete tag URLs removed." >&2
     exit 1
   fi
-  echo "$service is serving $revision (image $IMAGE). Previous revisions were retained."
+  candidate_promoted "$service"
+  echo "$service is serving $revision (image $IMAGE). Previous revisions retained for rollback; their tagged URLs were removed."
 }
 
 # The workflow provisions indexes with a separate index identity, then
@@ -153,13 +187,9 @@ if [[ "${VOX_DEPLOY_API:-false}" == "true" ]]; then
   deploy_service_candidate "$API_SERVICE" api
 fi
 if [[ "${VOX_DEPLOY_ANCHOR:-false}" == "true" ]]; then
-  gcloud run deploy "$ANCHOR_SERVICE" \
-    --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID" \
-    --platform=managed --no-traffic --tag="$TAG"
-  revision="$(gcloud run services describe "$ANCHOR_SERVICE" --region="$REGION" --project="$PROJECT_ID" --format='value(status.latestCreatedRevisionName)')"
-  if [[ -z "$revision" ]]; then echo "Cloud Run did not return an anchor candidate revision." >&2; exit 1; fi
-  gcloud run services update-traffic "$ANCHOR_SERVICE" --to-revisions="${revision}=100" --region="$REGION" --project="$PROJECT_ID"
-  echo "$ANCHOR_SERVICE is serving $revision (image $IMAGE). Previous revisions were retained."
+  # The worker has no read-only HTTP health route. Verify Cloud Run readiness
+  # and the pinned image, without invoking /run or creating an anchor transaction.
+  deploy_service_candidate "$ANCHOR_SERVICE" anchor
 fi
 if [[ "${VOX_DEPLOY_HOSTING:-false}" == "true" ]]; then
   npx --yes firebase-tools@15.24.0 deploy \
