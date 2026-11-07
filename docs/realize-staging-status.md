@@ -14,6 +14,9 @@ historical snapshots and may describe superseded deployment states.
   and two `DRAFT`. None has a verified Mainnet funding receipt. There is no
   existing completed paid commission from which to attest the full production
   payment, provider output, and settlement flow.
+  The [read-only evidence checker](../scripts/verify-realize-mainnet.ts) was run
+  against an existing unpaid draft and returned `incomplete` for all five
+  acceptance stages, without a provider-token read or a financial request.
 - At finalized Monad block 120223720, the existing collection's owner and
   minter both match `0xafac2571572aa858da801b5c8ed38009c555a4c6`, and
   `nextTokenId()` is 1. Its runtime code Keccak-256 is

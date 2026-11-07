@@ -146,9 +146,43 @@ describe("cross-chain NFT entitlements", () => {
     const media = await paidMainnetMedia(service, store, {...input(), owner_wallets: {monad: evmWallet(16).address}});
     const mint = (await store.listNftMintsForMedia(media.media_id))[0]!;
     await store.updateNftMint({...mint, state, asset_address: oldContract, transaction_id: tx, signed_transaction: "0x02", nonce: "1"}, mint.updated_at);
+    const disabled = new NftMintService({publicBaseUrl: "https://vox.example.test", adapters: []});
+    expect(await disabled.processPending(store)).toMatchObject([{mint_id: mint.mint_id, state}]);
+    const paused = (await store.getNftMint(mint.mint_id))!;
+    await store.updateNftMint({...paused, next_attempt_at: "1970-01-01T00:00:00.000Z"}, paused.updated_at);
     expect(await service.processPending(store)).toMatchObject([{mint_id: mint.mint_id, state: "manual_review"}]);
     expect(await store.getNftMint(mint.mint_id)).toMatchObject({state: "manual_review", asset_address: oldContract, transaction_id: tx, signed_transaction: "0x02", nonce: "1", last_error: expect.stringContaining("configured collection and chain")});
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each(["queued", "signing", "retryable_failure"] as const)("does not replace durable old-collection evidence hidden in %s state", async (state) => {
+    const fetcher = vi.fn(async () => { throw new Error("old-collection evidence must not reach RPC"); });
+    const evm = new EvmNftAdapter({chain: "monad:testnet", rpcUrl: "https://rpc.example.test", chainId: 10143, contractAddress: `0x${"2".repeat(40)}`, privateKey: new Uint8Array(32).fill(15), explorerBaseUrl: "https://explorer.example.test", fetcher});
+    const prepare = vi.spyOn(evm, "prepare");
+    const store = new MemoryStore();
+    const service = new NftMintService({publicBaseUrl: "https://vox.example.test", adapters: [evm]});
+    const media = await service.ensureMedia(store, {...input(), owner_wallets: {monad: evmWallet(16).address}});
+    const mint = (await store.listNftMintsForMedia(media.media_id))[0]!;
+    await store.updateNftMint({...mint, state, asset_address: `0x${"1".repeat(40)}`, transaction_id: "old-tx", signed_transaction: "old-bytes"}, mint.updated_at);
+    expect(await service.processPending(store)).toMatchObject([{state: "manual_review"}]);
+    expect(await store.getNftMint(mint.mint_id)).toMatchObject({transaction_id: "old-tx", signed_transaction: "old-bytes", asset_address: `0x${"1".repeat(40)}`});
+    expect(prepare).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("requires a freshly proven execution failure before replacing signed evidence (proven=%s)", async (proven) => {
+    const chain = adapter("monad:testnet");
+    const prepare = vi.spyOn(chain, "prepare");
+    const reconcile = vi.spyOn(chain, "reconcile").mockImplementation(async () => ({state: "retryable_failure", error: "prior execution failed", ...(proven ? {execution_failed: true as const} : {})}));
+    const store = new MemoryStore();
+    const service = new NftMintService({publicBaseUrl: "https://vox.example.test", adapters: [chain]});
+    const media = await service.ensureMedia(store, {...input(), owner_wallets: {monad: evmWallet(16).address}});
+    const mint = (await store.listNftMintsForMedia(media.media_id))[0]!;
+    await store.updateNftMint({...mint, state: "retryable_failure", transaction_id: "old-tx", signed_transaction: "old-bytes"}, mint.updated_at);
+    expect(await service.processPending(store)).toMatchObject([{state: proven ? "finalized" : "manual_review"}]);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(prepare).toHaveBeenCalledTimes(proven ? 1 : 0);
+    if (!proven) expect(await store.getNftMint(mint.mint_id)).toMatchObject({transaction_id: "old-tx", signed_transaction: "old-bytes"});
   });
 
   it("fails closed for stored EVM transactions without a collection binding", async () => {
