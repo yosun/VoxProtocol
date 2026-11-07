@@ -83,7 +83,10 @@ provider billing count, wallet UX, or refund recovery. A provider capabilities
 preflight, healthy deployment, passing mocked checkout, or the offline
 [regression fixtures](../tests/realize-mainnet-evidence.test.ts) cannot produce
 live acceptance. The helper deliberately labels complete fixtures only
-`evidence-complete`; live labels belong to the production CLI readers. Exact
-duplicate transfers in a batch can be conservatively rejected by the shared
-transfer verifier and require manual receipt reconciliation. No historical
-record or signed transaction is rewritten to make the check pass.
+`evidence-complete`; live labels belong to the production CLI readers. Repeated
+external destination-and-amount pairs within one batch always report
+`incomplete` before individual payout lookups. A single actual transfer must
+never satisfy two expected payout rows. Even correctly executed duplicate
+transfers require manual receipt multiplicity reconciliation until the reader
+supports a consumed batch-level multiset. No historical record or signed
+transaction is rewritten to make the check pass.

@@ -1,7 +1,9 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {createHash} from "node:crypto";
 import {spawnSync} from "node:child_process";
-import {Keypair} from "@solana/web3.js";
+import {Connection, Keypair, PublicKey, type ParsedTransactionWithMeta} from "@solana/web3.js";
+import {getAssociatedTokenAddressSync} from "@solana/spl-token";
+import {MEMO_PROGRAM_ID, TOKEN_PROGRAM_ID, verifyFinalizedUsdcTransfer} from "@vox/solana";
 import {MAINNET_USDC_MINT} from "@vox/realize-solana";
 import {
   canonicalize, bytesToHex, domainHash, generateKeyPair, publicKeyBase64, signProvenanceRecord, utf8,
@@ -25,7 +27,7 @@ const after = "2026-11-07T12:00:10.000Z";
 
 /** Everything here is an offline fixture. No wallet, cloud, RPC or provider is
  * contacted; complete fixtures deliberately receive no live acceptance label. */
-function evidenceFixture(externalOwner = false, allExternal = false) {
+function evidenceFixture(externalOwner = false, allExternal = false, duplicateProviderPayout = false) {
   const issuer = generateKeyPair(new Uint8Array(32).fill(74));
   const issuerId = "instance:evidence-test";
   const issuerPublicKey = publicKeyBase64(issuer.publicKey);
@@ -40,7 +42,9 @@ function evidenceFixture(externalOwner = false, allExternal = false) {
     rights_subject_id: `vox:creator:${creatorId}`, rights_agreement_hash: "a".repeat(64), rights_policy_mode: "first_party",
     usdc_mint: MAINNET_USDC_MINT, network_id: "solana:mainnet-beta", settlement_program_version: "spl-usdc-mainnet-v1",
     funding_destination_token_account: PRODUCTION_REALIZE_TREASURY_ATA, mainnet_pricing_policy: DEFAULT_MAINNET_PRICING_POLICY,
-    provider_payouts: [{provider_id: "provider:evidence-test", recipients: [{recipient_id: "provider:evidence-test", destination: allExternal ? owner : PRODUCTION_REALIZE_TREASURY, basis_points: 10_000}]}],
+    provider_payouts: [{provider_id: "provider:evidence-test", recipients: duplicateProviderPayout
+      ? [{recipient_id: "provider:split:a", destination: owner, basis_points: 5_000}, {recipient_id: "provider:split:b", destination: owner, basis_points: 5_000}]
+      : [{recipient_id: "provider:evidence-test", destination: allExternal ? owner : PRODUCTION_REALIZE_TREASURY, basis_points: 10_000}]}],
     character_owner_id: creatorId,
     character_owner_markup: {fee: {}, recipients: [{recipient_id: creatorId, destination: owner, basis_points: 10_000}]},
     platform_fee: {fee: {}, recipients: [{recipient_id: "vox:platform", destination: allExternal ? owner : PRODUCTION_REALIZE_TREASURY, basis_points: 10_000}]}, additional_beneficiaries: []
@@ -143,6 +147,45 @@ describe("read-only Mainnet acceptance evidence", () => {
     expect((await verifyRealizeMainnetEvidence(fixture.documents, fixture.trust, fixture.readers)).status).toBe("incomplete");
   });
 
+  it.each([1, 2])("rejects repeated expected payout rows before individual verification even when the receipt contains %i matching transfer(s)", async (identicalTransferCount) => {
+    const fixture = evidenceFixture(true, true, true);
+    const record = fixture.documents.record!;
+    const instruction = record.settlement_instruction!;
+    const batch = fixture.documents.batches![0]!;
+    const repeated = instruction.payout_recipients.filter((payout) => payout.amount_usdc_atomic === "125000");
+    expect(repeated).toHaveLength(2);
+    expect(repeated[0]!.payout_id).not.toBe(repeated[1]!.payout_id);
+    expect(repeated[0]!.destination).toBe(repeated[1]!.destination);
+    const treasury = new PublicKey(PRODUCTION_REALIZE_TREASURY);
+    const source = new PublicKey(PRODUCTION_REALIZE_TREASURY_ATA);
+    const destination = getAssociatedTokenAddressSync(new PublicKey(MAINNET_USDC_MINT), new PublicKey(repeated[0]!.destination!.slice("solana:mainnet-beta:".length)));
+    const memo = "vox:realize:treasury:v1:" + sha256(JSON.stringify([instruction.settlement_id, batch.batch_index, batch.attempt_number ?? 1]));
+    let identicalSeen = 0;
+    const actualTransfers = instruction.payout_recipients.filter((payout) => payout.amount_usdc_atomic !== "125000" || identicalSeen++ < identicalTransferCount);
+    const transaction: ParsedTransactionWithMeta = {
+      slot: 123, blockTime: Date.parse(after) / 1_000,
+      meta: {err: null, fee: 5_000, preBalances: [1, 1, 1], postBalances: [1, 1, 1], innerInstructions: [],
+        preTokenBalances: [{accountIndex: 1, mint: MAINNET_USDC_MINT, owner: PRODUCTION_REALIZE_TREASURY, programId: TOKEN_PROGRAM_ID.toBase58(), uiTokenAmount: {amount: "1000000", decimals: 6, uiAmount: 1}}]},
+      transaction: {signatures: [batch.transaction_signature!], message: {
+        accountKeys: [treasury, source, destination].map((pubkey, index) => ({pubkey, signer: index === 0, writable: true})), recentBlockhash: treasury.toBase58(),
+        instructions: [...actualTransfers.map((payout) => ({program: "spl-token", programId: TOKEN_PROGRAM_ID, parsed: {type: "transferChecked", info: {source: source.toBase58(), destination: destination.toBase58(), mint: MAINNET_USDC_MINT, authority: PRODUCTION_REALIZE_TREASURY, tokenAmount: {amount: payout.amount_usdc_atomic, decimals: 6}}}})), {program: "spl-memo", programId: MEMO_PROGRAM_ID, parsed: memo}]
+      }}
+    };
+    vi.spyOn(Connection.prototype, "getGenesisHash").mockResolvedValue("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d");
+    const rpcRead = vi.spyOn(Connection.prototype, "getParsedTransaction").mockResolvedValue(transaction);
+    const verifyRow = (amount: string) => verifyFinalizedUsdcTransfer({rpc_url: "https://rpc.example.test", transaction_signature: batch.transaction_signature!, network_id: "solana:mainnet-beta", usdc_mint: MAINNET_USDC_MINT, destination_token_account: destination.toBase58(), source_token_account: PRODUCTION_REALIZE_TREASURY_ATA, amount_atomic: amount, payer_address: PRODUCTION_REALIZE_TREASURY, payment_reference: memo});
+    // One real instruction independently passes both equal row lookups. Two
+    // actual equal instructions are ambiguous to this single-transfer verifier.
+    for (const payout of repeated) expect((await verifyRow(payout.amount_usdc_atomic)).matched).toBe(identicalTransferCount === 1);
+    fixture.readers.verifyPayout = vi.fn(async (_batch, payout) => (await verifyRow(payout.amount_usdc_atomic)).matched);
+    rpcRead.mockClear();
+    const report = await verifyRealizeMainnetEvidence(fixture.documents, fixture.trust, fixture.readers);
+    expect(report.status).toBe("incomplete");
+    expect(report.checks.find((check) => check.stage === "settlement_and_treasury_liabilities")).toMatchObject({status: "incomplete", reason: "Repeated external destination and amount within a batch require manual receipt multiplicity verification."});
+    expect(fixture.readers.verifyPayout).not.toHaveBeenCalled();
+    expect(rpcRead).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["missing funding replay claim", (documents: RealizeEvidenceDocuments) => { delete documents.funding_claim; }],
     ["changed payer", (documents: RealizeEvidenceDocuments) => { documents.record!.payer_wallet = Keypair.generate().publicKey.toBase58(); }],
@@ -241,9 +284,9 @@ describe("read-only Mainnet acceptance evidence", () => {
 
   it("rejects the Firestore emulator before accessing live evidence and emits only an incomplete result", () => {
     const result = spawnSync(process.execPath, ["--import", "tsx", "scripts/verify-realize-mainnet.ts", "--commission-id", "c", "--issuer-id", "i", "--issuer-public-key", "k"], {
-      cwd: new URL("..", import.meta.url), encoding: "utf8", env: {...process.env, FIRESTORE_EMULATOR_HOST: "127.0.0.1:9999"}
+      cwd: new URL("..", import.meta.url), encoding: "utf8", timeout: 25_000, env: {...process.env, FIRESTORE_EMULATOR_HOST: "127.0.0.1:9999"}
     });
     expect(result.status).toBe(1);
     expect(JSON.parse(result.stdout)).toMatchObject({status: "incomplete", reason: "An emulator cannot supply live Mainnet evidence."});
-  });
+  }, 30_000);
 });

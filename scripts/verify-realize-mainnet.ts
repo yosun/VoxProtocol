@@ -153,6 +153,12 @@ export async function verifyRealizeMainnetEvidence(documents: RealizeEvidenceDoc
     const externalPlans = instruction.transaction_batches.map((plan) => ({...plan, payouts: external.filter((payout) => plan.payout_ids.includes(payout.payout_id))})).filter((plan) => plan.payouts.length > 0);
     requireEvidence(batches.length === externalPlans.length, "Every external batch must be present exactly once; treasury holds cannot supply payout evidence.");
     for (const plan of externalPlans) {
+      // Individual transfer lookups cannot establish multiplicity: one actual
+      // instruction would otherwise satisfy two expected equal payout rows.
+      // Until the reader consumes a batch-level multiset, reject that shape
+      // before any row lookup, even when both transfers really did execute.
+      requireEvidence(new Set(plan.payouts.map((payout) => JSON.stringify([payout.destination, payout.amount_usdc_atomic]))).size === plan.payouts.length,
+        "Repeated external destination and amount within a batch require manual receipt multiplicity verification.");
       const matches = batches.filter((batch) => batch.batch_index === plan.transaction_index);
       const batch = matches[0];
       requireEvidence(matches.length === 1 && batch && batch.status === "finalized" && batch.transaction_signature && batch.transaction_signature !== record.funding_signature && !signatures.has(batch.transaction_signature) && same(batch.payout_ids, plan.payouts.map((payout) => payout.payout_id)) && batch.amount_usdc_atomic === plan.payouts.reduce((sum, payout) => sum + BigInt(payout.amount_usdc_atomic), 0n).toString(),
