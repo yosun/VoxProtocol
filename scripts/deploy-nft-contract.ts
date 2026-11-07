@@ -1,114 +1,81 @@
-import {readFileSync} from "node:fs";
-import {createHash} from "node:crypto";
-import {secp256k1} from "@noble/curves/secp256k1";
-import {keccak_256} from "@noble/hashes/sha3.js";
+/** Monad collection replacement: explicit read-only plan; offline signature and exact approval are required to broadcast. */
+import {execFileSync} from "node:child_process";
+import {existsSync, mkdtempSync, readFileSync, rmSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {resolve} from "node:path";
+import {compileBinding, MONAD, planHash, preflightApply, prepareMigration, validateManifest, validatePlan, validateSignedTransaction, verifyDeployment, decimal, type MigrationPlan, type Rpc} from "./lib/nft-contract-migration.js";
+import {persistSubmission, submitJournaledTransaction, writeNewJson, type SubmissionJournal} from "./lib/nft-migration-journal.js";
 
-type RlpValue = {bytes?: Uint8Array; list?: RlpValue[]};
-
-const rpcUrl = process.env.VOX_NFT_DEPLOY_RPC_URL?.trim();
-const expectedChainId = Number.parseInt(process.env.VOX_NFT_DEPLOY_CHAIN_ID ?? "", 10);
-const chain = process.env.VOX_NFT_DEPLOY_CHAIN?.trim() ?? "";
-const artifactPath = process.env.VOX_NFT_DEPLOY_ARTIFACT?.trim() || ".vox-local/forge-out/VoxMediaNFT.sol/VoxMediaNFT.json";
-const collectionName = process.env.VOX_NFT_DEPLOY_COLLECTION_NAME ?? "VOX Media";
-const collectionSymbol = process.env.VOX_NFT_DEPLOY_COLLECTION_SYMBOL ?? "VOX";
-const explorerBaseUrl = (process.env.VOX_NFT_DEPLOY_EXPLORER_URL ?? "").replace(/\/+$/, "");
-const maxGas = BigInt(process.env.VOX_NFT_DEPLOY_MAX_GAS ?? "3000000");
-const confirmations = Number.parseInt(process.env.VOX_NFT_DEPLOY_CONFIRMATIONS ?? "12", 10);
-if (process.env.VOX_NFT_DEPLOY_CONFIRM !== "1" || !rpcUrl || !Number.isInteger(expectedChainId) || expectedChainId <= 0 || !chain || !explorerBaseUrl || !Number.isInteger(confirmations) || confirmations < 1 || confirmations > 256) throw new Error("Mainnet NFT deployment requires explicit confirmation, RPC, chain ID, chain, explorer, and confirmation settings");
-const rpc = new URL(rpcUrl);
-if (rpc.protocol !== "https:" || rpc.username || rpc.password || rpc.search || rpc.hash) throw new Error("deployment RPC must be a clean HTTPS URL");
-
-function bytesToHex(bytes: Uint8Array): string { return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(""); }
-function hexToBytes(value: string): Uint8Array {
-  const normalized = value.replace(/^0x/, "");
-  if (!/^[0-9a-fA-F]*$/.test(normalized) || normalized.length % 2 !== 0) throw new Error("hex value is invalid");
-  const result = new Uint8Array(normalized.length / 2);
-  for (let index = 0; index < result.length; index += 1) result[index] = Number.parseInt(normalized.slice(index * 2, index * 2 + 2), 16);
-  return result;
+function usage(): never {
+  throw new Error("Usage: tsx scripts/deploy-nft-contract.ts plan --rpc <https-url> --plan <new.json> --max-gas <integer> --max-fee-per-gas-wei <integer> --max-priority-fee-per-gas-wei <integer> --max-total-fee-wei <integer> --minimum-remaining-balance-wei <integer> [--confirmations 12] [--lifetime-seconds 900]\napply --rpc <https-url> --plan <json> --approve-plan-sha256 <digest> --signed-transaction <public-raw-hex-file> --journal <new-or-matching.json>\nverify --rpc <https-url> --plan <json> --journal <json>\nNo private key is accepted. No command changes production configuration or existing NFTs.");
 }
-function bigintBytes(value: bigint): Uint8Array {
-  if (value === 0n) return new Uint8Array();
-  const result: number[] = [];
-  let current = value;
-  while (current > 0n) { result.push(Number(current & 0xffn)); current >>= 8n; }
-  result.reverse();
-  return Uint8Array.from(result);
+const mode = process.argv[2];
+if (mode !== "plan" && mode !== "apply" && mode !== "verify") usage();
+const args = new Map<string, string>();
+for (let index = 3; index < process.argv.length; index += 2) {
+  const key = process.argv[index]!; const value = process.argv[index + 1];
+  if (!key.startsWith("--") || !value || value.startsWith("--") || args.has(key)) usage();
+  args.set(key, value);
 }
-function rlpBytes(value: Uint8Array): Uint8Array {
-  if (value.length === 1 && value[0]! < 0x80) return value;
-  if (value.length <= 55) return Uint8Array.from([0x80 + value.length, ...value]);
-  const length = bigintBytes(BigInt(value.length));
-  return Uint8Array.from([0xb7 + length.length, ...length, ...value]);
-}
-function rlpList(values: RlpValue[]): Uint8Array {
-  const payload = Uint8Array.from(values.flatMap((value) => value.list ? [...rlpList(value.list)] : [...rlpBytes(value.bytes ?? new Uint8Array())]));
-  if (payload.length <= 55) return Uint8Array.from([0xc0 + payload.length, ...payload]);
-  const length = bigintBytes(BigInt(payload.length));
-  return Uint8Array.from([0xf7 + length.length, ...length, ...payload]);
-}
-function rlpBigint(value: bigint): RlpValue { return {bytes: bigintBytes(value)}; }
-function rlpHex(value: string): RlpValue { return {bytes: hexToBytes(value)}; }
-function pad32(bytes: Uint8Array): Uint8Array { if (bytes.length > 32) throw new Error("ABI value exceeds 32 bytes"); return Uint8Array.from([...new Array<number>(32 - bytes.length).fill(0), ...bytes]); }
-function abiString(value: string): Uint8Array {
-  const bytes = new TextEncoder().encode(value);
-  return Uint8Array.from([...pad32(bigintBytes(BigInt(bytes.length))), ...bytes, ...new Array<number>((32 - bytes.length % 32) % 32).fill(0)]);
-}
-function constructorData(bytecode: string, name: string, symbol: string, minter: string): string {
-  const encodedName = abiString(name);
-  const encodedSymbol = abiString(symbol);
-  const head = Uint8Array.from([...pad32(bigintBytes(96n)), ...pad32(bigintBytes(BigInt(96 + encodedName.length))), ...pad32(hexToBytes(minter))]);
-  return `0x${bytesToHex(Uint8Array.from([...hexToBytes(bytecode), ...head, ...encodedName, ...encodedSymbol]))}`;
-}
-function addressFromPrivateKey(privateKey: Uint8Array): string { return `0x${bytesToHex(keccak_256(secp256k1.getPublicKey(privateKey, false).slice(1)).slice(-20))}`; }
-function createAddress(sender: string, nonce: bigint): string { return `0x${bytesToHex(keccak_256(rlpList([rlpHex(sender), rlpBigint(nonce)])).slice(-20))}`; }
-async function rpcCall(method: string, params: unknown[]): Promise<unknown> {
-  const response = await fetch(rpc.href, {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({jsonrpc: "2.0", id: 1, method, params})});
-  if (!response.ok) throw new Error(`RPC returned HTTP ${response.status}`);
-  const payload = await response.json() as {result?: unknown; error?: {message?: string}};
-  if (payload.error) throw new Error(payload.error.message ?? `RPC ${method} failed`);
+const common = ["--rpc", "--plan"];
+const modeArgs = mode === "plan" ? ["--max-gas", "--max-fee-per-gas-wei", "--max-priority-fee-per-gas-wei", "--max-total-fee-wei", "--minimum-remaining-balance-wei", "--confirmations", "--lifetime-seconds"] : mode === "apply" ? ["--approve-plan-sha256", "--signed-transaction", "--journal"] : ["--journal"];
+for (const key of args.keys()) if (![...common, ...modeArgs].includes(key)) usage();
+function required(name: string): string { const value = args.get(name); if (!value) usage(); return value; }
+const rpcUrl = new URL(required("--rpc"));
+if (rpcUrl.protocol !== "https:" || rpcUrl.username || rpcUrl.password || rpcUrl.search || rpcUrl.hash) throw new Error("RPC must be a clean HTTPS URL without credentials or query parameters");
+let requestId = 0;
+const rpc: Rpc = async (method, params) => {
+  const id = ++requestId;
+  const response = await fetch(rpcUrl, {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({jsonrpc: "2.0", id, method, params}), signal: AbortSignal.timeout(20_000), redirect: "error"});
+  if (!response.ok) throw new Error(`RPC ${method} returned HTTP ${response.status}`);
+  const payload = await response.json() as {jsonrpc?: string; id?: number; result?: unknown; error?: unknown};
+  if (payload.jsonrpc !== "2.0" || payload.id !== id || payload.error || !("result" in payload)) throw new Error(`RPC ${method} returned an invalid/error response`);
   return payload.result;
+};
+const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {encoding: "utf8"}).trim();
+const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], {cwd: root, encoding: "utf8"}).trim();
+execFileSync("git", ["diff", "--exit-code", "HEAD", "--", "contracts/VoxMediaNFT.sol", "deployments/nft-mainnet.json"], {cwd: root, stdio: "pipe"});
+const manifestSha = validateManifest(readFileSync(resolve(root, "deployments/nft-mainnet.json"), "utf8"));
+// Rebuild in a fresh directory so a stale or hand-edited cached artifact cannot be approved or applied.
+const scratch = mkdtempSync(resolve(tmpdir(), "vox-nft-migration-"));
+let compiled;
+try {
+  execFileSync("forge", ["build", "--root", root, "--contracts", "contracts", "--use", "0.8.33", "--evm-version", "cancun", "--out", resolve(scratch, "out"), "--cache-path", resolve(scratch, "cache"), "--offline", "--force"], {cwd: root, stdio: "pipe"});
+  compiled = compileBinding(readFileSync(resolve(root, "contracts/VoxMediaNFT.sol"), "utf8"), JSON.parse(readFileSync(resolve(scratch, "out/VoxMediaNFT.sol/VoxMediaNFT.json"), "utf8")));
+} finally { rmSync(scratch, {recursive: true, force: true}); }
+const planPath = resolve(required("--plan"));
+if (mode === "plan") {
+  const plan = await prepareMigration(rpc, compiled, manifestSha, sourceCommit, {
+    gasCap: decimal(required("--max-gas"), "gas cap"),
+    maxFeePerGas: decimal(required("--max-fee-per-gas-wei"), "max fee"),
+    maxPriorityFeePerGas: decimal(required("--max-priority-fee-per-gas-wei"), "priority fee"),
+    maxTotalFee: decimal(required("--max-total-fee-wei"), "total fee"),
+    minimumRemainingBalance: decimal(required("--minimum-remaining-balance-wei"), "reserve"),
+    confirmations: Number(args.get("--confirmations") ?? "12"), lifetimeSeconds: Number(args.get("--lifetime-seconds") ?? "900"),
+  });
+  writeNewJson(planPath, plan);
+  console.log(JSON.stringify({mode, plan_path: planPath, plan_sha256: plan.plan_sha256, chain: plan.chain, chain_id: plan.chain_id, existing_contract: plan.existing_contract, preserved_owner_and_minter: plan.preserved_owner, existing_next_token_id: plan.existing_next_token_id, predicted_contract: plan.predicted_contract, deployer: MONAD.owner, nonce: plan.transaction.nonce, value_native_wei: "0", gas_estimate: plan.estimated_gas, gas_limit: plan.transaction.gas, maximum_fee_native_wei: (BigInt(plan.transaction.gas) * BigInt(plan.transaction.maxFeePerGas)).toString(), proposed_total_fee_cap_wei: plan.max_total_fee_wei, minimum_remaining_balance_wei: plan.minimum_remaining_balance_wei, signing_digest: plan.signing_digest, expires_at: plan.expires_at, source_sha256: plan.artifact.source_sha256, runtime_sha256: plan.artifact.runtime_sha256, status: "unsigned_read_only_plan_requires_owner_transaction_approval"}, null, 2));
+} else {
+  const plan = JSON.parse(readFileSync(planPath, "utf8")) as MigrationPlan;
+  validatePlan(plan, compiled, manifestSha);
+  const journalPath = resolve(required("--journal"));
+  let journal: SubmissionJournal;
+  if (mode === "apply") {
+    if (required("--approve-plan-sha256") !== planHash(plan)) throw new Error("explicit approval must exactly match the reviewed plan SHA-256");
+    const raw = readFileSync(resolve(required("--signed-transaction")), "utf8").trim().toLowerCase();
+    const transactionHash = validateSignedTransaction(plan.transaction, MONAD.owner, raw);
+    journal = {schema: "vox-nft-contract-submission-v1", plan_sha256: plan.plan_sha256, transaction_hash: transactionHash, signed_transaction: raw};
+    // A conflicting journal stops even recovery; never silently replace evidence.
+    if (existsSync(journalPath)) persistSubmission(journalPath, journal);
+    await submitJournaledTransaction(rpc, journal, () => persistSubmission(journalPath, journal), () => preflightApply(rpc, plan));
+  } else {
+    journal = JSON.parse(readFileSync(journalPath, "utf8")) as typeof journal;
+    if (journal.schema !== "vox-nft-contract-submission-v1" || journal.plan_sha256 !== plan.plan_sha256 || validateSignedTransaction(plan.transaction, MONAD.owner, journal.signed_transaction) !== journal.transaction_hash) throw new Error("journal does not match the reviewed plan and signed transaction");
+  }
+  const result = await verifyDeployment(rpc, plan, journal.transaction_hash, compiled);
+  console.log(JSON.stringify({mode, plan_sha256: plan.plan_sha256, journal_path: journalPath, ...result, configuration_changed: false, historical_tokens_migrated: false}, null, 2));
+  if (result.state !== "finalized") {
+    console.error("Deployment is pending or lacks the required finalized-block depth. Keep the journal and run verify again; no success or cutover is implied.");
+    process.exitCode = 2;
+  }
 }
-function quantity(value: unknown, label: string): bigint { if (typeof value !== "string" || !/^0x[0-9a-f]+$/i.test(value)) throw new Error(`${label} RPC quantity is invalid`); return BigInt(value); }
-
-const secret = readFileSync(0, "utf8").trim();
-if (!/^[0-9a-fA-F]{64}$/.test(secret)) throw new Error("deployment signer input must be a 32-byte hex key");
-const privateKey = hexToBytes(secret);
-const signer = addressFromPrivateKey(privateKey);
-const artifact = JSON.parse(readFileSync(artifactPath, "utf8")) as {bytecode?: {object?: string}};
-const bytecode = artifact.bytecode?.object;
-if (!bytecode || !/^0x[0-9a-f]+$/i.test(bytecode)) throw new Error("compiled VoxMediaNFT bytecode is unavailable");
-const actualChainId = quantity(await rpcCall("eth_chainId", []), "chain ID");
-if (actualChainId !== BigInt(expectedChainId)) throw new Error(`RPC chain ID ${actualChainId} does not match configured ${expectedChainId}`);
-const nonce = quantity(await rpcCall("eth_getTransactionCount", [signer, "pending"]), "nonce");
-const priority = await rpcCall("eth_maxPriorityFeePerGas", []).then((value) => quantity(value, "priority fee")).catch(() => 1_000_000_000n);
-const gasPrice = quantity(await rpcCall("eth_gasPrice", []), "gas price");
-const maxPriorityFee = priority > gasPrice ? gasPrice : priority;
-const maxFee = gasPrice;
-const data = constructorData(bytecode, collectionName, collectionSymbol, signer);
-const estimatedGas = quantity(await rpcCall("eth_estimateGas", [{from: signer, data}]), "deployment gas");
-if (estimatedGas > maxGas) throw new Error(`deployment estimate ${estimatedGas} exceeds configured gas cap ${maxGas}`);
-const gasLimit = estimatedGas + estimatedGas / 10n;
-const unsigned = rlpList([rlpBigint(BigInt(expectedChainId)), rlpBigint(nonce), rlpBigint(maxPriorityFee), rlpBigint(maxFee), rlpBigint(gasLimit), rlpHex("0x"), rlpBigint(0n), rlpHex(data), {list: []}]);
-const digest = keccak_256(Uint8Array.from([2, ...unsigned]));
-const signature = secp256k1.sign(digest, privateKey, {lowS: true});
-const signed = rlpList([rlpBigint(BigInt(expectedChainId)), rlpBigint(nonce), rlpBigint(maxPriorityFee), rlpBigint(maxFee), rlpBigint(gasLimit), rlpHex("0x"), rlpBigint(0n), rlpHex(data), {list: []}, rlpBigint(BigInt(signature.recovery ?? 0)), rlpHex(`0x${bytesToHex(signature.toCompactRawBytes().slice(0, 32))}`), rlpHex(`0x${bytesToHex(signature.toCompactRawBytes().slice(32))}`)]);
-const raw = Uint8Array.from([2, ...signed]);
-const transactionHash = `0x${bytesToHex(keccak_256(raw))}`;
-const sent = await rpcCall("eth_sendRawTransaction", [`0x${bytesToHex(raw)}`]);
-if (typeof sent !== "string" || sent.toLowerCase() !== transactionHash.toLowerCase()) throw new Error("RPC returned a different deployment transaction hash");
-let receipt: {status?: unknown; contractAddress?: unknown; gasUsed?: unknown; effectiveGasPrice?: unknown; blockNumber?: unknown} | null = null;
-for (let attempt = 0; attempt < 120; attempt += 1) {
-  receipt = await rpcCall("eth_getTransactionReceipt", [transactionHash]) as typeof receipt;
-  if (receipt) break;
-  await new Promise((resolve) => setTimeout(resolve, 5_000));
-}
-if (!receipt || receipt.status !== "0x1" || typeof receipt.contractAddress !== "string") throw new Error("deployment did not finalize successfully");
-const deploymentBlock = quantity(receipt.blockNumber, "deployment block");
-for (let attempt = 0; attempt < 120; attempt += 1) {
-  const latest = quantity(await rpcCall("eth_blockNumber", []), "latest block");
-  if (latest + 1n - deploymentBlock >= BigInt(confirmations)) break;
-  await new Promise((resolve) => setTimeout(resolve, 5_000));
-}
-const gasUsed = quantity(receipt.gasUsed, "gas used");
-const effectiveGasPrice = quantity(receipt.effectiveGasPrice, "effective gas price");
-console.log(JSON.stringify({chain, chain_id: expectedChainId, signer, contract_address: receipt.contractAddress, transaction_hash: transactionHash, explorer_url: `${explorerBaseUrl}/tx/${transactionHash}`, gas_estimate: estimatedGas.toString(), gas_limit: gasLimit.toString(), gas_used: gasUsed.toString(), effective_gas_price_wei: effectiveGasPrice.toString(), fee_native_wei: (gasUsed * effectiveGasPrice).toString(), nonce: nonce.toString()}, null, 2));
