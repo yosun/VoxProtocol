@@ -1,5 +1,13 @@
 # Project memory
 
+## Learnings
+
+- `GET /v1/realize/commissions/:commissionId` is not a read-only audit route:
+  it can reconcile funding, submit provider fulfillment, settle, or refund.
+  For acceptance evidence or a financial status audit, read Firestore records
+  directly and use public health, provenance, artifact, and RPC reads; do not
+  poll that route unless its financial side effects are authorized.
+
 ## Agent batch releases
 
 - When the owner asks to handle multiple independent fixes together, split the
