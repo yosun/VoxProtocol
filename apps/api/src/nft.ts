@@ -778,6 +778,11 @@ export class EvmNftAdapter implements NftChainAdapter {
 
   private async observe(mint: NftMintRecord): Promise<NftChainObservation> {
     if (!mint.transaction_id) return {state: "manual_review", error: "EVM NFT transaction identity is missing"};
+    // A collection cutover must never rebroadcast a durable transaction for the
+    // preceding collection. Keep its original identity for operator review.
+    if (mint.chain !== this.chain || !mint.asset_address || !EVM_ADDRESS_PATTERN.test(mint.asset_address) || mint.asset_address.toLowerCase() !== this.contractAddress) {
+      return {state: "manual_review", error: "EVM NFT transaction is not bound to the configured collection and chain", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
+    }
     const receipt = await this.rpc("eth_getTransactionReceipt", [mint.transaction_id]);
     if (receipt === null) return {state: "submitted", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
     if (!receipt || typeof receipt !== "object") return {state: "manual_review", error: "EVM NFT receipt response is invalid", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
