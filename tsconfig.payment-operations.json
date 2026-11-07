@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": [
+    "scripts/deploy-nft-contract.ts",
+    "scripts/lib/nft-contract-migration.ts",
+    "scripts/lib/nft-migration-journal.ts",
+    "scripts/verify-realize-mainnet.ts"
+  ]
+}

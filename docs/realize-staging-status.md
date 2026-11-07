@@ -4,6 +4,37 @@ Verified 2026-10-12. This file contains public resource metadata only.
 The current production state is summarized first; later dated sections retain
 historical snapshots and may describe superseded deployment states.
 
+## Read-only completion preflight (2026-11-07)
+
+- Production `vox-api-00133-kej` receives 100% traffic. Mainnet Realize and
+  Monad NFT minting remain enabled; Monad chain ID 143 and the existing
+  collection `0x87ef9e71625878a0babeee7864fa7d96ed4e3571` are unchanged.
+  Public API health, hosted assets, and Bob's capabilities returned HTTP 200.
+- Direct read-only Firestore discovery returned 24 commissions: 22 `EXPIRED`
+  and two `DRAFT`. None has a verified Mainnet funding receipt. There is no
+  existing completed paid commission from which to attest the full production
+  payment, provider output, and settlement flow.
+  The [read-only evidence checker](../scripts/verify-realize-mainnet.ts) was run
+  against an existing unpaid draft and returned `incomplete` for all five
+  acceptance stages, without a provider-token read or a financial request.
+- At finalized Monad block 120223720, the existing collection's owner and
+  minter both match `0xafac2571572aa858da801b5c8ed38009c555a4c6`, and
+  `nextTokenId()` is 1. Its runtime code Keccak-256 is
+  `0xc035a0bc8dedf5e13e18f4dae32ce736d14ee19fca34f3a9359eb22b8c51968e`.
+  This public inventory does not change the non-upgradeable contract; a new
+  deployment and a protected configuration release are still required for its
+  corrected receiver implementation.
+- The CLI's interactive GCP credentials need reauthentication, but existing
+  application credentials permit read-only Firestore, Cloud Run metadata, and
+  Secret Manager entry discovery. No secret values were accessed. Keep those
+  metadata checks separate from signing-key or provider-token access.
+- Do not poll `GET /v1/realize/commissions/:commissionId` for a read-only
+  status check: that handler can reconcile funding and perform provider,
+  settlement, or refund work. Read the persisted records directly instead.
+- No quote, provider price reservation, payment, render, payout, refund, or
+  contract transaction was initiated during this preflight. The consumed
+  staging rehearsal approval is not reusable.
+
 ## Mainnet readiness preflight (2026-10-13, refreshed)
 
 - Current read-only discovery found production VOX routing 100% to

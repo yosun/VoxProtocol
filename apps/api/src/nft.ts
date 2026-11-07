@@ -69,7 +69,7 @@ type NftObservedTransaction = {transaction_id?: string; explorer_url?: string; t
 export type NftChainObservation =
   | ({state: "submitted"; next_attempt_at?: string} & NftObservedTransaction)
   | ({state: "finalized"} & NftObservedTransaction)
-  | ({state: "retryable_failure"; error: string} & NftObservedTransaction)
+  | ({state: "retryable_failure"; error: string; execution_failed?: true} & NftObservedTransaction)
   | ({state: "manual_review"; error: string} & NftObservedTransaction);
 
 export interface NftChainAdapter {
@@ -376,7 +376,9 @@ export class NftMintService {
         if (!claimed) continue;
         const adapter = this.adapters.find((item) => item.chain === claimed.chain);
         if (!adapter) {
-          const failed = clearLease({...claimed, state: "retryable_failure", last_error: "configured NFT chain adapter is unavailable", next_attempt_at: nextAttempt(claimed.attempts), updated_at: new Date().toISOString()});
+          const hasTransaction = !!(claimed.transaction_id || claimed.signed_transaction);
+          const state = claimed.state === "signed" || claimed.state === "submitted" ? claimed.state : hasTransaction ? "manual_review" : "retryable_failure";
+          const failed = clearLease({...claimed, state, last_error: "configured NFT chain adapter is unavailable", next_attempt_at: nextAttempt(claimed.attempts), updated_at: new Date().toISOString()});
           const saved = await store.updateNftMint(failed, claimed.updated_at).catch(() => failed);
           outcomes.push({mint_id: saved.mint_id, state: saved.state, ...(saved.last_error ? {error: saved.last_error} : {})});
           continue;
@@ -401,17 +403,25 @@ export class NftMintService {
           } else if (claimed.state === "submitted") {
             observation = await adapter.reconcile(claimed);
           } else {
-            if (!claimed.owner_wallet) {
-              const claimable = clearLease({...claimed, state: "claimable", updated_at: new Date().toISOString()});
-              const saved = await store.updateNftMint(claimable, claimed.updated_at);
-              outcomes.push({mint_id: saved.mint_id, state: saved.state});
-              continue;
+            // Older disabled-adapter and interrupted-retry records may carry
+            // durable bytes in a retryable/signing state. Recheck that exact
+            // transaction before permitting any replacement signature.
+            const prior = claimed.transaction_id || claimed.signed_transaction ? await adapter.reconcile(claimed) : undefined;
+            if (prior && !(prior.state === "retryable_failure" && prior.execution_failed === true)) {
+              observation = prior.state === "retryable_failure" ? {state: "manual_review", error: "NFT transaction failure is not proven; preserve its existing signed evidence", ...(claimed.transaction_id ? {transaction_id: claimed.transaction_id} : {})} : prior;
+            } else {
+              if (!claimed.owner_wallet) {
+                const claimable = clearLease({...claimed, state: "claimable", updated_at: new Date().toISOString()});
+                const saved = await store.updateNftMint(claimable, claimed.updated_at);
+                outcomes.push({mint_id: saved.mint_id, state: saved.state});
+                continue;
+              }
+              const prepared = await adapter.prepare({media, mint: claimed});
+              const signed = {...claimed, state: "signed" as const, transaction_id: prepared.transaction_id, ...(prepared.token_id ? {token_id: prepared.token_id} : {}), ...(prepared.asset_address ? {asset_address: prepared.asset_address} : {}), ...(prepared.explorer_url ? {explorer_url: prepared.explorer_url} : {}), signed_transaction: prepared.signed_transaction, ...(prepared.nonce ? {nonce: prepared.nonce} : {}), ...(prepared.blockhash ? {blockhash: prepared.blockhash} : {}), ...(prepared.last_valid_block_height === undefined ? {} : {last_valid_block_height: prepared.last_valid_block_height}), updated_at: new Date().toISOString()};
+              const stored = await store.updateNftMint(signed, claimed.updated_at);
+              observation = await adapter.submit(stored);
+              currentForObservation = stored;
             }
-            const prepared = await adapter.prepare({media, mint: claimed});
-            const signed = {...claimed, state: "signed" as const, transaction_id: prepared.transaction_id, ...(prepared.token_id ? {token_id: prepared.token_id} : {}), ...(prepared.asset_address ? {asset_address: prepared.asset_address} : {}), ...(prepared.explorer_url ? {explorer_url: prepared.explorer_url} : {}), signed_transaction: prepared.signed_transaction, ...(prepared.nonce ? {nonce: prepared.nonce} : {}), ...(prepared.blockhash ? {blockhash: prepared.blockhash} : {}), ...(prepared.last_valid_block_height === undefined ? {} : {last_valid_block_height: prepared.last_valid_block_height}), updated_at: new Date().toISOString()};
-            const stored = await store.updateNftMint(signed, claimed.updated_at);
-            observation = await adapter.submit(stored);
-            currentForObservation = stored;
           }
           const updated = this.applyObservation(currentForObservation, observation);
           const saved = await store.updateNftMint(updated, currentForObservation.updated_at).catch(async () => await store.getNftMint(currentForObservation.mint_id) ?? updated);
@@ -613,7 +623,7 @@ export class SolanaNftAdapter implements NftChainAdapter {
       if (mint.last_valid_block_height !== undefined && await this.connection.getBlockHeight("finalized") > mint.last_valid_block_height) return {state: "manual_review", error: "Solana NFT transaction blockhash expired without a resolvable result", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
       return {state: "submitted", transaction_id: mint.transaction_id, ...(mint.asset_address ? {asset_address: mint.asset_address} : {}), ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
     }
-    if (status.err && status.confirmationStatus === "finalized") return {state: "retryable_failure", error: `Solana NFT transaction failed: ${JSON.stringify(status.err)}`, transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
+    if (status.err && status.confirmationStatus === "finalized") return {state: "retryable_failure", execution_failed: true, error: `Solana NFT transaction failed: ${JSON.stringify(status.err)}`, transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
     if (status.confirmationStatus === "finalized") return {state: "finalized", transaction_id: mint.transaction_id, ...(mint.asset_address ? {asset_address: mint.asset_address} : {}), ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
     return {state: "submitted", transaction_id: mint.transaction_id, ...(mint.asset_address ? {asset_address: mint.asset_address} : {}), ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
   }
@@ -778,6 +788,11 @@ export class EvmNftAdapter implements NftChainAdapter {
 
   private async observe(mint: NftMintRecord): Promise<NftChainObservation> {
     if (!mint.transaction_id) return {state: "manual_review", error: "EVM NFT transaction identity is missing"};
+    // A collection cutover must never rebroadcast a durable transaction for the
+    // preceding collection. Keep its original identity for operator review.
+    if (mint.chain !== this.chain || !mint.asset_address || !EVM_ADDRESS_PATTERN.test(mint.asset_address) || mint.asset_address.toLowerCase() !== this.contractAddress) {
+      return {state: "manual_review", error: "EVM NFT transaction is not bound to the configured collection and chain", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
+    }
     const receipt = await this.rpc("eth_getTransactionReceipt", [mint.transaction_id]);
     if (receipt === null) return {state: "submitted", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
     if (!receipt || typeof receipt !== "object") return {state: "manual_review", error: "EVM NFT receipt response is invalid", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
@@ -787,7 +802,7 @@ export class EvmNftAdapter implements NftChainAdapter {
     const latest = parseRpcQuantity(await this.rpc("eth_blockNumber", []), "latest block");
     const confirmed = latest + 1n - blockNumber >= BigInt(this.confirmations);
     if (receiptObject.status === "0x0") return confirmed
-      ? {state: "retryable_failure", error: "EVM NFT transaction reverted", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})}
+      ? {state: "retryable_failure", execution_failed: true, error: "EVM NFT transaction reverted", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})}
       : {state: "submitted", transaction_id: mint.transaction_id, ...(mint.explorer_url ? {explorer_url: mint.explorer_url} : {})};
     if (receiptObject.status !== "0x1") return {state: "manual_review", error: "EVM NFT receipt status is invalid", transaction_id: mint.transaction_id};
     const tokenId = this.receiptTokenId(receiptObject.logs, mint.owner_wallet);

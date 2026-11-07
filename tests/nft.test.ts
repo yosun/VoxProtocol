@@ -129,10 +129,69 @@ describe("cross-chain NFT entitlements", () => {
       return new Response(JSON.stringify({result}), {status: 200});
     }) as typeof fetch;
     const chain = new EvmNftAdapter({chain: "monad:testnet", rpcUrl: "https://rpc.example.test", chainId: 10143, contractAddress: contract, privateKey: new Uint8Array(32).fill(15), confirmations: 12, explorerBaseUrl: "https://explorer.example.test", fetcher});
-    const mint = {transaction_id: tx, signed_transaction: "0x02"} as NftMintRecord;
+    const mint = {chain: "monad:testnet", asset_address: contract, transaction_id: tx, signed_transaction: "0x02"} as NftMintRecord;
     expect(await chain.reconcile(mint)).toMatchObject({state: "submitted", transaction_id: tx});
     latest = "0x6f";
     expect(await chain.reconcile(mint)).toMatchObject({state: "retryable_failure", transaction_id: tx});
+  });
+
+  it.each(["signed", "submitted"] as const)("holds a %s transaction for the preceding collection during contract rotation", async (state) => {
+    const oldContract = `0x${"1".repeat(40)}`;
+    const newContract = `0x${"2".repeat(40)}`;
+    const tx = `0x${"a".repeat(64)}`;
+    const fetcher = vi.fn(async () => { throw new Error("rotated transactions must not reach RPC"); });
+    const evm = new EvmNftAdapter({chain: "monad:mainnet", rpcUrl: "https://rpc.example.test", chainId: 143, contractAddress: newContract, privateKey: new Uint8Array(32).fill(15), explorerBaseUrl: "https://monadscan.com", fetcher});
+    const store = new MemoryStore();
+    const service = new NftMintService({publicBaseUrl: "https://vox.example.test", adapters: [evm]});
+    const media = await paidMainnetMedia(service, store, {...input(), owner_wallets: {monad: evmWallet(16).address}});
+    const mint = (await store.listNftMintsForMedia(media.media_id))[0]!;
+    await store.updateNftMint({...mint, state, asset_address: oldContract, transaction_id: tx, signed_transaction: "0x02", nonce: "1"}, mint.updated_at);
+    const disabled = new NftMintService({publicBaseUrl: "https://vox.example.test", adapters: []});
+    expect(await disabled.processPending(store)).toMatchObject([{mint_id: mint.mint_id, state}]);
+    const paused = (await store.getNftMint(mint.mint_id))!;
+    await store.updateNftMint({...paused, next_attempt_at: "1970-01-01T00:00:00.000Z"}, paused.updated_at);
+    expect(await service.processPending(store)).toMatchObject([{mint_id: mint.mint_id, state: "manual_review"}]);
+    expect(await store.getNftMint(mint.mint_id)).toMatchObject({state: "manual_review", asset_address: oldContract, transaction_id: tx, signed_transaction: "0x02", nonce: "1", last_error: expect.stringContaining("configured collection and chain")});
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each(["queued", "signing", "retryable_failure"] as const)("does not replace durable old-collection evidence hidden in %s state", async (state) => {
+    const fetcher = vi.fn(async () => { throw new Error("old-collection evidence must not reach RPC"); });
+    const evm = new EvmNftAdapter({chain: "monad:testnet", rpcUrl: "https://rpc.example.test", chainId: 10143, contractAddress: `0x${"2".repeat(40)}`, privateKey: new Uint8Array(32).fill(15), explorerBaseUrl: "https://explorer.example.test", fetcher});
+    const prepare = vi.spyOn(evm, "prepare");
+    const store = new MemoryStore();
+    const service = new NftMintService({publicBaseUrl: "https://vox.example.test", adapters: [evm]});
+    const media = await service.ensureMedia(store, {...input(), owner_wallets: {monad: evmWallet(16).address}});
+    const mint = (await store.listNftMintsForMedia(media.media_id))[0]!;
+    await store.updateNftMint({...mint, state, asset_address: `0x${"1".repeat(40)}`, transaction_id: "old-tx", signed_transaction: "old-bytes"}, mint.updated_at);
+    expect(await service.processPending(store)).toMatchObject([{state: "manual_review"}]);
+    expect(await store.getNftMint(mint.mint_id)).toMatchObject({transaction_id: "old-tx", signed_transaction: "old-bytes", asset_address: `0x${"1".repeat(40)}`});
+    expect(prepare).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("requires a freshly proven execution failure before replacing signed evidence (proven=%s)", async (proven) => {
+    const chain = adapter("monad:testnet");
+    const prepare = vi.spyOn(chain, "prepare");
+    const reconcile = vi.spyOn(chain, "reconcile").mockImplementation(async () => ({state: "retryable_failure", error: "prior execution failed", ...(proven ? {execution_failed: true as const} : {})}));
+    const store = new MemoryStore();
+    const service = new NftMintService({publicBaseUrl: "https://vox.example.test", adapters: [chain]});
+    const media = await service.ensureMedia(store, {...input(), owner_wallets: {monad: evmWallet(16).address}});
+    const mint = (await store.listNftMintsForMedia(media.media_id))[0]!;
+    await store.updateNftMint({...mint, state: "retryable_failure", transaction_id: "old-tx", signed_transaction: "old-bytes"}, mint.updated_at);
+    expect(await service.processPending(store)).toMatchObject([{state: proven ? "finalized" : "manual_review"}]);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(prepare).toHaveBeenCalledTimes(proven ? 1 : 0);
+    if (!proven) expect(await store.getNftMint(mint.mint_id)).toMatchObject({transaction_id: "old-tx", signed_transaction: "old-bytes"});
+  });
+
+  it("fails closed for stored EVM transactions without a collection binding", async () => {
+    const fetcher = vi.fn(async () => { throw new Error("unbound transactions must not reach RPC"); });
+    const evm = new EvmNftAdapter({chain: "monad:testnet", rpcUrl: "https://rpc.example.test", chainId: 10143, contractAddress: `0x${"1".repeat(40)}`, privateKey: new Uint8Array(32).fill(15), explorerBaseUrl: "https://explorer.example.test", fetcher});
+    const mint = {chain: "monad:testnet", transaction_id: `0x${"a".repeat(64)}`, signed_transaction: "0x02"} as NftMintRecord;
+    expect(await evm.submit(mint)).toMatchObject({state: "manual_review", transaction_id: mint.transaction_id});
+    expect(await evm.reconcile({...mint, chain: "base:sepolia", asset_address: `0x${"1".repeat(40)}`})).toMatchObject({state: "manual_review", transaction_id: mint.transaction_id});
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("rejects missing or declined public publication consent before creating an entitlement", async () => {
@@ -334,7 +393,7 @@ describe("cross-chain NFT entitlements", () => {
     const service = new NftMintService({publicBaseUrl: "https://vox.example.test", adapters: [evm]});
     const media = await paidMainnetMedia(service, store, input());
     const mint = (await store.listNftMintsForMedia(media.media_id))[0]!;
-    expect(await evm.reconcile({...mint, owner_wallet: evmWallet(16).address, transaction_id: tx})).toMatchObject({state: "manual_review"});
+    expect(await evm.reconcile({...mint, asset_address: contract, owner_wallet: evmWallet(16).address, transaction_id: tx})).toMatchObject({state: "manual_review", error: "EVM NFT receipt has no mint Transfer to the bound owner wallet"});
   });
 
   it("claims a completed output on Monad immediately and never mints again on replay", async () => {
@@ -402,6 +461,6 @@ describe("cross-chain NFT entitlements", () => {
     const service = new NftMintService({publicBaseUrl: "https://vox.example.test", adapters: [evm]});
     const media = await paidMainnetMedia(service, store, input());
     const mint = (await store.listNftMintsForMedia(media.media_id))[0]!;
-    expect(await evm.reconcile({...mint, owner_wallet: evmWallet(16).address, transaction_id: tx})).toMatchObject({state: "manual_review"});
+    expect(await evm.reconcile({...mint, asset_address: contract, owner_wallet: evmWallet(16).address, transaction_id: tx})).toMatchObject({state: "manual_review", error: "EVM NFT receipt has no mint Transfer to the bound owner wallet"});
   });
 });

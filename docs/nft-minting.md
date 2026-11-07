@@ -9,6 +9,7 @@ VOX creates one durable NFT entitlement per canonical media output and configure
 - The existing `vox-realize-reconcile` Cloud Run job processes NFT records through `/v1/internal/realize/reconcile`; no new service is required.
 - A walletless chain is stored as `claimable`, not failed. A later signed claim at `POST /v1/nft/mints/:mintId/claim` binds the wallet and queues that chain only.
 - A signed transaction is persisted before broadcast. A missing/expired transaction result enters `manual_review` rather than automatically creating a duplicate NFT.
+- Temporarily disabling an adapter preserves signed/submitted transaction state. Older retry records that still contain transaction evidence must recheck that same transaction; only a newly observed, confirmed execution failure permits replacement. A record bound to the preceding collection enters manual review after a collection change, with its signed bytes and transaction identity retained.
 - Mainnet adapter construction fails closed unless `VOX_NFT_MAINNET_ENABLED=true`, `VOX_CONFIRM_NFT_MAINNET=1`, and `VOX_DEPLOYMENT_ENV=production` are all present. The deployment script additionally requires the owner-approved RPC, contract, and dedicated Secret Manager signer entries.
 - Mainnet entitlements also require a persisted completed or settled Realize commission, explicit publication consent, verified Mainnet USDC funding bound to its accepted quote and payment intent, and the exact verified artifact and provenance. The deterministic media/output/chain identity permits one entitlement per output per chain. Legacy generation produces synthetic media and is restricted to testnet entitlements, including when testnet and Mainnet adapters are configured together.
 - The processor rechecks these bindings before preparing, submitting, or reconciling Mainnet transactions. Ineligible older or bypass-created entitlements enter `manual_review` without calling a chain adapter; any existing signature and signed bytes are retained for investigation.
@@ -63,8 +64,8 @@ forge test --root . --contracts contracts \
 The suite executes entirely inside Forge's local EVM. The collection is
 non-upgradeable: this source repair does not change any already deployed
 collection. Applying it on a live network requires checking the deployed bytecode
-and separately planning a new deployment or migration; this repair performs
-neither operation.
+and separately planning a new deployment or migration. The regression suite
+performs neither operation; use the explicit migration workflow below.
 
 ## Completed Realize outputs on Monad
 
@@ -99,3 +100,115 @@ verify the production payment/generation/settlement path.
 
 A production release and an authorized mint of an existing completed output to
 a customer-controlled Monad wallet are still needed for live Mainnet evidence.
+
+## Plan a corrected Monad collection
+
+The receiver fix requires a new collection. The existing collection remains at
+`0x87ef9e71625878a0babeee7864fa7d96ed4e3571` on Monad Mainnet (chain ID 143).
+Both its owner and minter must remain
+`0xafac2571572aa858da801b5c8ed38009c555a4c6`. Existing tokens cannot acquire the
+corrected runtime through an application release. A replacement collection starts
+its own token numbering; it does not move, burn, remint, or rewrite historical
+NFTs.
+
+[The deployment tool](../scripts/deploy-nft-contract.ts) now has three explicit
+modes. It accepts no private key, keystore, or Secret Manager value. The old
+stdin-key/immediate-broadcast interface is removed. A normal build, release, or
+`plan` invocation cannot submit a transaction.
+
+Prepare a plan from a clean contract/manifest checkout with Foundry and Solc
+0.8.33 already installed. Set the fee and reserve variables to explicit native
+wei limits for review (1 MON = 10^18 wei); the historical USD spending cap in
+[the deployment inventory](../deployments/nft-mainnet.json) is not authorization
+for this deployment.
+
+```sh
+npx tsx scripts/deploy-nft-contract.ts plan \
+  --rpc https://rpc.monad.xyz \
+  --plan .vox-local/monad-receiver-fix-plan.json \
+  --max-gas 3000000 \
+  --max-fee-per-gas-wei "$REVIEWED_MAX_FEE_PER_GAS_WEI" \
+  --max-priority-fee-per-gas-wei "$REVIEWED_PRIORITY_FEE_WEI" \
+  --max-total-fee-wei "$REVIEWED_MAX_TOTAL_FEE_WEI" \
+  --minimum-remaining-balance-wei "$REVIEWED_REMAINING_BALANCE_WEI" \
+  --confirmations 12 --lifetime-seconds 900
+```
+
+Planning rebuilds in a fresh temporary directory with the pinned compiler and
+Cancun target, binds the artifact to the actual contract source, and records
+source/creation/runtime/metadata hashes, the source commit, and the production
+manifest hash. Public RPC reads pin the genesis, finalized observation block,
+existing runtime and authorities, next token ID, deployer balance, and pending
+nonce. A pending minter transaction or occupied predicted CREATE address stops
+planning. The 10% gas buffer must fit inside the gas cap; the full gas-limit ×
+maximum-fee charge must fit the explicit total cap and leave the reserve.
+
+Show the resulting plan and its SHA-256 to the owner before any signing or
+submission. Review chain 143, the preserved deployer/owner/minter, zero native
+value, predicted new collection, constructor/source hashes, nonce, maximum native
+fee, and expiry. This authorization covers a new contract transaction only;
+normal application deployment authorization does not cover it. The tool does
+not convert MON to USD or infer a fresh approval from old inventory metadata.
+
+After that exact transaction is authorized, use the owner's existing external
+wallet/custody signing process to sign the plan's type-2 transaction **without
+broadcasting**, and export only the public raw signed transaction into a local
+file. Do not export a private key. Keep a single operator for the minter nonce;
+normal sponsored minting can invalidate the plan, and the tool never changes its
+nonce or fee automatically.
+
+```sh
+npx tsx scripts/deploy-nft-contract.ts apply \
+  --rpc https://rpc.monad.xyz \
+  --plan .vox-local/monad-receiver-fix-plan.json \
+  --approve-plan-sha256 "$APPROVED_PLAN_SHA256" \
+  --signed-transaction .vox-local/monad-receiver-fix-signed.hex \
+  --journal .vox-local/monad-receiver-fix-submission.json
+
+npx tsx scripts/deploy-nft-contract.ts verify \
+  --rpc https://rpc.monad.xyz \
+  --plan .vox-local/monad-receiver-fix-plan.json \
+  --journal .vox-local/monad-receiver-fix-submission.json
+```
+
+`apply` recovers the signer and rejects every change to the reviewed unsigned
+transaction. It repeats network, code, authority, nonce, expiry, fee, estimate,
+occupancy, balance, and reserve checks. The exact signed public bytes and their
+locally calculated hash are durably written to a new submission journal before
+broadcast; an existing different journal is never overwritten. Keep the plan,
+raw bytes, journal, and the clean source/manifest checkout used to create them
+together; later configuration changes must not replace that verification snapshot. A lost response is an uncertain submission:
+run `verify` against the existing hash. Reapplying the same approved plan can
+only resend the same signed bytes, and refuses to send after expiry or nonce
+change. Never delete evidence and create another deployment to resolve an
+uncertain receipt.
+
+`verify` is read-only and remains available after plan expiry. It checks the
+mined transaction against every planned field, a successful receipt at the
+predicted address, canonical block hash, gas/fee limits, and the exact rebuilt
+runtime plus preserved owner/minter at deployment and finalized state. Success
+requires at least 12 blocks of depth under the RPC's `finalized` head and a
+stable receipt recheck. Missing receipts or insufficient depth report `pending`
+and exit 2. Unsupported historical/finalized reads, reorgs, mismatched runtime,
+failed execution, or changed authorities fail closed. The finality requirement
+uses Monad's [documented block commitments](https://docs.monad.xyz/monad-arch/consensus/block-states).
+
+Repeat read-only verification through an independently selected trusted RPC
+before cutover. A finalized deployment is evidence for a **separate reviewed
+configuration PR**;
+it does not switch production. Preserve the old collection and all signed,
+submitted, finalized, and manual-review mint records. Do not reassign or erase
+old transactions, token IDs, owners, or token URIs. Reconciliation must retain
+old-contract evidence for investigation; queued work can use a replacement only
+under reviewed runtime rules. The production deployment script currently
+preserves its existing contract configuration, so a cutover must explicitly
+include the verified new address and its bounded configuration mechanism in the
+protected production workflow. Do not run a local Cloud Run update to substitute
+for that review/release. Validate new sponsored minting and receiver transfers
+only under their own concrete transaction authorization.
+
+Run the planning/signature/finality guard suite without network access:
+
+```sh
+npx vitest run tests/nft-contract-migration.test.ts tests/nft-migration-journal.test.ts
+```
