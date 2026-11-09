@@ -17,6 +17,7 @@ IMAGE="${VOX_PRODUCTION_IMAGE:-}"
 TAG="ci-${GITHUB_RUN_ID:-$(date +%s)}"
 FIRST_PARTY_CREATOR_IDS="${VOX_REALIZE_FIRST_PARTY_CREATOR_IDS:-vox:agent:A4KzQOc_iHZyTQOmSqqrmSlpjrpSMwigXmwzcXFCDiM,vox:agent:nERxpsSoi2oJWG9B6EuZSg9TkUDpTM6ASNOD0urMgAU}"
 REALIZE_OPERATOR_HUMAN_IDS="${VOX_REALIZE_OPERATOR_HUMAN_IDS:-}"
+VERIFIED_NFT_CONTRACT=""
 # Production deployment is automatic after CI succeeds on protected main.
 # This is workflow verification, independent of financial refund authorization.
 for flag in VOX_DEPLOY_API VOX_DEPLOY_HOSTING VOX_DEPLOY_SETTLEMENT VOX_DEPLOY_RECONCILE VOX_DEPLOY_ANCHOR VOX_DEPLOY_INDEXES VOX_PRODUCTION_VERIFIED; do
@@ -74,6 +75,7 @@ deploy_service_candidate() {
   local service="$1"
   local candidate_url="$2"
   local revision
+  local expected_nft_contract=""
   # Keep the array nonempty for Bash 3's nounset behavior on macOS, and make
   # every protected release invocation explicitly noninteractive.
   local -a extra_env_args=(--quiet)
@@ -81,14 +83,16 @@ deploy_service_candidate() {
   if [[ "$service" == "$API_SERVICE" ]]; then
     # Buffered 25 MB private uploads include encryption and storage copies.
     extra_env_args+=(--concurrency=4 --memory=1Gi)
-    extra_env_args+=(--update-env-vars="^|^VOX_REALIZE_FIRST_PARTY_CREATOR_IDS=$FIRST_PARTY_CREATOR_IDS")
+    local api_env_updates="^|^VOX_REALIZE_FIRST_PARTY_CREATOR_IDS=$FIRST_PARTY_CREATOR_IDS|VOX_NFT_MONAD_MAINNET_CONTRACT=$VERIFIED_NFT_CONTRACT"
+    expected_nft_contract="$VERIFIED_NFT_CONTRACT"
     if [[ -n "$REALIZE_OPERATOR_HUMAN_IDS" ]]; then
       if [[ ! "$REALIZE_OPERATOR_HUMAN_IDS" =~ ^vox:human:[A-Za-z0-9_-]{43}(,vox:human:[A-Za-z0-9_-]{43})*$ ]]; then
         echo "VOX_REALIZE_OPERATOR_HUMAN_IDS must be a comma-separated list of registered VOX human IDs" >&2
         return 1
       fi
-      extra_env_args+=(--update-env-vars="^|^VOX_REALIZE_OPERATOR_HUMAN_IDS=$REALIZE_OPERATOR_HUMAN_IDS")
+      api_env_updates+="|VOX_REALIZE_OPERATOR_HUMAN_IDS=$REALIZE_OPERATOR_HUMAN_IDS"
     fi
+    extra_env_args+=(--update-env-vars="$api_env_updates")
   fi
 
   PENDING_CANDIDATE_SERVICES+=("$service")
@@ -106,11 +110,15 @@ deploy_service_candidate() {
     echo "Cloud Run did not return a candidate revision for $service." >&2
     exit 1
   fi
-  gcloud run revisions describe "$revision" --region="$REGION" --project="$PROJECT_ID" --format=json | EXPECTED_REVISION="$revision" EXPECTED_IMAGE="$IMAGE" node --input-type=module -e '
+  gcloud run revisions describe "$revision" --region="$REGION" --project="$PROJECT_ID" --format=json | EXPECTED_REVISION="$revision" EXPECTED_IMAGE="$IMAGE" EXPECTED_NFT_CONTRACT="$expected_nft_contract" node --input-type=module -e '
     let text = "";
     for await (const chunk of process.stdin) text += chunk;
     const revision = JSON.parse(text);
     if (revision.metadata?.name !== process.env.EXPECTED_REVISION || revision.spec?.containers?.[0]?.image !== process.env.EXPECTED_IMAGE || !revision.status?.conditions?.some((entry) => entry.type === "Ready" && entry.status === "True")) throw new Error("Candidate revision is not ready with the reviewed immutable image");
+    if (process.env.EXPECTED_NFT_CONTRACT) {
+      const entries = (revision.spec.containers[0].env ?? []).filter((entry) => entry.name === "VOX_NFT_MONAD_MAINNET_CONTRACT");
+      if (entries.length !== 1 || entries[0].value !== process.env.EXPECTED_NFT_CONTRACT) throw new Error("Candidate NFT contract differs from the verified production configuration");
+    }
   '
 
   local url
@@ -173,6 +181,20 @@ if [[ "${VOX_DEPLOY_API:-false}" == "true" ]]; then
     echo "VOX_REALIZE_OPERATOR_HUMAN_IDS must contain at least one registered VOX human ID before releasing the Mainnet API." >&2
     exit 1
   fi
+  # This is a read-only chain check; it cannot sign or submit a transaction.
+  VERIFIED_NFT_CONTRACT="$(node scripts/check-nft-production-contract.mjs --verify-mainnet)"
+  if [[ "$VERIFIED_NFT_CONTRACT" != "0xd5b3c636292b47fb6edbeea064323c0c0a32f494" ]]; then
+    echo "The verified Monad receiver-fix contract is required before API promotion." >&2
+    exit 1
+  fi
+  gcloud run services describe "$API_SERVICE" --region="$REGION" --project="$PROJECT_ID" --format=json | node --input-type=module -e '
+    let text = "";
+    for await (const chunk of process.stdin) text += chunk;
+    const service = JSON.parse(text);
+    const entries = (service.spec?.template?.spec?.containers?.[0]?.env ?? []).filter((entry) => entry.name === "VOX_NFT_MONAD_MAINNET_CONTRACT");
+    const allowed = ["0x87ef9e71625878a0babeee7864fa7d96ed4e3571", "0xd5b3c636292b47fb6edbeea064323c0c0a32f494"];
+    if (entries.length !== 1 || !allowed.includes(entries[0].value)) throw new Error("Current production NFT contract is outside the reviewed cutover");
+  '
 fi
 
 # Promote shared dependencies before the API starts using the new contract:

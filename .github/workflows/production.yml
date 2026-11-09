@@ -48,6 +48,8 @@ jobs:
           cache: false
       - name: Verify ERC-721 receiver compatibility
         run: npm run test:nft-contract
+      - name: Bind production NFT configuration to the compiled contract
+        run: node scripts/check-nft-production-contract.mjs --artifact .vox-local/forge-out/VoxMediaNFT.sol/VoxMediaNFT.json
       - name: Install browser for frontend end-to-end tests
         if: needs.scope.outputs.run_e2e == 'true'
         run: npx playwright install --with-deps chromium

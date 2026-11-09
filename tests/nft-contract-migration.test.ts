@@ -6,7 +6,12 @@ import {bytes, compileBinding, createAddress, encodeRlp, hex, MONAD, planHash, p
 
 const source = "contract source fixture";
 const compiled: CompiledContract = {compiler: "0.8.33+commit.64118f21", source_sha256: sha256(source), creation_sha256: sha256(bytes("0x6001")), runtime_sha256: sha256(bytes("0x6002")), metadata_sha256: sha256("metadata"), creation_code: "0x6001", runtime_code: "0x6002"};
-const manifest = readFileSync(new URL("../deployments/nft-mainnet.json", import.meta.url), "utf8");
+const currentManifest = readFileSync(new URL("../deployments/nft-mainnet.json", import.meta.url), "utf8");
+const inventory = JSON.parse(currentManifest);
+// Creation/recovery tests retain the pre-cutover identity. The current
+// inventory must not authorize another contract creation after this cutover.
+const legacy = inventory.chains[MONAD.chain].previous_collections.find((entry: {contract_address: string}) => entry.contract_address === MONAD.contract);
+const manifest = JSON.stringify({...inventory, chains: {...inventory.chains, [MONAD.chain]: legacy}});
 const manifestSha = validateManifest(manifest);
 const now = new Date("2026-11-07T12:00:00.000Z");
 const HASH = `0x${"ab".repeat(32)}`; const BLOCK_HASH = `0x${"cd".repeat(32)}`; const TX_HASH = `0x${"ef".repeat(32)}`;
@@ -57,6 +62,9 @@ function minedRpc(plan: MigrationPlan, change: {receipt?: Record<string, unknown
 }
 
 describe("Monad collection migration planning", () => {
+  it("rejects the post-cutover inventory as authorization for another creation", () => {
+    expect(() => validateManifest(currentManifest)).toThrow(/identity/);
+  });
   it("plans the exact preserved identity and constructor without any signer or broadcast RPC", async () => {
     const {rpc, calls} = fixture();
     const plan = await makePlan(rpc);
