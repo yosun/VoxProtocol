@@ -101,9 +101,38 @@ verify the production payment/generation/settlement path.
 A production release and an authorized mint of an existing completed output to
 a customer-controlled Monad wallet are still needed for live Mainnet evidence.
 
-## Plan a corrected Monad collection
+## Verified Monad receiver replacement (2026-11-09)
 
-The receiver fix requires a new collection. The existing collection remains at
+The corrected collection is deployed at
+`0xd5b3c636292b47fb6edbeea064323c0c0a32f494`. Its
+[creation transaction](https://monadscan.com/tx/0x8904043f92b5ee8ff44c5078474bea3cc42d9684ba2275f8362c04cd578b1252)
+finalized in block 120705977. The actual fee was 0.209626014 MON, below the
+authorized 0.4110314 MON maximum. Both owner and minter retain the existing
+`0xafac2571572aa858da801b5c8ed38009c555a4c6` identity. Public reads through
+`rpc.monad.xyz` and `rpc2.monad.xyz` verified the exact compiled runtime,
+constructor transaction, authorities, canonical receipt, and finalized depth.
+
+The [deployment inventory](../deployments/nft-mainnet.json) records that proof
+and retains the preceding collection. Required CI binds its hashes to a fresh
+Solc 0.8.33 build. The protected production workflow verifies the live contract
+again through both RPCs, accepts only the reviewed old/new configuration, updates
+only the Monad collection address, and checks the candidate revision's actual
+environment before promotion. NFT enablement, signer custody, treasury and
+payout recipients are unchanged. Existing mint records retain their original
+transaction and asset identities; this release does not transfer or remint NFTs.
+
+The creation transaction is not evidence of a live customer payment, provider
+render, NFT mint, receiver transfer, or settlement rehearsal. Those transactions
+remain separately authorized operations.
+
+### Original creation and recovery procedure
+
+Keep the clean pre-cutover snapshot `0520126b1a621ee637784093ce7be585860920bf`
+with its plan and submission journal to re-verify this creation transaction.
+The creation tool intentionally rejects the updated inventory as another
+deployment request; any further replacement needs its own reviewed plan.
+
+The receiver fix required a new collection. The preceding collection remains at
 `0x87ef9e71625878a0babeee7864fa7d96ed4e3571` on Monad Mainnet (chain ID 143).
 Both its owner and minter must remain
 `0xafac2571572aa858da801b5c8ed38009c555a4c6`. Existing tokens cannot acquire the
@@ -116,7 +145,7 @@ modes. It accepts no private key, keystore, or Secret Manager value. The old
 stdin-key/immediate-broadcast interface is removed. A normal build, release, or
 `plan` invocation cannot submit a transaction.
 
-Prepare a plan from a clean contract/manifest checkout with Foundry and Solc
+The historical planning procedure used a clean contract/manifest checkout with Foundry and Solc
 0.8.33 already installed. Set the fee and reserve variables to explicit native
 wei limits for review (1 MON = 10^18 wei); the historical USD spending cap in
 [the deployment inventory](../deployments/nft-mainnet.json) is not authorization

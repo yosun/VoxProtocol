@@ -5,7 +5,9 @@
   "region": "us-central1",
   "spendingCapUsd": 5,
   "automaticMintingEnabled": true,
-  "enabledChains": ["monad:mainnet"],
+  "enabledChains": [
+    "monad:mainnet"
+  ],
   "apiRevision": "vox-api-monad-nft-claim-20261013",
   "chains": {
     "solana:mainnet-beta": {
@@ -19,15 +21,55 @@
     "monad:mainnet": {
       "signer": "0xafac2571572aa858da801b5c8ed38009c555a4c6",
       "chain_id": 143,
-      "contract_address": "0x87ef9e71625878a0babeee7864fa7d96ed4e3571",
-      "deployment_transaction": "0x0f3bc2837fb9440d8b710a59d75990da76a5c70a4836d93d9afcdf331d3a86cf",
-      "explorer_url": "https://monadscan.com/tx/0x0f3bc2837fb9440d8b710a59d75990da76a5c70a4836d93d9afcdf331d3a86cf",
-      "gas_used": "2209334",
+      "contract_address": "0xd5b3c636292b47fb6edbeea064323c0c0a32f494",
+      "deployment_transaction": "0x8904043f92b5ee8ff44c5078474bea3cc42d9684ba2275f8362c04cd578b1252",
+      "explorer_url": "https://monadscan.com/tx/0x8904043f92b5ee8ff44c5078474bea3cc42d9684ba2275f8362c04cd578b1252",
+      "gas_used": "2055157",
       "effective_gas_price_wei": "102000000000",
-      "fee_native_mon": "0.225352068",
+      "fee_native_mon": "0.209626014",
       "owner_verified": true,
       "minter_verified": true,
-      "status": "enabled_awaiting_recipient"
+      "status": "enabled_awaiting_recipient",
+      "previous_collections": [
+        {
+          "signer": "0xafac2571572aa858da801b5c8ed38009c555a4c6",
+          "chain_id": 143,
+          "contract_address": "0x87ef9e71625878a0babeee7864fa7d96ed4e3571",
+          "deployment_transaction": "0x0f3bc2837fb9440d8b710a59d75990da76a5c70a4836d93d9afcdf331d3a86cf",
+          "explorer_url": "https://monadscan.com/tx/0x0f3bc2837fb9440d8b710a59d75990da76a5c70a4836d93d9afcdf331d3a86cf",
+          "gas_used": "2209334",
+          "effective_gas_price_wei": "102000000000",
+          "fee_native_mon": "0.225352068",
+          "owner_verified": true,
+          "minter_verified": true,
+          "status": "preserved_legacy_collection",
+          "next_token_id_at_replacement": "1"
+        }
+      ],
+      "deployment_verification": {
+        "schema": "vox-monad-collection-verification-v1",
+        "owner": "0xafac2571572aa858da801b5c8ed38009c555a4c6",
+        "minter": "0xafac2571572aa858da801b5c8ed38009c555a4c6",
+        "source_sha256": "fb38a002e355b3b239b6fd646dad8c22ae158d246fabb9207c4f2a4c5ee95e22",
+        "runtime_sha256": "5b90009a0617ebd0e4ba1d03e93742a6d63ff75fb90ba2128cd61eeecd509e35",
+        "creation_sha256": "d48515a0910991c345406b9756d2e4884adc52fe23e7bba026e70fbcac128d5b",
+        "input_sha256": "cc5df2fd8d258e50b7ae044e3403fdc0684fe1bc2feb3975fd55209bad172049",
+        "genesis_hash": "0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9",
+        "block_number": "120705977",
+        "block_hash": "0xbd380882aa79a43170da1301274c3399534ef95e69dd24fe6724fcc84fc7305b",
+        "nonce": "1",
+        "gas_limit": "2055157",
+        "max_fee_per_gas_wei": "200000000000",
+        "max_priority_fee_per_gas_wei": "2000000000",
+        "confirmations": 12,
+        "approved_original_plan_sha256": "39877a205f6fabe0feb449fd9e5ceae4d3a07fb1bad18821aef34e2ebcd959f4",
+        "refreshed_plan_sha256": "290f477fd08169c7ee70893b922e637baa91fb5c84e5bb9bc59df67588f3cb48",
+        "approved_signing_digest": "0xa2ff8f49c5c4da50dad21ab2972693df3f3edadda857d0f5f7a3b13177024d9a",
+        "verified_rpc_urls": [
+          "https://rpc.monad.xyz",
+          "https://rpc2.monad.xyz"
+        ]
+      }
     },
     "arbitrum:mainnet": {
       "signer": "0xbf49b4db793b004f24d9e5c53e3669fa80483de4",
