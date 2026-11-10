@@ -67,6 +67,7 @@ type MockState = {
   signatureConfirmation?: "processed" | "confirmed" | "finalized";
   signatureError?: string;
   checkpointBeforeBroadcast?: Record<string, any>;
+  rpcRelayCalls?: number;
 };
 
 function tokenAccountData(mint: PublicKey, owner: PublicKey, amount: bigint): string {
@@ -232,7 +233,7 @@ async function createWallet(page: Page, disableOnRecovery = false, signing = fal
 async function installMocks(page: Page, sourceBalance = PAYER_USDC, rejectFunding = false, existingState?: MockState): Promise<MockState> {
   const state: MockState = existingState ?? {funded: false, sourceBalance, fundCalls: [], rejectFunding, supportedResolutions: ["480P", "768P", "1080P"], rpcBroadcasts: []};
   page.on("pageerror", (error) => console.error("Browser page error:", error.message));
-  await page.route("https://api.mainnet-beta.solana.com/**", async (route) => {
+  const handleRpc = async (route: Route) => {
     const request = route.request().postDataJSON() as {id: number | string; method: string; params?: unknown[]};
     const result = (value: unknown) => json(route, {jsonrpc: "2.0", id: request.id, result: value});
     switch (request.method) {
@@ -266,12 +267,19 @@ async function installMocks(page: Page, sourceBalance = PAYER_USDC, rejectFundin
       default:
         return json(route, {jsonrpc: "2.0", id: request.id, error: {code: -32601, message: `Unhandled test RPC method ${request.method}`}}, 200);
     }
-  });
+  };
+  await page.route("https://api.mainnet-beta.solana.com/**", handleRpc);
 
   await page.route("http://localhost:8787/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const path = decodeURIComponent(url.pathname);
+    if (request.method() === "POST" && path === `/v1/realize/commissions/${COMMISSION_ID}/solana-rpc`) {
+      expect(request.headers()["x-vox-realize-signature"]).toBeTruthy();
+      expect(request.headers()["x-vox-realize-human-id"]).toBe(state.commission?.commissioner_id);
+      state.rpcRelayCalls = (state.rpcRelayCalls ?? 0) + 1;
+      return handleRpc(route);
+    }
     if (request.method() === "GET" && path === "/v1/feed") {
       return json(route, {items: [{
         post_id: `vox:post:${"b".repeat(64)}`,
@@ -360,6 +368,74 @@ async function installMocks(page: Page, sourceBalance = PAYER_USDC, rejectFundin
   return state;
 }
 
+test("checkout without a wallet opens actionable setup instead of a disabled connect button", async ({page}) => {
+  const state = await installMocks(page);
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  const checkout = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await checkout.getByRole("button", {name: "Get my price"}).click();
+  const connect = checkout.getByRole("button", {name: "Connect wallet", exact: true});
+  await expect(connect).toBeEnabled();
+  await expect(checkout.getByText("No compatible Solana wallet detected", {exact: false})).toBeVisible();
+  await connect.click();
+  const wallet = page.getByRole("dialog", {name: "Connect a Solana wallet"});
+  await expect(wallet.getByText("No compatible wallet detected.")).toBeVisible();
+  await expect(wallet.getByRole("link", {name: "Get Phantom"})).toHaveAttribute("href", "https://phantom.com/download");
+  await expect(wallet.getByRole("link", {name: "Get Solflare"})).toHaveAttribute("href", "https://www.solflare.com/download/");
+  await expect(wallet.getByRole("button", {name: "Close wallet connection"})).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(wallet.getByRole("link", {name: "Get Solflare"})).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(wallet.getByRole("button", {name: "Close wallet connection"})).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(wallet).toHaveCount(0);
+  await expect(connect).toBeFocused();
+  expect(state.commission?.accepted_quote_hash).toBeUndefined();
+  expect(state.fundCalls).toHaveLength(0);
+  expect(state.rpcBroadcasts).toHaveLength(0);
+});
+
+test("checkout connect action selects a wallet while keeping terms acceptance separate", async ({page}) => {
+  const state = await installMocks(page);
+  await createWallet(page);
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  let checkout = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await checkout.getByRole("button", {name: "Get my price"}).click();
+  await checkout.getByRole("button", {name: "Connect wallet", exact: true}).click();
+  const wallet = page.getByRole("dialog", {name: "Connect a Solana wallet"});
+  await wallet.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await expect(wallet).toHaveCount(0);
+  await expect(checkout.getByRole("button", {name: "Accept terms to continue"})).toBeDisabled();
+  expect(state.commission?.accepted_quote_hash).toBeUndefined();
+  await checkout.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await expect(checkout.getByRole("button", {name: "Continue to payment"})).toBeEnabled();
+  expect(state.fundCalls).toHaveLength(0);
+});
+
+test("an accepted unpaid order can disconnect and reconnect its payer inside checkout", async ({page}) => {
+  const state = await installMocks(page);
+  await createWallet(page);
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  const checkout = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await checkout.getByRole("button", {name: "Get my price"}).click();
+  await checkout.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await checkout.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await checkout.getByRole("button", {name: "Continue to payment"}).click();
+  await expect(checkout.getByRole("button", {name: "Pay 1.00 USDC"})).toBeEnabled();
+  await checkout.getByRole("button", {name: "Manage wallet"}).click();
+  const wallet = page.getByRole("dialog", {name: "Connect a Solana wallet"});
+  await wallet.getByRole("button", {name: "Disconnect wallet"}).click();
+  await expect(wallet.getByRole("button", {name: "Connect VOX Test Wallet"})).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(checkout.getByRole("button", {name: "Pay 1.00 USDC"})).toBeDisabled();
+  await checkout.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await expect(checkout.getByRole("button", {name: "Pay 1.00 USDC"})).toBeEnabled();
+  expect(state.fundCalls).toHaveLength(0);
+  expect(state.rpcBroadcasts).toHaveLength(0);
+});
+
 test("commissioner reviews rights, pays from the backend quote, and sees mocked verified settlement", async ({page}) => {
   const state = await installMocks(page);
   await createWallet(page);
@@ -417,6 +493,29 @@ test("commissioner reviews rights, pays from the backend quote, and sees mocked 
   expect(transfer!.data[0]).toBe(12); // SPL Token TransferChecked.
   expect(transfer!.data.readBigUInt64LE(1).toString()).toBe(TOTAL_USDC);
   expect(transaction.instructions.some((instruction) => instruction.programId.toBase58() === "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr" && instruction.data.toString("utf8") === state.funding!.payment_reference)).toBe(true);
+});
+
+test("Mainnet payment uses authenticated checkout RPC even when public browser RPC returns 403", async ({page}) => {
+  const state = await installMocks(page);
+  await createWallet(page, false, true);
+  let directCalls = 0;
+  await page.route("https://api.mainnet-beta.solana.com/**", (route) => {
+    directCalls += 1;
+    return json(route, {error: {code: 403, message: "Access forbidden"}}, 403);
+  });
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  const checkout = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await checkout.getByRole("button", {name: "Get my price"}).click();
+  await checkout.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await checkout.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await checkout.getByRole("button", {name: "Continue to payment"}).click();
+  await checkout.getByRole("button", {name: "Pay 1.00 USDC"}).click();
+  await expect(checkout.getByText("Signed provenance verified")).toBeVisible();
+  expect(state.rpcRelayCalls).toBeGreaterThan(5);
+  expect(directCalls).toBe(0);
+  expect(state.rpcBroadcasts).toHaveLength(1);
+  expect(state.fundCalls).toHaveLength(1);
 });
 
 test("retains separate NFT publication consent when acceptance succeeds but status fails", async ({page}) => {

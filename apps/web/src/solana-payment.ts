@@ -1,5 +1,5 @@
 import {Buffer} from "buffer";
-import {PublicKey, Connection, Transaction, TransactionInstruction} from "@solana/web3.js";
+import {PublicKey, Connection, Transaction, TransactionInstruction, type FetchFn} from "@solana/web3.js";
 import {AccountRole, address} from "@solana/kit";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -77,11 +77,15 @@ export type UsdcPaymentAttempt = {
   lastValidBlockHeight: number;
 });
 
-export interface SendUsdcPaymentInput extends UsdcPaymentAuthorization {
+export interface CheckoutRpcConnectionOptions {
+  rpcUrl?: string;
+  rpcFetch?: FetchFn;
+}
+
+export interface SendUsdcPaymentInput extends UsdcPaymentAuthorization, CheckoutRpcConnectionOptions {
   wallet: ConnectedWallet["wallet"];
   account: ConnectedWallet["account"];
   supportedTransactionVersions: ConnectedWallet["supportedTransactionVersions"];
-  rpcUrl?: string;
   quoteExpiresAt: string;
   /** Must durably save this attempt or throw, before any possible broadcast. */
   onPrepared: (attempt: UsdcPaymentAttempt) => void | Promise<void>;
@@ -198,7 +202,7 @@ function verifiedSignedPayment(transaction: Transaction, bytes: Uint8Array): {si
 }
 
 /** Recovery never builds a new payment: only the exact saved signature/bytes may be retried. */
-export async function recoverUsdcPayment(attempt: UsdcPaymentAttempt, authorization: UsdcPaymentAuthorization, options: {rpcUrl?: string; quoteExpiresAt: string}): Promise<SolanaPaymentResult> {
+export async function recoverUsdcPayment(attempt: UsdcPaymentAttempt, authorization: UsdcPaymentAuthorization, options: CheckoutRpcConnectionOptions & {quoteExpiresAt: string}): Promise<SolanaPaymentResult> {
   if (attempt.kind !== "signed" || attempt.version !== 1 || JSON.stringify(paymentAuthorization(attempt.authorization)) !== JSON.stringify(paymentAuthorization(authorization))) {
     throw new Error("The saved payment does not match this accepted quote. Do not pay again; verify the original wallet receipt.");
   }
@@ -209,7 +213,7 @@ export async function recoverUsdcPayment(attempt: UsdcPaymentAttempt, authorizat
   expected.recentBlockhash = signed.recentBlockhash!;
   const verified = verifiedSignedPayment(expected, bytes);
   if (verified.signature !== attempt.signature || !Number.isSafeInteger(attempt.lastValidBlockHeight) || attempt.lastValidBlockHeight < 0) throw new Error("The saved payment recovery data is invalid. Verify the original wallet receipt before continuing.");
-  const connection = new Connection(options.rpcUrl ?? import.meta.env.VITE_SOLANA_RPC_URL as string | undefined ?? baseSolanaRpcUrl(authorization.cluster), "confirmed");
+  const connection = paymentConnection(authorization.cluster, options);
   const explorerUrl = paymentExplorerUrl(attempt.signature, authorization.cluster);
   let confirmation: SolanaPaymentResult["confirmation"] = "pending";
   try {
@@ -279,7 +283,7 @@ export async function sendUsdcPayment(input: SendUsdcPaymentInput): Promise<Sola
   }
   if (input.account.address !== owner.toBase58()) throw new Error("The connected wallet changed. Reconnect the wallet that requested this quote.");
 
-  const connection = new Connection(input.rpcUrl ?? import.meta.env.VITE_SOLANA_RPC_URL as string | undefined ?? baseSolanaRpcUrl(input.cluster), "confirmed");
+  const connection = paymentConnection(input.cluster, input);
   const source = getAssociatedTokenAddressSync(mint, owner, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
   const expectedDestination = getAssociatedTokenAddressSync(mint, destinationOwner, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
   if (!expectedDestination.equals(destination)) throw new Error("The quoted treasury account is not the associated account for the quoted wallet and USDC mint.");
@@ -410,8 +414,12 @@ function escrowProgressFromAccount(info: NonNullable<Awaited<ReturnType<Connecti
   return {status, payout_count: payoutCount, allocated_usdc_atomic: allocated.toString()};
 }
 
-export async function checkSolanaTransaction(signature: string, cluster: string): Promise<"finalized" | "pending" | "failed"> {
-  const connection = new Connection(import.meta.env.VITE_SOLANA_RPC_URL as string | undefined ?? baseSolanaRpcUrl(cluster), "confirmed");
+function paymentConnection(cluster: string, options: CheckoutRpcConnectionOptions): Connection {
+  return new Connection(options.rpcUrl ?? import.meta.env.VITE_SOLANA_RPC_URL as string | undefined ?? baseSolanaRpcUrl(cluster), {commitment: "confirmed", ...(options.rpcFetch ? {fetch: options.rpcFetch} : {})});
+}
+
+export async function checkSolanaTransaction(signature: string, cluster: string, options: CheckoutRpcConnectionOptions = {}): Promise<"finalized" | "pending" | "failed"> {
+  const connection = paymentConnection(cluster, options);
   try {
     const status = (await connection.getSignatureStatuses([signature], {searchTransactionHistory: true})).value[0];
     if (status?.confirmationStatus !== "finalized") return "pending";

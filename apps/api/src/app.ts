@@ -127,6 +127,7 @@ import {configuredDevnetRealizeEscrow, type DevnetRealizeEscrowClient} from "./r
 import {configuredNftService, fulfillmentOutputToNftInput, isMainnetNftChain, legacyRealizationToNftInput, NftMintService, verifyNftWalletProof} from "./nft.js";
 import {configuredMainnetRealizePaymentRail, isManagedRealizeSettlementConfigured, type MainnetSplUsdcFundingAuthorization, type RealizePaymentRail} from "./realize-payment.js";
 import {summarizeCharacterAccount} from "./character-account.js";
+import {CheckoutRpcError, relayCheckoutRpc} from "./realize-rpc.js";
 import {createPopuliPublicRoomReader} from "./populi-public-rooms.js";
 import {createPopuliViewerCountReader} from "./populi-viewer-counts.js";
 
@@ -176,6 +177,7 @@ export interface AppOptions {
   solanaRealizeSettlementClient?: SolanaRealizeSettlementClient;
   devnetRealizeEscrowClient?: DevnetRealizeEscrowClient;
   mainnetRealizePaymentRail?: RealizePaymentRail<MainnetSplUsdcFundingAuthorization>;
+  realizeRpcFetch?: typeof fetch;
   nftService?: NftMintService;
 }
 
@@ -1623,7 +1625,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   });
 
   app.setErrorHandler((error, request, reply) => {
-    if (error instanceof HttpError) return reply.code(error.statusCode).send({error: error.message, code: error.code});
+    if (error instanceof HttpError || error instanceof CheckoutRpcError) return reply.code(error.statusCode).send({error: error.message, code: error.code});
     if ((error as {validation?: unknown}).validation) return reply.code(400).send({error: errorMessage(error), code: "invalid_request"});
     const dependency = dependencyHttpError(error);
     if (dependency) {
@@ -2818,6 +2820,30 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     if (fundingAuthorization.mode === "direct" && fundingAuthorization.destination_token_account !== configuration.funding_destination_token_account) throw new HttpError(409, "treasury_configuration_mismatch", "Mainnet payment destination differs from the pinned server treasury configuration");
     const stored = await context.store.updateRealizeCommission({...updated, ...(fundingAuthorization.mode === "escrow" ? {escrow_funding: fundingAuthorization} : {direct_funding: fundingAuthorization})}, current.updated_at);
     return reply.code(201).send({commission: stored.commission, payment_intent: paymentIntent, funding: await realizeFundingResponse(context, stored)});
+  });
+
+  // The public Solana RPC rejects browser Origins. This public probe can only
+  // read the fixed upstream's genesis; all checkout operations require ownership.
+  app.get("/v1/realize/solana-rpc", async () => {
+    if (!context.mainnetRealizePaymentRail) throw new HttpError(503, "payment_not_configured", "Mainnet checkout is unavailable.");
+    const result = await relayCheckoutRpc({jsonrpc: "2.0", id: 1, method: "getGenesisHash", params: []}, {fetcher: options.realizeRpcFetch ?? fetch});
+    if (result.result !== "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d") throw new HttpError(503, "wrong_network", "Mainnet RPC did not return the expected genesis.");
+    return {status: "ok", network: "solana:mainnet-beta"};
+  });
+
+  app.post("/v1/realize/commissions/:commissionId/solana-rpc", {bodyLimit: 4096}, async (request, reply) => {
+    const commissionId = (request.params as {commissionId: string}).commissionId;
+    const current = await context.store.getRealizeCommission(commissionId);
+    if (!current) throw new HttpError(404, "commission_not_found", "commission not found");
+    await authorizeRealizeHuman(context, request.headers as Record<string, unknown>, current.commission.commissioner_id, "POST", `/v1/realize/commissions/${encodeURIComponent(commissionId)}/solana-rpc`, request.body);
+    const funding = current.direct_funding;
+    const quote = current.commission.quote_id ? await context.store.getRealizeQuote(current.commission.quote_id) : undefined;
+    const configuration = quote?.payout_configuration_version ? await context.store.getRealizePayoutConfiguration(current.commission.creator_id, quote.payout_configuration_version) : undefined;
+    if (!funding || !quote || !configuration || !context.mainnetRealizePaymentRail || quote.network_id !== "solana:mainnet-beta" || quote.usdc_mint !== context.mainnetRealizePaymentRail.usdcMint) throw new HttpError(409, "payment_authorization_missing", "An accepted Mainnet checkout is required.");
+    assertRealizeQuoteConfiguration(context, quote, configuration);
+    if (funding.commission_id !== commissionId || quote.commission_id !== commissionId || funding.quote_id !== quote.quote_id || current.commission.accepted_quote_hash !== quote.canonical_quote_hash || funding.accepted_quote_hash !== quote.canonical_quote_hash || funding.payer_wallet !== current.payer_wallet || funding.amount_usdc_atomic !== quote.total_amount_usdc_atomic || funding.expires_at !== quote.expires_at || funding.destination_token_account !== configuration.funding_destination_token_account || funding.payment_reference !== `vox:realize:payment:${current.payment_intent?.payment_intent_id}:${quote.canonical_quote_hash}`) throw new HttpError(409, "payment_intent_mismatch", "RPC funding authorization does not match the accepted quote.");
+    const maySubmit = current.commission.state === "AWAITING_PAYMENT" && !current.funding_signature && !current.resolution_outcome;
+    return reply.header("cache-control", "no-store").send(await relayCheckoutRpc(request.body, {funding, maySubmit, fetcher: options.realizeRpcFetch ?? fetch}));
   });
 
   app.post("/v1/realize/commissions/:commissionId/fund", async (request, reply) => {

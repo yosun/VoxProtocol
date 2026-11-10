@@ -5,6 +5,8 @@ import {ApiError, api, type AgentRecord, type PostRecord, type RealizeCapabiliti
 import {getRealizeIdentity, signRealizeRequest, type RealizeIdentity} from "./realize-identity.js";
 import {checkSolanaTransaction, directFundingAuthorization, PaymentQuoteExpiredError, recoverUsdcPayment, sendRealizeEscrowPayment, sendRealizeEscrowRefund, sendUsdcPayment, walletRejected, type UsdcPaymentAttempt} from "./solana-payment.js";
 import {configuredWalletCluster, solanaWalletClient, walletChainForCluster} from "./solana-wallet.js";
+import {WalletConnectDialog} from "./WalletConnectDialog.js";
+import {checkoutRpcConnection} from "./realize-rpc.js";
 import {RealizeNfts} from "./RealizeNfts.js";
 import {generationDescription, videoOptions, type VideoOptions} from "./realize-parameters.js";
 import {readFinancialCheckpoint, withFinancialLock, writeFinancialCheckpoint, type FinancialCheckpoint, type FinancialOutcome} from "./financial-checkpoints.js";
@@ -214,6 +216,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
   const connected = useConnectedWallet(solanaWalletClient);
   const wallets = useWallets(solanaWalletClient);
   const walletStatus = useWalletStatus(solanaWalletClient);
+  const [walletDialogOpen, setWalletDialogOpen] = useState(false);
   const creatorOptions = useMemo(() => Object.values(agents).filter((agent) => posts.some((item) => item.intent.agent_id === agent.registration.agent_id)), [agents, posts]);
   const savedCheckout = useMemo(() => {
     const saved = loadSavedCheckout(post.post_id);
@@ -279,6 +282,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
   const quoteAccepted = !!commissionStatus?.commission.accepted_quote_hash && commissionStatus.commission.accepted_quote_hash === quote?.canonical_quote_hash;
   const paymentPending = (!!pendingSignature || !!pendingPaymentAttempt) && !paymentWasReceived(commissionStatus?.commission.payment_state);
   const networkName = quote?.network_id?.replace("solana:", "") ?? "";
+  const rpcOptions = useMemo(() => networkName === "mainnet-beta" && identity && commissionId ? checkoutRpcConnection(identity, commissionId) : {}, [networkName, identity, commissionId]);
   const mainnetRealizeDisabled = networkName === "mainnet-beta" && import.meta.env.VITE_REALIZE_MAINNET_ENABLED !== "true";
   const expectedChain = walletChainForCluster(networkName);
   const networkMismatch = !!quote && !!expectedChain && configuredWalletCluster() !== networkName;
@@ -703,7 +707,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       };
       const sent = funding.mode === "escrow"
         ? await sendRealizeEscrowPayment({wallet: connected.wallet, account: connected.account, supportedTransactionVersions: connected.supportedTransactionVersions, payerAddress: connected.account.address, commission: commissionStatus!.commission, quote, issuerPublicKey: quote.issuer_public_key, funding, cluster: networkName, onWalletApprovalRequested, onSubmitted})
-        : await sendUsdcPayment({...directFundingAuthorization(commissionStatus!.commission, quote, funding), wallet: connected.wallet, account: connected.account, supportedTransactionVersions: connected.supportedTransactionVersions, quoteExpiresAt: quote.expires_at, onWalletApprovalRequested, onPrepared, onSubmitted});
+        : await sendUsdcPayment({...directFundingAuthorization(commissionStatus!.commission, quote, funding), ...rpcOptions, wallet: connected.wallet, account: connected.account, supportedTransactionVersions: connected.supportedTransactionVersions, quoteExpiresAt: quote.expires_at, onWalletApprovalRequested, onPrepared, onSubmitted});
       if (sent.confirmation === "failed") {
         paymentSubmitted = false;
         setPaymentProgress(undefined);
@@ -742,7 +746,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       setBusy(true);
       setError("");
       try {
-        const checked = await recoverUsdcPayment(pendingPaymentAttempt, directFundingAuthorization(commissionStatus!.commission, quote!, funding), {quoteExpiresAt: quote!.expires_at});
+        const checked = await recoverUsdcPayment(pendingPaymentAttempt, directFundingAuthorization(commissionStatus!.commission, quote!, funding), {...rpcOptions, quoteExpiresAt: quote!.expires_at});
         if (checked.confirmation === "failed") {
           await resolveFinancial("failed", financialAttemptId, checked.signature);
           setError("The Solana transaction failed. No commission was funded; request a fresh quote before retrying.");
@@ -752,7 +756,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       return;
     }
     if (pendingRefundSignature && funding?.mode === "escrow") {
-      const chainStatus = await checkSolanaTransaction(pendingRefundSignature, networkName);
+      const chainStatus = await checkSolanaTransaction(pendingRefundSignature, networkName, rpcOptions);
       if (chainStatus === "pending") return;
       if (chainStatus === "failed") {
         setPendingRefundSignature(undefined);
@@ -765,7 +769,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       return;
     }
     if (pendingSignature && funding?.mode === "escrow") {
-      const chainStatus = await checkSolanaTransaction(pendingSignature, networkName);
+      const chainStatus = await checkSolanaTransaction(pendingSignature, networkName, rpcOptions);
       if (chainStatus === "pending") return;
       if (chainStatus === "failed") {
         await resolveFinancial("failed", financialAttemptId, pendingSignature);
@@ -802,7 +806,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
     try {
       // Do not pin an accidentally mistyped, nonexistent receipt in the server's
       // durable submission reservation. Only finalized receipts reach the API.
-      const chainStatus = await checkSolanaTransaction(signature, networkName);
+      const chainStatus = await checkSolanaTransaction(signature, networkName, rpcOptions);
       if (chainStatus !== "finalized") {
         setError(chainStatus === "failed" ? "That receipt records a failed Solana transaction. Check this payment in your wallet history before continuing; do not pay again." : "Solana has not finalized this receipt yet. Check the signature in your wallet history and try again; do not pay again.");
         return;
@@ -866,7 +870,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
   const capabilitiesReady = !capabilityLoading && !capabilityError && !!selectedCapability && !!options;
   const publicCommissionerParty = rights?.policy_mode === "first_party" ? true : !!rights && rights.agreement.parties.some((party) => party.party_id === REALIZE_COMMISSIONER_ROLE_PARTY_ID && party.role === "commissioner");
 
-  return <div className="drawer-backdrop" onClick={() => { if (!busy) onClose(); }}><aside className="drawer realize realize-checkout" role="dialog" aria-modal="true" aria-label="Realize commission checkout" onClick={(event) => event.stopPropagation()}>
+  return <><div className="drawer-backdrop" aria-hidden={walletDialogOpen || undefined} onClick={() => { if (!busy) onClose(); }}><aside className="drawer realize realize-checkout" role="dialog" aria-modal="true" aria-label="Realize commission checkout" onClick={(event) => event.stopPropagation()}>
     <button className="icon-button close" onClick={onClose} disabled={busy} aria-label="Close realization">×</button>
     <p className="eyebrow">✦ Realize</p>
     <h2>Bring your idea to life.</h2>
@@ -953,9 +957,10 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
         </div>
 
 
-      {!quoteAccepted && <div className="wallet-connect-panel quote-wallet-panel">
+      {(!quoteAccepted || !paymentIsVerified) && <div className="wallet-connect-panel quote-wallet-panel">
         <div className="wallet-network-line"><strong>{connected ? "Wallet connected" : "Pay with USDC"}</strong>{connected && <span className="wallet-address">{short(connected.account.address)}</span>}{!connected && (walletStatus === "pending" || walletStatus === "reconnecting") && <span className="tiny muted">Reconnecting…</span>}</div>
-        {!connected && (wallets.length > 0 ? <div className="wallet-options">{wallets.map((wallet) => <button type="button" className="secondary-button" key={wallet.name} onClick={() => void connectWallet(wallet)}>Connect {wallet.name}</button>)}</div> : <p className="tiny muted">Connect a Solana wallet to pay with USDC.</p>)}
+        {!connected && (wallets.length > 0 ? <div className="wallet-options">{wallets.map((wallet) => <button type="button" className="secondary-button" key={wallet.name} disabled={busy || walletStatus === "pending" || walletStatus === "reconnecting"} onClick={() => void connectWallet(wallet)}>Connect {wallet.name}</button>)}</div> : <p className="tiny muted">No compatible Solana wallet detected in this browser. Open VOX in your wallet’s browser, or install a wallet extension.</p>)}
+        {(!!connected || quoteAccepted) && <button type="button" className="secondary-button" disabled={busy} onClick={() => setWalletDialogOpen(true)}>{connected ? "Manage wallet" : "Connect wallet"}</button>}
       </div>}
       {networkMismatch && <p className="network-warning" role="alert">This quote requires Solana {networkName}, but this checkout is configured for {configuredWalletCluster()}.</p>}
       {walletChainMismatch && <p className="network-warning" role="alert">Switch your connected wallet to Solana {networkName} to continue.</p>}
@@ -963,7 +968,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       {mainnetRealizeDisabled && <p className="network-warning" role="alert">Mainnet checkout is not available in this web build.</p>}
       {quoteAccepted && <div className="checkout-status-grid"><div><span>Payment</span><strong>{paymentLabel(commissionStatus?.commission.payment_state, !!pendingSignature || !!pendingPaymentAttempt, paymentProgress)}</strong></div><div><span>Generation</span><strong>{generationLabel(commissionStatus?.commission.fulfillment_state)}</strong></div><div><span>Settlement</span><strong>{commissionStatus?.settlement_status ?? "Not started"}</strong></div></div>}
       {quoteAccepted && funding && <div className="payer-wallet-summary" aria-label="Payer wallet"><span>Paying from</span><code title={funding.payer_wallet}>{funding.payer_wallet}</code></div>}
-      {!quoteAccepted && <button type="button" className="primary-button wide" onClick={() => void acceptQuote()} disabled={!canAcceptQuote || !attributionReady}>{busy ? "Preparing checkout…" : !connected ? "Connect a wallet to continue" : !rightsReviewed ? "Accept terms to continue" : "Continue to payment"}</button>}
+      {!quoteAccepted && <button type="button" className="primary-button wide" onClick={() => { if (!connected) setWalletDialogOpen(true); else void acceptQuote(); }} disabled={!connected ? busy || restoringCommission : !canAcceptQuote || !attributionReady}>{busy ? "Preparing checkout…" : !connected ? "Connect wallet" : !rightsReviewed ? "Accept terms to continue" : "Continue to payment"}</button>}
       {!quoteAccepted && <p className="quote-button-hint">You’ll confirm the amount in your wallet.</p>}
       {quoteAccepted && !paymentIsVerified && !pendingSignature && !pendingPaymentAttempt && <button type="button" className="primary-button wide" onClick={() => void pay()} disabled={busy || !connected || !funding || quoteExpired || !quoteValid || mainnetRealizeDisabled || networkMismatch || walletChainMismatch || payerWalletMismatch}>{busy ? paymentProgress === "wallet_approval" ? "Approve payment in your wallet…" : paymentProgress === "vox_verification" ? "Checking payment with VOX.gold…" : "Checking balance and preparing payment…" : `Pay ${money(quote.total_amount_usdc_atomic)} USDC`}</button>}
       {quoteAccepted && pendingSignature && pendingPaymentAttempt?.kind !== "wallet_submission" && !paymentIsVerified && <div className="pending-payment" role="status"><strong>{paymentProgress === "solana_confirmation" ? "Payment submitted; waiting for Solana confirmation." : "Payment submitted; VOX.gold verification is pending."}</strong><span>{paymentProgress === "solana_confirmation" ? "The signed transaction is saved. Check its status to retry the same transaction safely; do not pay twice." : `Do not pay twice. VOX.gold checks the ${funding?.mode === "escrow" ? "escrow commitment" : "Mainnet payment intent"}, USDC mint, recipient, amount, payer and finalized transaction on-chain.`}</span><button type="button" className="secondary-button" onClick={() => void checkPayment()} disabled={busy}>{busy ? "Checking…" : "Check payment status"}</button></div>}
@@ -988,5 +993,5 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       {commissionStatus.settlement_response?.transaction_signatures?.map((signature) => <p className="tiny" key={signature}><a href={`https://explorer.solana.com/tx/${encodeURIComponent(signature)}?cluster=${encodeURIComponent(networkName)}`} target="_blank" rel="noreferrer">View verified settlement transaction ↗</a></p>)}
       <p className="tiny muted">Commission ID {short(commissionStatus.commission.commission_id)} · Public provenance contains no payer wallet or billing details.</p>
     </section>}
-  </aside></div>;
+  </aside></div>{walletDialogOpen && <WalletConnectDialog onClose={() => setWalletDialogOpen(false)} onConnected={() => setWalletDialogOpen(false)} />}</>;
 }

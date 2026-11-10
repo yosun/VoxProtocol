@@ -27,7 +27,17 @@ async function checkHealth(url, label) {
   process.stdout.write(`${label}: healthy (${health.instance_id})\n`);
 }
 
-if (candidateApi) await checkHealth(`${candidateApi}/v1/health`, "Cloud Run candidate");
+async function checkCheckoutRpc(origin) {
+  const response = await get(`${origin}/v1/realize/solana-rpc`);
+  const health = await response.json();
+  if (health.status !== "ok" || health.network !== "solana:mainnet-beta") throw new Error("Checkout RPC did not verify the configured Mainnet genesis");
+  process.stdout.write("Checkout RPC: healthy (read-only Mainnet genesis probe)\n");
+}
+
+if (candidateApi) {
+  await checkHealth(`${candidateApi}/v1/health`, "Cloud Run candidate");
+  await checkCheckoutRpc(candidateApi);
+} else await checkCheckoutRpc(publicOrigin);
 await checkHealth(`${publicOrigin}/v1/health`, "vox.gold production API");
 
 if (apiOnly) process.exit(0);

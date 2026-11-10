@@ -2019,6 +2019,75 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /v1/realize/solana-rpc:
+    get:
+      tags: [Realization]
+      summary: Check the configured Mainnet RPC genesis without financial side effects
+      operationId: checkRealizeRpc
+      responses:
+        '200':
+          description: The fixed upstream serves the expected Mainnet genesis
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, enum: [ok]}
+                  network: {type: string, enum: ['solana:mainnet-beta']}
+        '502':
+          description: Upstream RPC is unavailable
+        '503':
+          description: Mainnet is disabled or its genesis does not match
+  /v1/realize/commissions/{commissionId}/solana-rpc:
+    parameters:
+      - name: commissionId
+        in: path
+        required: true
+        schema: {type: string}
+    post:
+      tags: [Realization]
+      summary: Relay bounded RPC operations for the owner's accepted Mainnet checkout
+      operationId: realizeCheckoutRpc
+      x-vox-authentication:
+        type: registered-human-signature
+        details: The commissioner signs the exact JSON-RPC body and encoded route path using x-vox-realize-human-id, x-vox-realize-timestamp and x-vox-realize-signature.
+      description: Requests are limited to 4096 bytes and one JSON-RPC call. Account reads are restricted to the payer and authorized USDC accounts. Fee, simulation and submission packets must match the exact accepted payment. Submission requires the payer signature, a payable order and an unexpired quote. Receipt reads remain available after expiry. This transport does not mark funds verified or trigger provider, settlement or refund work.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [jsonrpc, id, method]
+              properties:
+                jsonrpc: {type: string, enum: ['2.0']}
+                id:
+                  oneOf:
+                    - {type: string, minLength: 1, maxLength: 64}
+                    - {type: integer}
+                method:
+                  type: string
+                  enum: [getGenesisHash, getAccountInfo, getBalance, getLatestBlockhash, getBlockHeight, getMinimumBalanceForRentExemption, getFeeForMessage, getSignatureStatuses, simulateTransaction, sendTransaction]
+                params: {type: array, maxItems: 2, items: {}}
+              additionalProperties: false
+      responses:
+        '200':
+          description: Bounded upstream JSON-RPC result or error; broadcast is not payment verification
+          content:
+            application/json:
+              schema: {type: object}
+        '400':
+          description: Unsupported method, parameters, batch or altered transaction
+        '401':
+          description: A fresh registered-human signature is required
+        '403':
+          description: The signer does not own this commission
+        '409':
+          description: Funding is not accepted, the payment binding differs, or submission is no longer permitted
+        '413':
+          description: Request body exceeds the route limit
+        '502':
+          description: RPC is unavailable or returned an invalid or oversized reply
   /v1/realize/commissions/{commissionId}/fund:
     parameters:
       - name: commissionId
