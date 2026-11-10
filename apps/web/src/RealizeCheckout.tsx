@@ -6,6 +6,7 @@ import {getRealizeIdentity, signRealizeRequest, type RealizeIdentity} from "./re
 import {checkSolanaTransaction, directFundingAuthorization, PaymentQuoteExpiredError, recoverUsdcPayment, sendRealizeEscrowPayment, sendRealizeEscrowRefund, sendUsdcPayment, walletRejected, type UsdcPaymentAttempt} from "./solana-payment.js";
 import {configuredWalletCluster, solanaWalletClient, walletChainForCluster} from "./solana-wallet.js";
 import {WalletConnectDialog} from "./WalletConnectDialog.js";
+import {checkoutRpcConnection} from "./realize-rpc.js";
 import {RealizeNfts} from "./RealizeNfts.js";
 import {generationDescription, videoOptions, type VideoOptions} from "./realize-parameters.js";
 import {readFinancialCheckpoint, withFinancialLock, writeFinancialCheckpoint, type FinancialCheckpoint, type FinancialOutcome} from "./financial-checkpoints.js";
@@ -281,6 +282,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
   const quoteAccepted = !!commissionStatus?.commission.accepted_quote_hash && commissionStatus.commission.accepted_quote_hash === quote?.canonical_quote_hash;
   const paymentPending = (!!pendingSignature || !!pendingPaymentAttempt) && !paymentWasReceived(commissionStatus?.commission.payment_state);
   const networkName = quote?.network_id?.replace("solana:", "") ?? "";
+  const rpcOptions = useMemo(() => networkName === "mainnet-beta" && identity && commissionId ? checkoutRpcConnection(identity, commissionId) : {}, [networkName, identity, commissionId]);
   const mainnetRealizeDisabled = networkName === "mainnet-beta" && import.meta.env.VITE_REALIZE_MAINNET_ENABLED !== "true";
   const expectedChain = walletChainForCluster(networkName);
   const networkMismatch = !!quote && !!expectedChain && configuredWalletCluster() !== networkName;
@@ -705,7 +707,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       };
       const sent = funding.mode === "escrow"
         ? await sendRealizeEscrowPayment({wallet: connected.wallet, account: connected.account, supportedTransactionVersions: connected.supportedTransactionVersions, payerAddress: connected.account.address, commission: commissionStatus!.commission, quote, issuerPublicKey: quote.issuer_public_key, funding, cluster: networkName, onWalletApprovalRequested, onSubmitted})
-        : await sendUsdcPayment({...directFundingAuthorization(commissionStatus!.commission, quote, funding), wallet: connected.wallet, account: connected.account, supportedTransactionVersions: connected.supportedTransactionVersions, quoteExpiresAt: quote.expires_at, onWalletApprovalRequested, onPrepared, onSubmitted});
+        : await sendUsdcPayment({...directFundingAuthorization(commissionStatus!.commission, quote, funding), ...rpcOptions, wallet: connected.wallet, account: connected.account, supportedTransactionVersions: connected.supportedTransactionVersions, quoteExpiresAt: quote.expires_at, onWalletApprovalRequested, onPrepared, onSubmitted});
       if (sent.confirmation === "failed") {
         paymentSubmitted = false;
         setPaymentProgress(undefined);
@@ -744,7 +746,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       setBusy(true);
       setError("");
       try {
-        const checked = await recoverUsdcPayment(pendingPaymentAttempt, directFundingAuthorization(commissionStatus!.commission, quote!, funding), {quoteExpiresAt: quote!.expires_at});
+        const checked = await recoverUsdcPayment(pendingPaymentAttempt, directFundingAuthorization(commissionStatus!.commission, quote!, funding), {...rpcOptions, quoteExpiresAt: quote!.expires_at});
         if (checked.confirmation === "failed") {
           await resolveFinancial("failed", financialAttemptId, checked.signature);
           setError("The Solana transaction failed. No commission was funded; request a fresh quote before retrying.");
@@ -754,7 +756,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       return;
     }
     if (pendingRefundSignature && funding?.mode === "escrow") {
-      const chainStatus = await checkSolanaTransaction(pendingRefundSignature, networkName);
+      const chainStatus = await checkSolanaTransaction(pendingRefundSignature, networkName, rpcOptions);
       if (chainStatus === "pending") return;
       if (chainStatus === "failed") {
         setPendingRefundSignature(undefined);
@@ -767,7 +769,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
       return;
     }
     if (pendingSignature && funding?.mode === "escrow") {
-      const chainStatus = await checkSolanaTransaction(pendingSignature, networkName);
+      const chainStatus = await checkSolanaTransaction(pendingSignature, networkName, rpcOptions);
       if (chainStatus === "pending") return;
       if (chainStatus === "failed") {
         await resolveFinancial("failed", financialAttemptId, pendingSignature);
@@ -804,7 +806,7 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
     try {
       // Do not pin an accidentally mistyped, nonexistent receipt in the server's
       // durable submission reservation. Only finalized receipts reach the API.
-      const chainStatus = await checkSolanaTransaction(signature, networkName);
+      const chainStatus = await checkSolanaTransaction(signature, networkName, rpcOptions);
       if (chainStatus !== "finalized") {
         setError(chainStatus === "failed" ? "That receipt records a failed Solana transaction. Check this payment in your wallet history before continuing; do not pay again." : "Solana has not finalized this receipt yet. Check the signature in your wallet history and try again; do not pay again.");
         return;

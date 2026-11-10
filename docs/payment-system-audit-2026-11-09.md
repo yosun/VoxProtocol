@@ -14,7 +14,7 @@ The accessible production browser reported **No compatible wallet detected**. Th
 
 The review baseline is protected `main` at `5856536dedacdfe2f05c5bf1c12fb4d43028ea3e`, released by the successful [production workflow](https://github.com/yosun/VoxProtocol/actions/runs/42591262257). The repair is isolated on `codex/payment-audit-20261109`.
 
-The subsequent deployment preflight confirmed the same API/settlement revisions and image. Reconciliation had expired the remaining quote: the 25 commissions were then 23 expired and two draft, still with no submitted or verified funding receipt and no settlement records. Database protection and backup-schedule findings were unchanged. A fresh public smoke check and read-only Monad contract verification passed. The wallet-only code diff and this report form the release; the remaining operational findings are follow-up work.
+The subsequent deployment preflight confirmed the same API/settlement revisions and image. Reconciliation had expired the remaining quote: the 25 commissions were then 23 expired and two draft, still with no submitted or verified funding receipt and no settlement records. Database protection and backup-schedule findings were unchanged. A fresh public smoke check and read-only Monad contract verification passed. A browser-origin RPC check then found F7 below. This release includes the wallet connection and bounded checkout RPC fixes; the remaining operational findings are follow-up work.
 
 | Component | Observation |
 | --- | --- |
@@ -89,6 +89,18 @@ Cloud Monitoring returned zero alert policies and zero uptime-check configuratio
 
 Configure alerts for API/settlement availability, reconciliation failures, aged captured/manual-review/refund orders, database protection failures and low treasury SOL. Verify that each alert reaches an accountable operator.
 
+### F7 High checkout availability risk Public RPC rejects the deployed browser origin
+
+**Status: corrected by the authenticated checkout RPC route in this release.**
+
+Both `https://api.mainnet.solana.com` (the deployed frontend configuration) and `https://api.mainnet-beta.solana.com` returned HTTP 403 to actual browser `getGenesisHash` requests from VOX.gold. A comparison using `getLatestBlockhash` returned HTTP 200 without an Origin header and HTTP 403 with the VOX.gold Origin. Thus connection alone could not repair payment balance checks, fee preparation, simulation or receipt recovery using the browser's direct public RPC transport.
+
+Mainnet checkout now signs each RPC request with the existing private commissioner identity and sends it through VOX. The API requires ownership and the accepted quote/funding bindings, uses only the server-configured upstream, and does not forward browser Origin or authentication headers. The small method allowlist constrains account reads, rent, fees, simulation and receipt lookup. Submission requires the exact payer-signed classic-USDC transaction described by the accepted funding authorization, unchanged instructions, amount, destination and memo, a currently payable order and an unexpired quote. Requests, responses, packet sizes, retries and upstream time are bounded; batches, arbitrary RPC methods, alternate URLs, changed transfers, extra instructions and unsigned broadcast are rejected.
+
+The relay does not mark an order funded, call a provider, settle or refund. Existing durable browser checkpoints still precede any possible broadcast, and the existing funding verifier independently establishes finality. The public GET probe only reads and checks the configured Mainnet genesis. Production smoke checks exercise that read-only probe on the candidate before promotion and on production afterward. Tests use fabricated transactions and mocked upstream responses; no live submission was made.
+
+References: [RPC constraints](../apps/api/src/realize-rpc.ts), [authenticated route](../apps/api/src/app.ts), [browser transport](../apps/web/src/realize-rpc.ts), [RPC regressions](../tests/realize-rpc.test.ts).
+
 ## Treasury and custody observations
 
 A finalized public Solana read at slot `467621474` returned **8,506,560 lamports (0.00850656 SOL)** and **zero atomic USDC**. The classic USDC account is initialized and matches the approved mint and owner:
@@ -111,6 +123,7 @@ Mainnet remains a custodial backend-managed rail. Settlement authentication is p
 | --- | --- |
 | Quote integrity and economics | Issuer signature, canonical quote hash, pinned configuration and rights, integer atomic arithmetic, live provider cost binding, 1–10,000 USDC limits and 25/70/5 allocation |
 | Wallet authorization | Exact accepted quote/funding binding, payer and chain checks, account signing capabilities, balance/fee checks, simulation and expiry checks before browser-controlled submission |
+| Browser RPC transport | Authenticated commission ownership, fixed upstream, method/account/message constraints, payer signature before broadcast, no provider or ledger mutation, bounded packets/responses and read-only candidate readiness |
 | Duplicate payment recovery | Signed signature/bytes committed before broadcast; ambiguous sign-and-send markers; atomic IndexedDB journal; cross-tab Web Locks; identical-byte retries; finalized failure required to release an uncertain attempt |
 | Server funding verification | Mainnet genesis, official classic mint, exact TransferChecked amount/decimals/destination/memo, payer signature and historical source ownership, finality, transaction-time expiry and atomic signature reuse reservation |
 | Provider fulfillment | Captured payment before generation, persisted idempotent request, pinned provider quote and funding authorization, signed callback checks, artifact/provenance verification and ambiguous outcome handling |
@@ -124,8 +137,8 @@ Relevant implementations: [payment client](../apps/web/src/solana-payment.ts), [
 ## Verification
 
 - Three new wallet browser regressions passed.
-- `npm test`: complete build, application and payment-operations typechecks; **440 passed**. Its nine skipped emulator-dependent tests were exercised separately below.
-- Full browser suite: **48 passed**, using mocked APIs, wallets, RPC, provider outputs and minting.
+- `npm test`: complete build, application and payment-operations typechecks; **466 passed**. Its nine skipped emulator-dependent tests were exercised separately below.
+- Full browser suite: **49 passed**, using mocked APIs, wallets, RPC, provider outputs and minting. The added transport regression blocks direct public browser RPC with HTTP 403 while exercising authenticated payment preparation, signed submission and finality checks.
 - Firestore emulator: **9 passed**, including competing transaction replacements and immutable accepted payment evidence.
 - Solidity receiver suite: **7 passed**.
 - `NO_DNA=1 cargo test -p realize-escrow --test adversarial --locked --offline`: **4 passed**, covering deployment-cluster selection, quote-domain separation, allocation overflow and conservation.

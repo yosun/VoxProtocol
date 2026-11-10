@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {createHash, createHmac} from "node:crypto";
-import {Keypair, PublicKey} from "@solana/web3.js";
-import {getAssociatedTokenAddressSync} from "@solana/spl-token";
+import {Keypair, PublicKey, Transaction, TransactionInstruction} from "@solana/web3.js";
+import {createAssociatedTokenAccountIdempotentInstruction, createTransferCheckedInstruction, getAssociatedTokenAddressSync} from "@solana/spl-token";
 import {createAgent, createHuman} from "@vox/identity";
 import {
   bytesToHex, computeRevenueRightsAgreementHash, domainHash, generateKeyPair,
@@ -16,7 +16,8 @@ import {MainnetSplUsdcRealizePaymentRail, SOLANA_MAINNET_GENESIS_HASH, type Main
 import type {PopuliRealizeClient, RealizeRefundResponseV1} from "../apps/api/src/realize-engine.js";
 import type {RealizeCommissionRecord} from "../apps/api/src/types.js";
 
-const payer = Keypair.generate().publicKey.toBase58();
+const testPayer = Keypair.generate();
+const payer = testPayer.publicKey.toBase58();
 const treasuryOwner = Keypair.generate().publicKey.toBase58();
 const treasuryTokenAccount = getAssociatedTokenAddressSync(new PublicKey(MAINNET_USDC_MINT), new PublicKey(treasuryOwner)).toBase58();
 /** Fabricated encoded receipt bytes for mocked chain responses. They do not
@@ -107,7 +108,11 @@ async function refundAuditHarness() {
   const settlement = {requestSettlement: vi.fn(), getSettlement: vi.fn(),
     getPaymentIntentResolution: vi.fn(async (paymentIntentId: string) => ({payment_intent_id: paymentIntentId, kind: reserved ? "refund" : "none", ...(reserved ? {record_id: refundId, state: "active"} : {})})),
     requestRefund: vi.fn(async () => { reserved = true; return response(); }), getRefund: vi.fn(async () => response())};
-  app = await buildApp({store, instanceId, instanceSecretKey: issuer.secretKey, internalToken: "test-only-internal-token", mainnetRealizePaymentRail: rail,
+  const rpcFetch = vi.fn<typeof fetch>().mockImplementation(async (_endpoint, init) => {
+    const body = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({jsonrpc: "2.0", id: body.id, result: body.method === "getGenesisHash" ? SOLANA_MAINNET_GENESIS_HASH : 42}));
+  });
+  app = await buildApp({store, instanceId, instanceSecretKey: issuer.secretKey, internalToken: "test-only-internal-token", mainnetRealizePaymentRail: rail, realizeRpcFetch: rpcFetch,
     populiRealizeClient: provider, solanaRealizeSettlementClient: settlement as never});
   const base = `/v1/realize/commissions/${encodeURIComponent(commissionId)}`;
   const approvalPath = `/v1/internal/realize/commissions/${encodeURIComponent(commissionId)}/refund-approval`;
@@ -138,9 +143,79 @@ async function refundAuditHarness() {
   const failProvider = () => providerCallback({status: "failed", outputs: [], error_code: "GENERATION_PROVIDER_FAILED"}, "refund-audit-failure");
   const approval = {payer_wallet: payer, funding_signature: mainnetSignature, payment_intent_id: accepted.json().payment_intent.payment_intent_id,
     accepted_quote_hash: quote.canonical_quote_hash, amount_usdc_atomic: quote.total_amount_usdc_atomic, reason: "Refund the exact verified original payment under the audit."};
-  return {store, quote, commissionId, base, refundId, rail, settlement, requestFulfillment, signed, fund, failProvider, providerCallback, approval,
+  return {store, quote, commissionId, base, refundId, rail, settlement, rpcFetch, requestFulfillment, signed, fund, failProvider, providerCallback, approval,
     approve: (body = approval) => signed(approvalPath, body, operator)};
 }
+
+describe("authenticated Mainnet checkout RPC routes", () => {
+  async function paymentRequest(harness: Awaited<ReturnType<typeof refundAuditHarness>>) {
+    const record = (await harness.store.getRealizeCommission(harness.commissionId))!;
+    const funding = record.direct_funding!;
+    const mint = new PublicKey(funding.usdc_mint);
+    const destination = new PublicKey(funding.destination_token_account);
+    const tx = new Transaction({feePayer: testPayer.publicKey, recentBlockhash: treasuryOwner});
+    tx.add(createAssociatedTokenAccountIdempotentInstruction(testPayer.publicKey, destination, new PublicKey(funding.destination_owner), mint));
+    tx.add(createTransferCheckedInstruction(getAssociatedTokenAddressSync(mint, testPayer.publicKey), mint, destination, testPayer.publicKey, BigInt(funding.amount_usdc_atomic), 6));
+    tx.add(new TransactionInstruction({programId: new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"), keys: [], data: Buffer.from(funding.payment_reference)}));
+    tx.sign(testPayer);
+    return {jsonrpc: "2.0", id: 1, method: "sendTransaction", params: [tx.serialize().toString("base64"), {encoding: "base64"}]};
+  }
+
+  it("relays only an exact payer-signed payment without treating broadcast as verification", async () => {
+    const harness = await refundAuditHarness();
+    const body = await paymentRequest(harness);
+    const before = await harness.store.getRealizeCommission(harness.commissionId);
+    const result = await harness.signed(`${harness.base}/solana-rpc`, body);
+    expect(result.statusCode, result.body).toBe(200);
+    expect(JSON.parse(String(harness.rpcFetch.mock.calls[0]![1]?.body)).params[0]).toBe(body.params[0]);
+    expect(await harness.store.getRealizeCommission(harness.commissionId)).toEqual(before);
+    expect(harness.requestFulfillment).not.toHaveBeenCalled();
+  });
+
+  it("refuses another broadcast after the normal verifier has captured the payment", async () => {
+    const harness = await refundAuditHarness();
+    const body = await paymentRequest(harness);
+    await harness.fund();
+    const before = await harness.store.getRealizeCommission(harness.commissionId);
+    const result = await harness.signed(`${harness.base}/solana-rpc`, body);
+    expect(result.statusCode, result.body).toBe(409);
+    expect(harness.rpcFetch).not.toHaveBeenCalled();
+    expect(await harness.store.getRealizeCommission(harness.commissionId)).toEqual(before);
+  });
+
+  it("requires the commission owner's signed request and never changes payment or provider state", async () => {
+    const harness = await refundAuditHarness();
+    const path = `${harness.base}/solana-rpc`;
+    const body = {jsonrpc: "2.0", id: 1, method: "getBlockHeight", params: [{commitment: "confirmed"}]};
+    const before = await harness.store.getRealizeCommission(harness.commissionId);
+    expect((await app!.inject({method: "POST", url: path, payload: body})).statusCode).toBe(401);
+    expect((await app!.inject({method: "POST", url: path, payload: body, headers: {"x-vox-realize-human-id": "vox:human:other"}})).statusCode).toBe(403);
+    expect(harness.rpcFetch).not.toHaveBeenCalled();
+    const result = await harness.signed(path, body);
+    expect(result.statusCode, result.body).toBe(200);
+    expect(result.json()).toEqual({jsonrpc: "2.0", id: 1, result: 42});
+    expect(await harness.store.getRealizeCommission(harness.commissionId)).toEqual(before);
+    expect(harness.requestFulfillment).not.toHaveBeenCalled();
+    expect(harness.settlement.requestSettlement).not.toHaveBeenCalled();
+    expect(harness.settlement.requestRefund).not.toHaveBeenCalled();
+  });
+
+  it("rejects arbitrary RPC operations even with valid commissioner authentication", async () => {
+    const harness = await refundAuditHarness();
+    const result = await harness.signed(`${harness.base}/solana-rpc`, {jsonrpc: "2.0", id: 1, method: "requestAirdrop", params: [payer, 1_000_000_000]});
+    expect(result.statusCode).toBe(400);
+    expect(harness.rpcFetch).not.toHaveBeenCalled();
+  });
+
+  it("exposes only a read-only pinned Mainnet genesis probe publicly", async () => {
+    const harness = await refundAuditHarness();
+    const result = await app!.inject({method: "GET", url: "/v1/realize/solana-rpc"});
+    expect(result.statusCode, result.body).toBe(200);
+    expect(result.json()).toEqual({status: "ok", network: "solana:mainnet-beta"});
+    expect(JSON.parse(String(harness.rpcFetch.mock.calls[0]![1]?.body)).method).toBe("getGenesisHash");
+    expect(harness.requestFulfillment).not.toHaveBeenCalled();
+  });
+});
 
 describe("Mainnet refund terminal evidence", () => {
   it("records a failed payout after delivery without refunding or losing the successful fulfillment", async () => {

@@ -67,6 +67,7 @@ type MockState = {
   signatureConfirmation?: "processed" | "confirmed" | "finalized";
   signatureError?: string;
   checkpointBeforeBroadcast?: Record<string, any>;
+  rpcRelayCalls?: number;
 };
 
 function tokenAccountData(mint: PublicKey, owner: PublicKey, amount: bigint): string {
@@ -232,7 +233,7 @@ async function createWallet(page: Page, disableOnRecovery = false, signing = fal
 async function installMocks(page: Page, sourceBalance = PAYER_USDC, rejectFunding = false, existingState?: MockState): Promise<MockState> {
   const state: MockState = existingState ?? {funded: false, sourceBalance, fundCalls: [], rejectFunding, supportedResolutions: ["480P", "768P", "1080P"], rpcBroadcasts: []};
   page.on("pageerror", (error) => console.error("Browser page error:", error.message));
-  await page.route("https://api.mainnet-beta.solana.com/**", async (route) => {
+  const handleRpc = async (route: Route) => {
     const request = route.request().postDataJSON() as {id: number | string; method: string; params?: unknown[]};
     const result = (value: unknown) => json(route, {jsonrpc: "2.0", id: request.id, result: value});
     switch (request.method) {
@@ -266,12 +267,19 @@ async function installMocks(page: Page, sourceBalance = PAYER_USDC, rejectFundin
       default:
         return json(route, {jsonrpc: "2.0", id: request.id, error: {code: -32601, message: `Unhandled test RPC method ${request.method}`}}, 200);
     }
-  });
+  };
+  await page.route("https://api.mainnet-beta.solana.com/**", handleRpc);
 
   await page.route("http://localhost:8787/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const path = decodeURIComponent(url.pathname);
+    if (request.method() === "POST" && path === `/v1/realize/commissions/${COMMISSION_ID}/solana-rpc`) {
+      expect(request.headers()["x-vox-realize-signature"]).toBeTruthy();
+      expect(request.headers()["x-vox-realize-human-id"]).toBe(state.commission?.commissioner_id);
+      state.rpcRelayCalls = (state.rpcRelayCalls ?? 0) + 1;
+      return handleRpc(route);
+    }
     if (request.method() === "GET" && path === "/v1/feed") {
       return json(route, {items: [{
         post_id: `vox:post:${"b".repeat(64)}`,
@@ -485,6 +493,29 @@ test("commissioner reviews rights, pays from the backend quote, and sees mocked 
   expect(transfer!.data[0]).toBe(12); // SPL Token TransferChecked.
   expect(transfer!.data.readBigUInt64LE(1).toString()).toBe(TOTAL_USDC);
   expect(transaction.instructions.some((instruction) => instruction.programId.toBase58() === "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr" && instruction.data.toString("utf8") === state.funding!.payment_reference)).toBe(true);
+});
+
+test("Mainnet payment uses authenticated checkout RPC even when public browser RPC returns 403", async ({page}) => {
+  const state = await installMocks(page);
+  await createWallet(page, false, true);
+  let directCalls = 0;
+  await page.route("https://api.mainnet-beta.solana.com/**", (route) => {
+    directCalls += 1;
+    return json(route, {error: {code: 403, message: "Access forbidden"}}, 403);
+  });
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  const checkout = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await checkout.getByRole("button", {name: "Get my price"}).click();
+  await checkout.getByRole("button", {name: "Connect VOX Test Wallet"}).click();
+  await checkout.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  await checkout.getByRole("button", {name: "Continue to payment"}).click();
+  await checkout.getByRole("button", {name: "Pay 1.00 USDC"}).click();
+  await expect(checkout.getByText("Signed provenance verified")).toBeVisible();
+  expect(state.rpcRelayCalls).toBeGreaterThan(5);
+  expect(directCalls).toBe(0);
+  expect(state.rpcBroadcasts).toHaveLength(1);
+  expect(state.fundCalls).toHaveLength(1);
 });
 
 test("retains separate NFT publication consent when acceptance succeeds but status fails", async ({page}) => {
