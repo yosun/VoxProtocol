@@ -534,7 +534,7 @@ button { color: inherit; }
 .wallet-connected-state strong { color: #e3f0df; }
 .wallet-connected-state code { overflow-wrap: anywhere; color: #b9d5b1; font: .64rem 'DM Mono', monospace; }
 .wallet-connected-state span:last-child { color: #9ab096; font-size: .7rem; line-height: 1.45; }
-.wallet-connected-state .primary-button { grid-column: 1 / -1; }
+.wallet-connected-state button { grid-column: 1 / -1; }
 .wallet-empty-state { display: grid; justify-items: center; gap: 10px; margin-top: 32px; padding: 24px 15px; border-top: 1px solid #3b3429; border-bottom: 1px solid #3b3429; color: #a3998b; text-align: center; }
 .wallet-empty-state strong { color: #e7ddcd; font-size: .82rem; }
 .wallet-empty-state p { margin: 0; font-size: .73rem; line-height: 1.5; }
