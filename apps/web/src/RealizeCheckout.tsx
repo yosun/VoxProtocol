@@ -957,9 +957,9 @@ export function RealizeCheckout({post, posts, agents, initialBrief, onClose}: {p
         </div>
 
 
-      {(!quoteAccepted || !paymentIsVerified) && <div className="wallet-connect-panel quote-wallet-panel">
+      {(!quoteAccepted || !paymentIsVerified || refundReady) && <div className="wallet-connect-panel quote-wallet-panel">
         <div className="wallet-network-line"><strong>{connected ? "Wallet connected" : "Pay with USDC"}</strong>{connected && <span className="wallet-address">{short(connected.account.address)}</span>}{!connected && (walletStatus === "pending" || walletStatus === "reconnecting") && <span className="tiny muted">Reconnecting…</span>}</div>
-        {!connected && (wallets.length > 0 ? <div className="wallet-options">{wallets.map((wallet) => <button type="button" className="secondary-button" key={wallet.name} disabled={busy || walletStatus === "pending" || walletStatus === "reconnecting"} onClick={() => void connectWallet(wallet)}>Connect {wallet.name}</button>)}</div> : <p className="tiny muted">No compatible Solana wallet detected in this browser. Open VOX in your wallet’s browser, or install a wallet extension.</p>)}
+        {!connected && (wallets.length > 0 ? <><div className="wallet-options">{wallets.map((wallet) => <button type="button" className="secondary-button" key={wallet.name} disabled={busy || walletStatus === "pending" || walletStatus === "reconnecting" || walletStatus === "connecting"} onClick={() => void connectWallet(wallet)}>Connect {wallet.name}</button>)}</div>{wallets.some((wallet) => wallet.name === "Solflare Web Wallet") && <p className="tiny muted">No extension? Solflare Web Wallet opens in a separate window. You’ll need USDC and SOL for network fees.</p>}</> : <p className="tiny muted">No compatible Solana wallet detected in this browser. Open VOX in your wallet’s browser, or install a wallet extension.</p>)}
         {(!!connected || quoteAccepted) && <button type="button" className="secondary-button" disabled={busy} onClick={() => setWalletDialogOpen(true)}>{connected ? "Manage wallet" : "Connect wallet"}</button>}
       </div>}
       {networkMismatch && <p className="network-warning" role="alert">This quote requires Solana {networkName}, but this checkout is configured for {configuredWalletCluster()}.</p>}
