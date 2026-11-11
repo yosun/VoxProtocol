@@ -12,6 +12,7 @@ import {
   utf8
 } from "@vox/protocol";
 import {ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID} from "@solana/spl-token";
+import {getBase58Decoder, getBase58Encoder} from "@solana/kit";
 import {Keypair, PublicKey, Transaction} from "@solana/web3.js";
 
 const CREATOR_ID = "vox:agent:realize-test-creator";
@@ -368,7 +369,7 @@ async function installMocks(page: Page, sourceBalance = PAYER_USDC, rejectFundin
   return state;
 }
 
-test("checkout without a wallet opens actionable setup instead of a disabled connect button", async ({page}) => {
+test("checkout offers an extension-free wallet and keeps wallet selection keyboard accessible", async ({page}) => {
   const state = await installMocks(page);
   await page.goto("/");
   await page.getByRole("button", {name: "Realize by post"}).click();
@@ -376,15 +377,14 @@ test("checkout without a wallet opens actionable setup instead of a disabled con
   await checkout.getByRole("button", {name: "Get my price"}).click();
   const connect = checkout.getByRole("button", {name: "Connect wallet", exact: true});
   await expect(connect).toBeEnabled();
-  await expect(checkout.getByText("No compatible Solana wallet detected", {exact: false})).toBeVisible();
+  await expect(checkout.getByRole("button", {name: "Connect Solflare Web Wallet"})).toBeVisible();
   await connect.click();
   const wallet = page.getByRole("dialog", {name: "Connect a Solana wallet"});
-  await expect(wallet.getByText("No compatible wallet detected.")).toBeVisible();
-  await expect(wallet.getByRole("link", {name: "Get Phantom"})).toHaveAttribute("href", "https://phantom.com/download");
-  await expect(wallet.getByRole("link", {name: "Get Solflare"})).toHaveAttribute("href", "https://www.solflare.com/download/");
+  await expect(wallet.getByText("Solflare Web Wallet")).toBeVisible();
+  await expect(wallet.getByText(/no extension required/)).toBeVisible();
   await expect(wallet.getByRole("button", {name: "Close wallet connection"})).toBeFocused();
   await page.keyboard.press("Shift+Tab");
-  await expect(wallet.getByRole("link", {name: "Get Solflare"})).toBeFocused();
+  await expect(wallet.getByRole("button", {name: /Solflare Web Wallet/})).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(wallet.getByRole("button", {name: "Close wallet connection"})).toBeFocused();
   await page.keyboard.press("Escape");
@@ -434,6 +434,133 @@ test("an accepted unpaid order can disconnect and reconnect its payer inside che
   await expect(checkout.getByRole("button", {name: "Pay 1.00 USDC"})).toBeEnabled();
   expect(state.fundCalls).toHaveLength(0);
   expect(state.rpcBroadcasts).toHaveLength(0);
+});
+
+test("Solflare Web Wallet reconnects the accepted payer and submits the quoted transaction", async ({page}) => {
+  const state = await installMocks(page);
+  const signature = getBase58Decoder().decode(new Uint8Array(64).fill(1));
+  let providerAddress = PAYER.toBase58();
+  await page.context().route("https://solflare.com/provider**", (route) => route.fulfill({contentType: "text/html", body: `
+    <button id="authorize">Authorize test wallet</button>
+    <script>
+      window.addEventListener('message', (event) => {
+        if (event.data.method === 'signAndSendTransaction') {
+          window.sentTransaction = event.data.params.transaction;
+          window.opener.postMessage({id: event.data.id, result: {signature: ${JSON.stringify(signature)}}}, event.origin);
+        }
+      });
+      document.querySelector('#authorize').onclick = () => window.opener.postMessage({method: 'connected', params: {publicKey: ${JSON.stringify(providerAddress)}, autoApprove: false}}, '*');
+    </script>
+  `}));
+  await page.context().route("https://solflare.com/attacker", (route) => route.fulfill({contentType: "text/html", body: `<script>parent.postMessage({method:'connected',params:{publicKey:${JSON.stringify(PAYER.toBase58())}}}, '*')</script>`}));
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  let dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  let popupPromise = page.waitForEvent("popup");
+  await dialog.getByRole("button", {name: "Connect Solflare Web Wallet"}).click();
+  let popup = await popupPromise;
+  await popup.close();
+  await expect(dialog.getByRole("alert").filter({hasText: "Solflare connection was canceled"})).toBeVisible();
+  popupPromise = page.waitForEvent("popup");
+  await dialog.getByRole("button", {name: "Connect Solflare Web Wallet"}).click();
+  popup = await popupPromise;
+  await expect(popup.getByRole("button", {name: "Authorize test wallet"})).toBeVisible();
+
+  // Neither the app window nor a different window from Solflare's origin may impersonate the popup.
+  await page.evaluate(async (publicKey) => {
+    window.postMessage({method: "connected", params: {publicKey}}, "*");
+    const frame = document.createElement("iframe");
+    frame.src = "https://solflare.com/attacker";
+    document.body.append(frame);
+    await new Promise((resolve) => { frame.onload = resolve; });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    frame.remove();
+  }, PAYER.toBase58());
+  await expect(dialog.getByText("Wallet connected", {exact: true})).toHaveCount(0);
+  await popup.getByRole("button", {name: "Authorize test wallet"}).click();
+  await expect(dialog.getByText("Wallet connected", {exact: true})).toBeVisible();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
+  await expect(dialog.getByRole("button", {name: "Pay 1.00 USDC"})).toBeEnabled();
+
+  await page.reload();
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await expect(dialog.getByRole("button", {name: "Connect Solflare Web Wallet"})).toBeVisible();
+  await expect(dialog.getByRole("button", {name: "Pay 1.00 USDC"})).toBeDisabled();
+  providerAddress = new PublicKey(new Uint8Array(32).fill(8)).toBase58();
+  popupPromise = page.waitForEvent("popup");
+  await dialog.getByRole("button", {name: "Connect Solflare Web Wallet"}).click();
+  popup = await popupPromise;
+  await popup.getByRole("button", {name: "Authorize test wallet"}).click();
+  await expect(dialog.getByText(/Reconnect the payer wallet for this quote/)).toBeVisible();
+  await expect(dialog.getByRole("button", {name: "Pay 1.00 USDC"})).toBeDisabled();
+  await dialog.getByRole("button", {name: "Manage wallet"}).click();
+  const wallet = page.getByRole("dialog", {name: "Connect a Solana wallet"});
+  await wallet.getByRole("button", {name: "Disconnect wallet"}).click();
+  await page.keyboard.press("Escape");
+  providerAddress = PAYER.toBase58();
+  popupPromise = page.waitForEvent("popup");
+  await dialog.getByRole("button", {name: "Connect Solflare Web Wallet"}).click();
+  popup = await popupPromise;
+  await popup.getByRole("button", {name: "Authorize test wallet"}).click();
+  await expect(dialog.getByRole("button", {name: "Pay 1.00 USDC"})).toBeEnabled();
+  await dialog.getByRole("button", {name: "Pay 1.00 USDC"}).click();
+  await expect(dialog.getByText("Signed provenance verified")).toBeVisible();
+  expect(state.fundCalls).toHaveLength(1);
+  expect(state.fundCalls[0]).toMatchObject({payer_wallet: PAYER.toBase58(), transaction_signature: signature});
+  expect(state.rpcBroadcasts).toHaveLength(0);
+
+  const encoded = await popup.evaluate(() => (window as any).sentTransaction as string);
+  const transaction = Transaction.from(Uint8Array.from(getBase58Encoder().encode(encoded)));
+  const transfer = transaction.instructions.find((instruction) => instruction.programId.equals(TOKEN_PROGRAM_ID));
+  expect(transfer?.keys[2]?.pubkey.toBase58()).toBe(DESTINATION.toBase58());
+  expect(transfer?.data.readBigUInt64LE(1).toString()).toBe(TOTAL_USDC);
+  expect(transaction.instructions.some((instruction) => instruction.programId.toBase58() === "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr" && instruction.data.toString("utf8") === state.funding!.payment_reference)).toBe(true);
+});
+
+test("Solflare's missing signature keeps an unresolved payment across reload", async ({page}) => {
+  const state = await installMocks(page);
+  await page.context().route("https://solflare.com/provider**", (route) => route.fulfill({contentType: "text/html", body: `
+    <button id="authorize">Authorize test wallet</button>
+    <script>
+      window.addEventListener('message', (event) => {
+        if (event.data.method === 'signAndSendTransaction') window.opener.postMessage({id: event.data.id, result: {signature: 'invalid signature'}}, event.origin);
+      });
+      document.querySelector('#authorize').onclick = () => window.opener.postMessage({method: 'connected', params: {publicKey: ${JSON.stringify(PAYER.toBase58())}}}, '*');
+    </script>
+  `}));
+  await page.goto("/");
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  let dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await dialog.getByRole("button", {name: "Get my price"}).click();
+  await dialog.getByRole("checkbox", {name: "I agree to the usage terms and this price."}).check();
+  const popupPromise = page.waitForEvent("popup");
+  await dialog.getByRole("button", {name: "Connect Solflare Web Wallet"}).click();
+  const popup = await popupPromise;
+  await popup.getByRole("button", {name: "Authorize test wallet"}).click();
+  await dialog.getByRole("button", {name: "Continue to payment"}).click();
+  await dialog.getByRole("button", {name: "Pay 1.00 USDC"}).click();
+  await expect(dialog.getByText("Payment outcome needs checking.")).toBeVisible();
+  await expect(dialog.getByRole("button", {name: "Pay 1.00 USDC"})).toHaveCount(0);
+  expect(state.fundCalls).toHaveLength(0);
+  await page.reload();
+  await page.getByRole("button", {name: "Realize by post"}).click();
+  dialog = page.getByRole("dialog", {name: "Realize commission checkout"});
+  await expect(dialog.getByText("Payment outcome needs checking.")).toBeVisible();
+  await expect(dialog.getByRole("button", {name: "Pay 1.00 USDC"})).toHaveCount(0);
+  expect(state.fundCalls).toHaveLength(0);
+});
+
+test("a blocked Solflare popup gives a recoverable error", async ({page}) => {
+  await installMocks(page);
+  await page.addInitScript(() => { window.open = () => null; });
+  await page.goto("/?wallet=true");
+  const dialog = page.getByRole("dialog", {name: "Connect a Solana wallet"});
+  await dialog.getByRole("button", {name: /Solflare Web Wallet/}).click();
+  await expect(dialog.getByRole("alert")).toContainText("Allow popups for VOX and try again");
+  await expect(dialog.getByRole("button", {name: /Solflare Web Wallet/})).toBeEnabled();
 });
 
 test("commissioner reviews rights, pays from the backend quote, and sees mocked verified settlement", async ({page}) => {

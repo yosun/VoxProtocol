@@ -1,6 +1,7 @@
 import {createClient} from "@solana/kit";
 import {solanaRpc} from "@solana/kit-plugin-rpc";
 import {walletSigner} from "@solana/kit-plugin-wallet";
+import {registerSolflareWebWallet} from "./solflare-web-wallet.js";
 
 export type SolanaCluster = "devnet" | "testnet" | "mainnet-beta";
 
@@ -9,6 +10,8 @@ const chain: `${string}:${string}` = configuredCluster === "mainnet-beta" ? "sol
 const defaultRpcUrl = configuredCluster === "mainnet-beta"
   ? "https://api.mainnet-beta.solana.com"
   : `https://api.${configuredCluster}.solana.com`;
+
+registerSolflareWebWallet(configuredCluster, chain);
 
 /** Wallet Standard discovery and signer lifecycle for Phantom, Solflare, Backpack, and compatible wallets. */
 export const solanaWalletClient = createClient()
